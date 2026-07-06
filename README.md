@@ -1,112 +1,149 @@
-# TUI — AgentRT 终端用户界面
+**Language:** English | [简体中文](README_zh.md)
 
-**模块路径**: `sdk/tui/`
-**版本**: v0.1.1
+# Airymax TUI
 
-## 概述
+[![Version](https://img.shields.io/badge/version-0.1.1-5a6b7e)](https://atomgit.com/openairymax/tui)
+[![License](https://img.shields.io/badge/license-AGPL--3.0+Apache--2.0-4a90d9)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 
-AgentRT TUI 是基于 Rust 开发的终端用户界面（Terminal User Interface），提供可视化的 AgentRT 交互体验。采用 ratatui 和 crossterm 构建，支持多面板切换、实时对话、日志监控、记忆查看、配置管理和插件管理等功能。通过 Gateway HTTP API 与 AgentRT 核心通信。
+> Official terminal user interface for the [Airymax](https://atomgit.com/openairymax/airymaxhub) AI Agent Runtime Platform.
+> One of the leaf repositories aggregated by the [sdk](https://atomgit.com/openairymax/sdk) management repo.
+> Built on top of the Airymax Rust SDK (`agentrt-rs`).
 
-## 目录结构
+---
+
+## Overview
+
+The **Airymax TUI** (`agentrt-tui`) is a Rust-built terminal user interface that gives developers and operators a visual, interactive way to drive the Airymax runtime. Built with `ratatui` and `crossterm`, it offers multi-panel navigation, real-time chat, log monitoring, memory inspection, configuration editing, and plugin management — all from a single terminal window.
+
+Like the CLI, the TUI is a first-class **runtime tenant**: it talks to the Airymax Gateway over HTTP and internally drives the same double-layer SDK architecture (Cognition / Safety / Tool / Chat) provided by `agentrt-rs`.
+
+## Double-Layer API Architecture (consumed)
+
+The TUI is a consumer of the Airymax Rust SDK. Its panels translate user actions into calls against the four nested resource clients exposed by `AgentRTClient`:
+
+```
+agentrt-tui <panel>
+   └── AgentRTClient (from agentrt-rs)
+       ├── CognitionClient   # Chat panel: task submission / inference
+       ├── SafetyClient      # audit / policy views
+       ├── ToolClient        # plugin management panel
+       └── ChatClient        # Chat panel: streaming responses
+```
+
+## Directory Structure
 
 ```
 tui/
 ├── src/
-│   ├── main.rs              # 入口与终端初始化
-│   ├── app.rs               # 应用状态与事件循环
-│   ├── client.rs            # Gateway HTTP 客户端
-│   ├── ui.rs                # UI 渲染入口
+│   ├── main.rs              # Entry point + terminal init/teardown
+│   ├── app.rs               # Application state + event loop
+│   ├── client.rs            # Gateway HTTP client
+│   ├── ui.rs                # UI rendering entry
 │   └── panels/
-│       ├── mod.rs           # 面板模块导出
-│       ├── chat.rs          # 对话面板
-│       ├── config.rs        # 配置面板
-│       ├── help.rs          # 帮助面板
-│       ├── logs.rs          # 日志面板
-│       ├── memory.rs        # 记忆面板
-│       └── plugins.rs       # 插件面板
-├── Cargo.toml               # Rust 项目配置
-└── README.md                # 本文件
+│       ├── mod.rs           # Panel module exports
+│       ├── chat.rs          # Chat panel
+│       ├── config.rs        # Configuration panel
+│       ├── help.rs          # Help panel
+│       ├── logs.rs          # Logs panel
+│       ├── memory.rs        # Memory panel
+│       └── plugins.rs       # Plugin panel
+├── Cargo.toml               # Crate manifest (agentrt-tui, binary: agentrt-tui)
+└── README.md                # This file
 ```
 
-## 核心功能
+## Upstream & Downstream Dependencies
 
-### 多面板界面
+### Upstream
 
-| 面板 | 快捷键 | 说明 |
-|------|--------|------|
-| **Chat** | `Esc` | 对话面板，输入与展示智能体回复 |
-| **Help** | `F1` | 帮助面板，显示快捷键说明 |
-| **Config** | `F2` | 配置面板，查看和编辑运行配置 |
-| **Logs** | `F3` | 日志面板，实时查看系统日志 |
-| **Memory** | `F4` | 记忆面板，查看智能体记忆内容 |
-| **Plugins** | `F5` | 插件面板，管理已加载的插件 |
+- **Airymax Rust SDK (`agentrt-rs`)**: Provides the typed `AgentRTClient` and the four nested resource clients used to talk to the runtime.
+- **Runtime**: Connects to a running Airymax / AgentRT instance (`gateway_d` / Gateway HTTP API) over HTTP and JSON-RPC 2.0.
+- **Configuration**: Resolved from CLI flags, then environment variables (`AGENTRT_GATEWAY_URL`, `AGENTRT_API_KEY`), then a `http://localhost:8080` default.
 
-### 操作快捷键
+### Downstream
 
-| 快捷键 | 说明 |
-|--------|------|
-| `Ctrl+C` | 退出程序 |
-| `Esc` | 返回对话面板 |
-| `F1` - `F5` | 切换对应面板 |
-| `Enter` | 提交输入 |
-| `Backspace` | 删除字符 |
-| `↑` / `↓` | 上下滚动 |
-| `PageUp` / `PageDown` | 翻页滚动 |
+- **Developers / operators**: An interactive, at-a-glance view of a running agent, suitable for local development and ops triage.
 
-## 使用说明
+## Panels
 
-### 启动
+| Panel | Shortcut | Description |
+|-------|----------|-------------|
+| **Chat** | `Esc` | Conversation panel: enter prompts and view agent replies |
+| **Help** | `F1` | Help panel: keyboard shortcut reference |
+| **Config** | `F2` | Configuration panel: view and edit runtime config |
+| **Logs** | `F3` | Logs panel: live runtime log stream |
+| **Memory** | `F4` | Memory panel: inspect agent memory contents |
+| **Plugins** | `F5` | Plugins panel: manage loaded plugins |
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+C` | Quit |
+| `Esc` | Return to the Chat panel |
+| `F1`–`F5` | Switch to the corresponding panel |
+| `Enter` | Submit input |
+| `Backspace` | Delete character |
+| `↑` / `↓` | Scroll up / down |
+| `PageUp` / `PageDown` | Page scroll |
+
+## Installation
+
+### From source
 
 ```bash
-# 启动 TUI（连接默认 Gateway）
+cd tui
+cargo build --release
+# Binary: ./target/release/agentrt-tui
+```
+
+**Requirements:** Rust edition 2021 (stable toolchain). Runtime dependencies: `ratatui` 0.28 + `crossterm` 0.28 (TUI framework), `reqwest` 0.12 (HTTP), `tokio` 1 + `tokio-stream` + `futures` (async + streaming), `serde` / `serde_json` (serialization), `clap` 4.5 (argument parsing), `thiserror` / `anyhow` (errors), `chrono`, `unicode-width`.
+
+## Usage
+
+### Launch
+
+```bash
+# Start the TUI (connects to the default Gateway)
 agentrt-tui
 
-# 指定 Gateway 地址和智能体配置
+# Specify Gateway URL and agent config
 agentrt-tui --gateway-url http://localhost:8080 --agent-file agents/main.agent.yaml
 
-# 设置环境变量
+# Or use an environment variable
 export AGENTRT_GATEWAY_URL=http://localhost:8080
 agentrt-tui
 ```
 
-### 对话操作
+### Conversational workflow
 
-1. 启动后在 **Chat** 面板输入消息
-2. 按 `Enter` 提交，智能体实时回复
-3. 使用 `↑`/`↓` 翻阅历史消息
-4. 按 `F1` 查看完整帮助信息
+1. After launch, type a message in the **Chat** panel.
+2. Press `Enter` to submit; the agent streams its reply in real time.
+3. Use `↑` / `↓` to scroll through history.
+4. Press `F1` for the full help reference.
 
-### 面板导航
+### Panel navigation
 
-- 按 `F3` 切换到日志面板，实时监控运行时日志
-- 按 `F4` 切换到记忆面板，查看智能体已存储的记忆
-- 按 `F5` 切换到插件面板，管理插件加载与卸载
-- 按 `Esc` 快速回到对话面板
+- `F3` — switch to the logs panel for a live runtime log stream.
+- `F4` — switch to the memory panel to inspect stored agent memory.
+- `F5` — switch to the plugins panel to load/unload plugins.
+- `Esc` — jump back to the chat panel.
 
-## 依赖关系
-
-| 类别 | 依赖 |
-|------|------|
-| TUI 框架 | ratatui 0.28, crossterm 0.28 |
-| HTTP 客户端 | reqwest 0.12 (json + rustls-tls + stream) |
-| 异步运行时 | tokio 1 (full), tokio-stream 0.1, futures 0.3 |
-| 序列化 | serde 1.0, serde_json 1.0 |
-| CLI 解析 | clap 4.5 (derive + env) |
-| 错误处理 | thiserror 2.0, anyhow 1.0 |
-| 工具 | chrono 0.4, unicode-width 0.1 |
-
-## 构建说明
+## Build & Test
 
 ```bash
-# 构建
 cargo build --release
-
-# 运行
+cargo test
 ./target/release/agentrt-tui
-
-# 确保 AgentRT Gateway 已在运行
+# Ensure the Airymax Gateway is running first.
 ```
 
----
+## Branch Strategy
 
-© 2026 SPHARX Ltd. All Rights Reserved.
+This leaf repository is developed on **`feature/official-hubs-01`**. The aggregating `sdk` management repo stays on `main`.
+
+## License
+
+Dual-licensed under **AGPL v3 + Apache 2.0** (SPDX: `AGPL-3.0-or-later OR Apache-2.0`). See [LICENSE](LICENSE) for full text.
+
+Copyright (c) 2025-2026 **SPHARX Ltd.** All Rights Reserved.
