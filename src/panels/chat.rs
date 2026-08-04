@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
-        .title(" Chat ");
+        .title(" 对话 ");
 
     let inner_area = block.inner(area);
 
@@ -43,73 +43,109 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     for msg in visible_msgs {
-        let (role_style, prefix) = match msg.role {
+        let (role_style, badge, _prefix) = match msg.role {
             MessageRole::User => (
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                "You",
+                Style::default().fg(Color::Green),
+                " 你 ",
+                "User",
             ),
             MessageRole::Agent => (
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Cyan),
+                " 助手 ",
                 "Agent",
             ),
             MessageRole::System => (
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Yellow),
+                " 系统 ",
                 "System",
             ),
             MessageRole::ToolCall => (
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Magenta),
+                " 工具 ",
                 "Tool",
             ),
             MessageRole::ToolResult => (
-                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Blue),
+                " 结果 ",
                 "Result",
             ),
         };
 
-        // Role and timestamp header
+        // 角色徽章 + 时间戳（Claude 风格：徽章 + 窄间距 + 时间）
         lines.push(Line::from(vec![
+            Span::styled(badge, role_style.add_modifier(Modifier::BOLD).bg(Color::Rgb(40, 40, 40))),
+            Span::raw(" "),
             Span::styled(
-                format!("[{}] {}  ", prefix, msg.timestamp),
+                msg.timestamp.clone(),
                 Style::default().fg(Color::DarkGray),
             ),
         ]));
 
-        // Message content (word-wrapped)
-        for content_line in msg.content.lines() {
-            let trimmed = content_line.trim();
-            if trimmed.is_empty() {
-                lines.push(Line::raw(""));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(trimmed, role_style),
-                ]));
+        // 消息内容（word-wrapped，首行缩进 2 空格）
+        // 注意：Span 借用 msg.content（其生命周期覆盖 visible_msgs），
+        // 不可创建局部 String 再引用，否则触发 E0597。
+        if msg.content.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  (empty)", Style::default().fg(Color::DarkGray)),
+            ]));
+        } else {
+            for (i, content_line) in msg.content.lines().enumerate() {
+                let trimmed = content_line.trim_end();
+                if trimmed.is_empty() {
+                    lines.push(Line::raw(""));
+                } else if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled(trimmed, role_style),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("    ", Style::default()),
+                        Span::styled(trimmed, role_style),
+                    ]));
+                }
             }
         }
 
-        // Separator
-        lines.push(Line::raw(""));
+        // 消息分隔线（浅灰虚线，增强可读性）
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "·".repeat(24)),
+            Style::default().fg(Color::DarkGray),
+        )));
     }
 
     if app.messages.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(
-                "  Welcome to AgentRT TUI!",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                "  ╭──────────────────────────────────────────────╮",
+                Style::default().fg(Color::DarkGray),
             ),
         ]));
         lines.push(Line::from(vec![
             Span::styled(
-                "  Type your message and press Enter to begin.",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                "  │  欢迎使用 AirymaxRT 智能体运行底座              │",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
         ]));
         lines.push(Line::from(vec![
             Span::styled(
-                "  Press F1 for help.",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                "  │  直接输入消息，Enter 发送                        │",
+                Style::default().fg(Color::DarkGray),
             ),
         ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  │  对话会被记住（跨会话持久化），F1 查看帮助        │",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  ╰──────────────────────────────────────────────╯",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.push(Line::raw(""));
     }
 
     if app.loading {

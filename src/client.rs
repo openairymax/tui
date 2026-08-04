@@ -38,9 +38,10 @@ impl GatewayClient {
         debug!("GET {}", url);
         let resp = self.http.get(&url).send().await?;
         let elapsed = start.elapsed();
+        let status = resp.status();
         let body = resp.text().await?;
         debug!("← health {} ({}ms, {} bytes)",
-              resp.status(), elapsed.as_millis(), body.len());
+              status, elapsed.as_millis(), body.len());
         serde_json::from_str(&body).context("Failed to parse health response")
     }
 

@@ -17,7 +17,10 @@
 
 mod app;
 mod client;
+mod gccp;
+mod memory;
 mod panels;
+mod skills;
 mod ui;
 
 use anyhow::Result;
@@ -127,7 +130,7 @@ async fn main() {
     }
     info!("AgentRT TUI shutdown complete");
 
-    if let Err(e) = tui_result {
+    if let Err(_e) = tui_result {
         std::process::exit(1);
     }
 }
@@ -231,6 +234,11 @@ async fn run_app<B: Backend>(
                     app.toggle_panel(ActivePanel::Plugins);
                 }
                 KeyCode::Enter => {
+                    // Alt+Enter 换行（多行输入），Enter 发送
+                    if key.modifiers.contains(event::KeyModifiers::ALT) {
+                        app.input.push('\n');
+                        continue;
+                    }
                     debug!("User submitted input: '{}' ({} chars)",
                            truncate_str(&app.input, 80), app.input.len());
                     if let Err(e) = app.submit_input().await {
