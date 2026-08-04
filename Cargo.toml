@@ -11,6 +11,12 @@ authors = ["SPHARX Ltd."]
 name = "agentrt-tui"
 path = "src/main.rs"
 
+[features]
+default = []
+# 启用 MemoryRovol 商业记忆库 FFI（需先构建 products/memoryrovol 并提供
+# MEMORYROVOL_LIB 环境变量指向 libagentrt_memoryrovol.a）
+memoryrovol = ["dep:libc"]
+
 [dependencies]
 # TUI framework
 ratatui = "0.28"
@@ -46,3 +52,10 @@ futures = "0.3"
 
 # Terminal size detection
 unicode-width = "0.1"
+
+# C FFI（仅 memoryrovol feature 启用时使用）
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+# 记忆模块单测：临时目录
+tempfile = "3"

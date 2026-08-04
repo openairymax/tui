@@ -28,6 +28,7 @@ use ratatui::{
 };
 
 use crate::app::{ActivePanel, App};
+use crate::gccp::FlowPhase;
 use crate::panels;
 
 /// Main render function. Called on each frame.
@@ -80,7 +81,10 @@ fn render_title_bar(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let title = Line::from(vec![
-        Span::styled(" AgentRT TUI ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " AirymaxRT 智能体运行底座 ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!(" v{} ", version), Style::default().fg(Color::DarkGray)),
         Span::raw("| "),
         Span::styled(&app.agent_file, Style::default().fg(Color::White)),
@@ -104,8 +108,27 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("A2A: ✗", Style::default().fg(Color::DarkGray))
     };
 
+    // 任务流阶段徽章：对话 / 任务事实确认（GCCP）/ 任务流程图确认（GRAD）/ 任务集
+    let (mode_label, mode_bg) = match app.flow_phase {
+        FlowPhase::Chat => (" 对话 ", Color::Green),
+        FlowPhase::GccpRound1 | FlowPhase::GccpRound2 | FlowPhase::GccpRound3 => {
+            (" 任务事实确认 ", Color::Blue)
+        }
+        FlowPhase::GradConfirm => (" 任务流程图确认 ", Color::Magenta),
+        FlowPhase::Executing => (" 任务集 ", Color::Yellow),
+    };
+    let mode_badge =
+        Span::styled(mode_label, Style::default().fg(Color::Black).bg(mode_bg));
+
     let status_line = Line::from(vec![
         Span::raw(" "),
+        mode_badge,
+        Span::raw(" "),
+        Span::styled(
+            format!("Skills: {} ", app.skills.len()),
+            Style::default().fg(Color::Green),
+        ),
+        Span::raw("| "),
         Span::styled(
             format!("Turn: {} ", app.turn),
             Style::default().fg(Color::Cyan),
@@ -144,7 +167,8 @@ fn render_input_area(f: &mut Frame, area: Rect, app: &App) {
     let prompt = if app.loading {
         "⏳ Waiting for response..."
     } else {
-        "> "
+        // GCCP/GRAD 阶段显示作答引导
+        app.flow_phase.input_hint()
     };
 
     let input_text = format!("{}{}", prompt, app.input);
