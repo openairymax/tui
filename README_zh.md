@@ -8,7 +8,7 @@
 
 > [Airymax](https://atomgit.com/openairymax/airymaxhub) AI 智能体运行时平台的官方终端用户界面。
 > [sdk](https://atomgit.com/openairymax/sdk) 管理仓聚合的叶子仓之一。
-> 基于 Airymax Rust SDK（`agentrt-rs`）构建。
+> 独立 Rust 二进制 —— 通过 HTTP 与 Airymax Gateway 通信，不链接各语言 SDK（无 `agentrt-rs` 依赖）。
 
 ---
 
@@ -16,19 +16,19 @@
 
 **Airymax TUI**（`agentrt-tui`）是用 Rust 构建的终端用户界面，为开发者和运维人员提供可视化、交互式驱动 Airymax 运行时的方式。它基于 `ratatui` 与 `crossterm` 构建，提供多面板切换、实时对话、日志监控、记忆查看、配置编辑和插件管理 —— 全部在单个终端窗口内完成。
 
-与 CLI 一样，TUI 是一等**运行时租户**：通过 HTTP 与 Airymax Gateway 通信，内部驱动 `agentrt-rs` 提供的相同双层 SDK 架构（Cognition / Safety / Tool / Chat）。
+与 CLI 一样，TUI 是一等**运行时租户**：通过 HTTP（JSON-RPC 2.0）与 Airymax Gateway 通信，使用自身的 `reqwest` 客户端。它不依赖、也不链接各语言 SDK（`agentrt-rs` 等）。
 
-## 消费的双层 API 架构
+## 运行时通信
 
-TUI 是 Airymax Rust SDK 的消费者。其面板将用户操作转换为对 `AgentRTClient` 暴露的四个内嵌资源客户端的调用：
+TUI 通过 Gateway HTTP API（JSON-RPC 2.0）与运行时通信，直接使用自己的 HTTP 客户端（`src/client.rs`，基于 `reqwest`）。它不包装、也不消费语言 SDK：`Cargo.toml` 中没有 `agentrt-rs` 依赖。
 
 ```
 agentrt-tui <panel>
-   └── AgentRTClient（来自 agentrt-rs）
-       ├── CognitionClient   # 对话面板：任务提交 / 推理
-       ├── SafetyClient      # 审计 / 策略视图
-       ├── ToolClient        # 插件管理面板
-       └── ChatClient        # 对话面板：流式响应
+   └── src/client.rs — reqwest HTTP 客户端
+       ├── chat    → 对话 / 任务提交
+       ├── memory  → 记忆查看
+       ├── logs    → 运行时日志流
+       └── plugins → 插件管理
 ```
 
 ## 目录结构
@@ -56,8 +56,7 @@ tui/
 
 ### 上游
 
-- **Airymax Rust SDK（`agentrt-rs`）**：提供与运行时通信的类型化 `AgentRTClient` 与四个内嵌资源客户端。
-- **运行时**：通过 HTTP 和 JSON-RPC 2.0 连接到运行中的 Airymax / AgentRT 实例（`gateway_d` / Gateway HTTP API）。
+- **运行时**：通过 HTTP 和 JSON-RPC 2.0 连接到运行中的 Airymax / AgentRT 实例（`gateway_d` / Gateway HTTP API）。TUI 直接使用 `reqwest`，**无 `agentrt-rs` 依赖**（见 `Cargo.toml`）。
 - **配置**：依次从 CLI 标志、环境变量（`AGENTRT_GATEWAY_URL`、`AGENTRT_API_KEY`）、默认值 `http://localhost:8080` 解析。
 
 ### 下游

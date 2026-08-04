@@ -8,7 +8,7 @@
 
 > Official terminal user interface for the [Airymax](https://atomgit.com/openairymax/airymaxhub) AI Agent Runtime Platform.
 > One of the leaf repositories aggregated by the [sdk](https://atomgit.com/openairymax/sdk) management repo.
-> Built on top of the Airymax Rust SDK (`agentrt-rs`).
+> Standalone Rust binary — talks to the Airymax Gateway over HTTP and does not link the language SDKs (no `agentrt-rs` dependency).
 
 ---
 
@@ -16,19 +16,19 @@
 
 The **Airymax TUI** (`agentrt-tui`) is a Rust-built terminal user interface that gives developers and operators a visual, interactive way to drive the Airymax runtime. Built with `ratatui` and `crossterm`, it offers multi-panel navigation, real-time chat, log monitoring, memory inspection, configuration editing, and plugin management — all from a single terminal window.
 
-Like the CLI, the TUI is a first-class **runtime tenant**: it talks to the Airymax Gateway over HTTP and internally drives the same double-layer SDK architecture (Cognition / Safety / Tool / Chat) provided by `agentrt-rs`.
+Like the CLI, the TUI is a first-class **runtime tenant**: it talks to the Airymax Gateway over HTTP (JSON-RPC 2.0) using its own `reqwest` client. It does not depend on or link the language SDKs (`agentrt-rs` etc.).
 
-## Double-Layer API Architecture (consumed)
+## Runtime Communication
 
-The TUI is a consumer of the Airymax Rust SDK. Its panels translate user actions into calls against the four nested resource clients exposed by `AgentRTClient`:
+The TUI talks to the runtime over the Gateway HTTP API (JSON-RPC 2.0) directly from its own HTTP client (`src/client.rs`, built on `reqwest`). It does not wrap or consume the language SDKs: there is no `agentrt-rs` dependency in `Cargo.toml`.
 
 ```
 agentrt-tui <panel>
-   └── AgentRTClient (from agentrt-rs)
-       ├── CognitionClient   # Chat panel: task submission / inference
-       ├── SafetyClient      # audit / policy views
-       ├── ToolClient        # plugin management panel
-       └── ChatClient        # Chat panel: streaming responses
+   └── src/client.rs — reqwest HTTP client
+       ├── chat    → conversation / task submission
+       ├── memory  → memory inspection
+       ├── logs    → runtime log stream
+       └── plugins → plugin management
 ```
 
 ## Directory Structure
@@ -56,8 +56,7 @@ tui/
 
 ### Upstream
 
-- **Airymax Rust SDK (`agentrt-rs`)**: Provides the typed `AgentRTClient` and the four nested resource clients used to talk to the runtime.
-- **Runtime**: Connects to a running Airymax / AgentRT instance (`gateway_d` / Gateway HTTP API) over HTTP and JSON-RPC 2.0.
+- **Runtime**: Connects to a running Airymax / AgentRT instance (`gateway_d` / Gateway HTTP API) over HTTP and JSON-RPC 2.0. The TUI uses `reqwest` directly and has **no `agentrt-rs` dependency** (see `Cargo.toml`).
 - **Configuration**: Resolved from CLI flags, then environment variables (`AGENTRT_GATEWAY_URL`, `AGENTRT_API_KEY`), then a `http://localhost:8080` default.
 
 ### Downstream
