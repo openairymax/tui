@@ -9,23 +9,27 @@
 // Communicates with the gateway via HTTP API for all runtime operations.
 //
 // Logging:
-//   All diagnostic logs go to stderr (via env_logger) so they don't
-//   interfere with the TUI rendering on stdout. Use:
-//     RUST_LOG=debug agentrt-tui          # verbose
-//     RUST_LOG=info agentrt-tui           # normal (default)
-//     RUST_LOG=agentrt_tui=debug agentrt-tui  # only our logs
+//   TUI 使用全屏渲染，stderr 日志会直接污染画面（alt screen 共用终端）。
+//   因此详细日志写入文件（$AIRY_HOME/logs/agentrt-tui.log，可 RUST_LOG 调级）；
+//   用户可见的关键错误在 TUI 启动前/退出后用 eprintln 直接输出。
+//     RUST_LOG=debug agentrt-tui          # verbose（写入日志文件）
+//     AGENTRT_TUI_LOG=/tmp/tui.log agentrt-tui  # 自定义日志路径
 
 mod app;
 mod client;
 mod gccp;
+mod markdown;
 mod memory;
 mod panels;
 mod skills;
+mod theme;
 mod ui;
+mod wizard;
 
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
+    cursor::Hide,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -33,10 +37,11 @@ use crossterm::{
 use log::{debug, error, info, warn};
 use ratatui::prelude::*;
 use std::io;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::app::{ActivePanel, App};
 use crate::client::GatewayClient;
+use crate::gccp::TaskControl;
 
 /// AgentRT Terminal User Interface
 #[derive(Parser)]
@@ -57,13 +62,20 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    // ── Phase 0: Initialize logging immediately ──
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    )
-    .format_timestamp_millis()
-    .target(env_logger::Target::Stderr) // don't trash the TUI
-    .init();
+    // ── Phase 0: Initialize logging（写入文件，避免污染 TUI 画面）──
+    if let Err(e) = init_file_logger() {
+        // 日志文件不可用时退回 stderr（仅启动期，进入 TUI 前）
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("warn")
+        )
+        .format_timestamp_millis()
+        .target(env_logger::Target::Stderr)
+        .init();
+        eprintln!("⚠ 日志文件不可用（{}），回退 stderr（warn 级）", e);
+    }
+
+    // 主题初始化（AIRY_TUI_THEME / COLORFGBG 自动适配浅色终端）
+    theme::init_from_env();
 
     info!("══════════════════════════════════════════");
     info!("  AgentRT TUI v{} starting", env!("CARGO_PKG_VERSION"));
@@ -83,7 +95,9 @@ async fn main() {
               cli.agent_file);
     }
 
-    // ── Phase 2: Gateway connection ──
+    // ── Phase 2: Gateway client ──
+    // 连接探测在 run_tui 内统一完成（health_check 2s 快速失败），
+    // 避免启动阶段重复检查、离线时阻塞 UI 首帧。
     info!("Connecting to gateway at {}...", cli.gateway_url);
     let gateway = match GatewayClient::new(&cli.gateway_url) {
         Ok(gw) => {
@@ -98,20 +112,6 @@ async fn main() {
             std::process::exit(1);
         }
     };
-
-    // Probe gateway health
-    match gateway.health_check().await {
-        Ok(h) => {
-            info!("Gateway health check: status={}, version={:?}",
-                  h.status, h.version);
-            info!("Gateway connection established in {:?}", start_time.elapsed());
-        }
-        Err(e) => {
-            warn!("Gateway health check failed: {}", e);
-            warn!("TUI will start but commands won't work until gateway is up.");
-            warn!("  → Start gateway:  docker compose up -d  or  agentrt-gateway_d");
-        }
-    }
 
     // ── Phase 3: Start TUI ──
     info!("Setting up terminal (raw mode + alternate screen)...");
@@ -135,6 +135,37 @@ async fn main() {
     }
 }
 
+/// 初始化文件日志（避免 stderr 污染全屏 TUI）。
+///
+/// 路径优先级：`AGENTRT_TUI_LOG` → `$AIRY_HOME/logs/agentrt-tui.log` →
+/// `$HOME/.airymaxrt/logs/agentrt-tui.log`。
+fn init_file_logger() -> Result<(), Box<dyn std::error::Error>> {
+    let path = if let Ok(p) = std::env::var("AGENTRT_TUI_LOG") {
+        p
+    } else {
+        let home = std::env::var("AIRY_HOME").or_else(|_| {
+            std::env::var("HOME").map(|h| format!("{}/.airymaxrt", h))
+        })?;
+        format!("{}/logs/agentrt-tui.log", home)
+    };
+
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info")
+    )
+    .format_timestamp_millis()
+    .target(env_logger::Target::Pipe(Box::new(file)))
+    .init();
+    Ok(())
+}
+
 async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     // Setup terminal
     enable_raw_mode()
@@ -146,7 +177,7 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
         })?;
 
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide)
         .map_err(|e| {
             error!("Failed to enter alternate screen: {}", e);
             e
@@ -193,8 +224,17 @@ async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
+    // 空闲帧率：100ms 一帧。呼吸灯光标、宿主机时间、thinking 动效都依赖
+    // 持续重绘——阻塞式 event::read() 会让画面在无按键时静止。
+    let idle_frame = Duration::from_millis(100);
+
     loop {
         terminal.draw(|f| ui::render(f, app))?;
+
+        // 无按键事件时定时重绘（保持动态视觉），有事件则立即处理
+        if !event::poll(idle_frame)? {
+            continue;
+        }
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
@@ -208,6 +248,50 @@ async fn run_app<B: Backend>(
                         app.shutdown().await?;
                         return Ok(());
                     }
+                // Ctrl+X：人工中止当前后台请求（任务执行/对话等待）
+                KeyCode::Char('x') | KeyCode::Char('X')
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        if app.is_busy() {
+                            info!("User pressed Ctrl+X, aborting pending request");
+                            app.abort_task();
+                        }
+                    }
+                // Ctrl+Z：暂停/恢复后台请求等待（请求继续在网关执行）
+                KeyCode::Char('z') | KeyCode::Char('Z')
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        if app.is_busy() {
+                            info!("User pressed Ctrl+Z, toggling pause");
+                            if app.task_control == TaskControl::Paused {
+                                app.resume_task();
+                            } else {
+                                app.pause_task();
+                            }
+                        }
+                    }
+                // 首次启动向导激活：按键全部交给向导
+                // （↑↓ 移动 · 1-3 直达 · Enter 确认 · Esc 跳过）
+                _ if app.wizard.active => {
+                    if app.wizard.handle_key(&key) {
+                        // 向导完成：手动配置模型 → 打开配置面板；跳过 → 留在对话
+                        if app.wizard.result.is_some_and(|r| r.configured) {
+                            app.active_panel = ActivePanel::Config;
+                            app.add_message(
+                                app::MessageRole::System,
+                                "已选择「手动配置模型」。请编辑模型配置（model.yaml）\
+                                 并设置对应 API Key 环境变量，或按 F2 查看配置。"
+                                    .to_string(),
+                            );
+                        } else {
+                            app.add_message(
+                                app::MessageRole::System,
+                                "欢迎使用 AirymaxRT！已跳过模型配置，\
+                                 输入 /hiairy 可随时重新打开首次启动向导。"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    continue;
+                }
                 KeyCode::Esc
                     if app.active_panel != ActivePanel::Chat => {
                         debug!("Panel: Esc → return to Chat");
@@ -239,15 +323,50 @@ async fn run_app<B: Backend>(
                         app.input.push('\n');
                         continue;
                     }
+                    let input = std::mem::take(&mut app.input);
                     debug!("User submitted input: '{}' ({} chars)",
-                           truncate_str(&app.input, 80), app.input.len());
-                    if let Err(e) = app.submit_input().await {
+                           truncate_str(&input, 80), input.len());
+                    if let Err(e) = app.submit_input(&input) {
                         warn!("submit_input error: {}", e);
                         app.add_message(
                             app::MessageRole::System,
                             format!("Error: {}", e),
                         );
                     }
+                    // 后台 LLM 请求进行中 → 每 50ms 渲染 + 轮询：
+                    //   - thinking... 动效（chat.rs / ui.rs 按时间取帧，50ms 一帧更丝滑）
+                    //   - 回复到达后自动上屏（add_message 自动回到底部）
+                    //   - Ctrl+X 中止 / Ctrl+Z 暂停（等待期间可人工控制）
+                    while app.is_busy() {
+                        terminal.draw(|f| ui::render(f, app))?;
+                        // 等待期间轮询按键：Ctrl+X 中止、Ctrl+Z 暂停/恢复
+                        if event::poll(Duration::ZERO)? {
+                            if let Event::Key(key) = event::read()? {
+                                if key.kind == KeyEventKind::Press {
+                                    if (key.code == KeyCode::Char('x')
+                                        || key.code == KeyCode::Char('X'))
+                                        && key.modifiers.contains(event::KeyModifiers::CONTROL)
+                                    {
+                                        app.abort_task();
+                                    } else if (key.code == KeyCode::Char('z')
+                                        || key.code == KeyCode::Char('Z'))
+                                        && key.modifiers.contains(event::KeyModifiers::CONTROL)
+                                    {
+                                        if app.task_control == TaskControl::Paused {
+                                            app.resume_task();
+                                        } else {
+                                            app.pause_task();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        app.poll_pending();
+                        if app.is_busy() {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    }
+                    terminal.draw(|f| ui::render(f, app))?;
                 }
                 KeyCode::Backspace => {
                     app.input.pop();
@@ -256,16 +375,30 @@ async fn run_app<B: Backend>(
                     app.input.push(c);
                 }
                 KeyCode::Up => {
-                    app.scroll_up();
+                    // Alt+↑ 浏览输入历史；普通 ↑ 滚动对话
+                    if key.modifiers.contains(event::KeyModifiers::ALT) {
+                        app.history_prev();
+                    } else {
+                        app.scroll_up();
+                    }
                 }
                 KeyCode::Down => {
-                    app.scroll_down();
+                    // Alt+↓ 浏览输入历史（下一条）；普通 ↓ 滚动对话
+                    if key.modifiers.contains(event::KeyModifiers::ALT) {
+                        app.history_next();
+                    } else {
+                        app.scroll_down();
+                    }
                 }
                 KeyCode::PageUp => {
                     app.scroll_page_up();
                 }
                 KeyCode::PageDown => {
                     app.scroll_page_down();
+                }
+                KeyCode::End => {
+                    // 一键回到底部（最新消息）
+                    app.scroll_offset = 0;
                 }
                 _ => {}
             }
