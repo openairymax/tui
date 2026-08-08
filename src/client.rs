@@ -203,6 +203,131 @@ impl GatewayClient {
         Ok(())
     }
 
+    /// 列出 tool_d 当前 pending 审批请求（tool.pending，Claude Code 风格 permission prompt）。
+    ///
+    /// 返回待人工决议的请求列表（request_id/tool/agent/params）。gateway 转发
+    /// tool_d.pending 的 result（内嵌 JSON 字符串或 {"pending":[...]}），此处
+    /// 兼容两种形态；查询失败返回空列表（不阻断对话，审批交互尽力而为）。
+    pub async fn list_pending_approvals(&self) -> Result<Vec<PendingApproval>> {
+        let url = format!("{}/", self.base_url);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tool.pending",
+            "params": {},
+        });
+        let resp = self.http.post(&url).json(&request).send().await?;
+        let body = resp.text().await?;
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .context("Failed to parse pending approvals response")?;
+        if json.get("error").is_some() {
+            debug!("tool.pending returned error: {}", body);
+            return Ok(Vec::new());
+        }
+        let Some(result) = json.get("result") else {
+            return Ok(Vec::new());
+        };
+        // 形态 1: {"pending": [...]}
+        if let Some(arr) = result.get("pending").and_then(|v| v.as_array()) {
+            return Ok(serde_json::from_value(serde_json::Value::Array(arr.clone()))
+                .unwrap_or_default());
+        }
+        // 形态 2: result 本身是内嵌 JSON 字符串
+        if let Some(s) = result.as_str() {
+            if let Ok(inner) = serde_json::from_str::<serde_json::Value>(s) {
+                if let Some(arr) = inner.get("pending").and_then(|v| v.as_array()) {
+                    return Ok(serde_json::from_value(serde_json::Value::Array(arr.clone()))
+                        .unwrap_or_default());
+                }
+                if let Ok(list) = serde_json::from_value::<Vec<PendingApproval>>(inner) {
+                    return Ok(list);
+                }
+            }
+        }
+        // 形态 3: result 直接是数组
+        if let Some(arr) = result.as_array() {
+            return Ok(serde_json::from_value(serde_json::Value::Array(arr.clone()))
+                .unwrap_or_default());
+        }
+        Ok(Vec::new())
+    }
+
+    /// 决议一个 pending 审批请求（tool.approve）。
+    ///
+    /// `decision` ∈ {"allow", "always", "deny"}。成功返回 true；
+    /// gateway 返回 error（如 request_id 已决议/不存在）时返回 false。
+    pub async fn resolve_approval(&self, request_id: &str, decision: &str) -> Result<bool> {
+        let url = format!("{}/", self.base_url);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tool.approve",
+            "params": { "request_id": request_id, "decision": decision },
+        });
+        let resp = self.http.post(&url).json(&request).send().await?;
+        let body = resp.text().await?;
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .context("Failed to parse approve response")?;
+        if json.get("error").is_some() {
+            debug!("tool.approve error: {}", body);
+            return Ok(false);
+        }
+        info!("tool.approve OK (request_id={}, decision={})", request_id, decision);
+        Ok(true)
+    }
+
+    /// SSE 流式对话：POST /api/v1/chat/stream，逐块回调 `on_chunk`。
+    ///
+    /// gateway 端（http_gateway_routes.c）转发 llm_d complete_stream：
+    /// 响应为 `data: <增量块>\n\n` SSE 事件流，`data: [DONE]` 收尾。
+    /// 返回累积的完整回复文本。
+    ///
+    /// `messages` 为完整 OpenAI messages 数组（多轮上下文），必须非空。
+    /// `model` 为空时省略：gateway 回落 deepseek-v4-flash。
+    pub async fn stream_chat<F>(
+        &self,
+        messages: serde_json::Value,
+        model: Option<&str>,
+        mut on_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str),
+    {
+        let url = format!("{}/api/v1/chat/stream", self.base_url);
+        let mut params = serde_json::json!({ "messages": messages });
+        if let Some(m) = model {
+            if !m.is_empty() {
+                params["model"] = serde_json::Value::String(m.to_string());
+            }
+        }
+        info!("POST {} (stream, msgs_len={})", url, params["messages"].as_array().map(|a| a.len()).unwrap_or(0));
+        let mut resp = self.http.post(&url).json(&params).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await?;
+            anyhow::bail!("Stream endpoint HTTP {}: {}", status.as_u16(), body);
+        }
+
+        let mut buf = String::new();
+        let mut full = String::new();
+        while let Some(chunk) = resp.chunk().await? {
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            // 按 SSE 事件分隔符 \n\n 切分完整事件
+            while let Some(pos) = buf.find("\n\n") {
+                let evt = buf[..pos].to_string();
+                buf.drain(..pos + 2);
+                let Some(data) = evt.strip_prefix("data:") else { continue };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    return Ok(full);
+                }
+                full.push_str(data);
+                on_chunk(data);
+            }
+        }
+        Ok(full)
+    }
+
     #[allow(dead_code)]
     pub async fn get_logs(&self, lines: u32) -> Result<Vec<LogEntry>> {
         let url = format!("{}/api/v1/logs?lines={}", self.base_url, lines);
@@ -262,6 +387,20 @@ pub struct ToolTrace {
     pub arguments: String,
     pub result: String,
     pub ok: Option<i64>,
+}
+
+/// 待人工决议的工具审批请求（tool.pending / tool.approve）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingApproval {
+    pub request_id: String,
+    #[serde(default)]
+    pub tool: String,
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub params: String,
+    #[serde(default)]
+    pub created_at: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

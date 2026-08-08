@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::client::{GatewayClient, RunResponse};
+use crate::client::{GatewayClient, PendingApproval, RunResponse};
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
 use crate::memory::{self, ConversationMemory};
 use crate::skills::{self, SkillStore};
@@ -123,6 +123,16 @@ pub struct App {
     input_history: Vec<String>,
     /// 输入历史浏览位置（None = 未在浏览，回到手输状态）
     history_pos: Option<usize>,
+    /// 流式输出：当前正在流式追加的 Agent 回复文本（chat.rs 增量渲染）
+    pub streaming_text: String,
+    /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
+    pub approvals: Vec<PendingApproval>,
+    /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
+    pub project_context: String,
+    /// 审批轮询节流（上次查询 tool.pending 的时刻）
+    last_approval_poll: Instant,
+    /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
+    approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Vec<PendingApproval>>>,
 }
 
 /// 后台 LLM 请求的类型（决定结果如何应用）。
@@ -130,6 +140,8 @@ pub struct App {
 enum PendingKind {
     /// 普通对话 / 任务执行轮（原 chat_round）
     ChatRound { input: String },
+    /// 流式对话轮（SSE 增量渲染，普通对话走此路径）
+    StreamRound { input: String },
     /// GCCP 提问轮（原 ask_gccp_round）
     AskGccp { round: u8 },
     /// 五问齐备 → 生成 GRAD 任务流程图（原 gccp_round3 网络部分）
@@ -157,6 +169,8 @@ struct PendingTurn {
     task: Option<tokio::task::JoinHandle<()>>,
     /// 客户端预分配会话 ID（Ctrl+X 时调用 gateway agent.cancel 中止运行中请求）
     session_id: String,
+    /// 流式输出接收端（StreamRound）：SSE 增量块（option：非流式请求为 None）
+    stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 }
 
 /// 后台请求的结果载荷（LLM 调用结果 / 连接检查结果）。
@@ -208,7 +222,73 @@ impl App {
             task_control: TaskControl::Running,
             input_history: Vec::with_capacity(16),
             history_pos: None,
+            streaming_text: String::new(),
+            approvals: Vec::new(),
+            project_context: String::new(),
+            last_approval_poll: Instant::now(),
+            approval_poll_rx: None,
         }
+    }
+
+    /// 加载项目上下文文件（AGENTS.md / CLAUDE.md 等价物）。
+    ///
+    /// 从 start_dir（默认 cwd）向上逐级查找，首个命中即注入。与
+    /// openlab/core/project_context.py 的行为对齐（跨进程一致的约定来源）。
+    /// 返回是否找到。
+    pub fn load_project_context(&mut self, start_dir: Option<&std::path::Path>) -> bool {
+        let mut dir = start_dir
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        loop {
+            for name in ["AGENTS.md", "agents.md", "CLAUDE.md", ".airymax/AGENTS.md"] {
+                let p = dir.join(name);
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    if !content.trim().is_empty() {
+                        self.project_context =
+                            format!("项目约定（{}）:\n{}", p.display(), content.trim());
+                        log::info!("project context loaded from {}", p.display());
+                        return true;
+                    }
+                }
+            }
+            // .git 目录视为项目根，检查后停止（与 Python 侧一致）
+            if dir.join(".git").is_dir() || !dir.pop() {
+                break;
+            }
+        }
+        log::info!("project context: no AGENTS.md/CLAUDE.md found");
+        false
+    }
+
+    /// 会话恢复（--resume）：把记忆库最近的对话注入消息列表，还原上次会话。
+    ///
+    /// 对标 Codex sessions / Claude /resume：恢复最近 user/assistant 轮次
+    /// （上限 30 条），新会话开篇即可看到上次上下文。
+    pub fn resume_session(&mut self) -> usize {
+        let recent = self.memory.recent(30);
+        if recent.is_empty() {
+            self.add_message(
+                MessageRole::System,
+                "没有可恢复的历史会话（--resume 未找到记忆）。".to_string(),
+            );
+            return 0;
+        }
+        let mut count = 0;
+        for rec in recent.iter().rev() {
+            let role = match rec.role.as_str() {
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Agent,
+                _ => continue,
+            };
+            self.add_message(role, rec.content.clone());
+            count += 1;
+        }
+        self.add_message(
+            MessageRole::System,
+            format!("已恢复上次会话（{} 条历史）。继续对话或发送新消息。", count),
+        );
+        log::info!("resume_session: restored {} messages", count);
+        count
     }
 
     /// 重新打开首次启动向导（/hiairy 命令触发）。
@@ -411,21 +491,48 @@ impl App {
     }
 
     /// 普通对话轮次：发送增强 prompt，并按 LLM 判定的模式切换任务流。
+    ///
+    /// 普通对话（未连接时先检查；已连接走流式 SSE 增量渲染，Claude 风格）。
+    /// 任务执行轮（flow_phase == Executing）走 agent 编排路径（非流式）。
     fn chat_round(&mut self, input: &str) -> Result<()> {
         self.turn += 1;
 
-        // 构造增强 prompt：系统指令（LLM 判定任务集）+ 技能 + 记忆
+        // 构造增强 prompt：系统指令（LLM 判定任务集）+ 技能 + 记忆 + 项目上下文
         let prompt = self.build_context_prompt(input);
         // 完整对话历史（OpenAI messages 数组，末条为增强 prompt）：
         // 网络层由此获得真实多轮上下文（M1/M2 修复），无需再挤进 prompt 文本。
         let history = self.build_history_messages(&prompt);
-        self.dispatch_with_agent(
-            PendingKind::ChatRound { input: input.to_string() },
-            &prompt,
-            None,
-            history,
+
+        if !self.connected {
+            self.dispatch_with_agent(
+                PendingKind::ChatRound { input: input.to_string() },
+                &prompt,
+                None,
+                history,
+            );
+            return Ok(());
+        }
+
+        // 普通对话走流式：SSE 增量渲染（Claude 风格）；任务执行轮保持编排链路
+        let messages = history.unwrap_or_else(|| {
+            serde_json::json!([{ "role": "user", "content": prompt }])
+        });
+        self.start_stream_pending(
+            PendingKind::StreamRound { input: input.to_string() },
+            messages,
         );
         Ok(())
+    }
+
+    /// 应用流式对话轮的最终结果（流式结束后按普通对话相同逻辑处理）。
+    fn apply_stream_result(&mut self, input: String, res: Result<RunResponse>) {
+        // 流式结束：把已渲染的 streaming_text 落为正式消息（防止与 result 双写）
+        if !self.streaming_text.is_empty() {
+            // 内容已实时渲染在占位消息上；此处仅清理占位，避免重复上屏
+            self.streaming_text.clear();
+        }
+        // 复用普通对话的结果应用逻辑（模式判定/技能/记忆/GCCP 入口）
+        self.apply_chat_result(input, res);
     }
 
     /// 应用普通对话轮的 LLM 结果（按 LLM 判定的模式切换任务流）。
@@ -875,7 +982,50 @@ impl App {
             kind,
             task: Some(task),
             session_id,
+            stream_rx: None,
         });
+    }
+
+    /// 发起流式对话请求（普通对话路径）：SSE 增量块经 channel 逐块渲染，
+    /// 完整结果经 oneshot 回传后按 ChatRound 相同逻辑应用。
+    fn start_stream_pending(&mut self, kind: PendingKind, messages: serde_json::Value) {
+        let gateway = self.gateway.clone();
+        let model = if self.model.is_empty() {
+            None
+        } else {
+            Some(self.model.clone())
+        };
+        let session_id = self.new_session_id();
+        // 流式通道：tokio 任务把 SSE 块逐块送进 mpsc，主循环 poll_pending 消费
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = gateway
+                .stream_chat(messages, model.as_deref(), |chunk| {
+                    let _ = stream_tx.send(chunk.to_string());
+                })
+                .await;
+            let _ = tx.send(PendingOutcome::Run(result.map(|full| RunResponse {
+                session_id: String::new(),
+                response: full,
+                tokens_used: None,
+                cost_usd: None,
+                thinking: None,
+                tool_trace: None,
+            })));
+        });
+        log::info!("start_stream_pending: 流式请求已发起（session={}）", session_id);
+        self.loading = true;
+        self.set_task_control(TaskControl::Running);
+        self.pending = Some(PendingTurn {
+            rx,
+            kind,
+            task: Some(task),
+            session_id,
+            stream_rx: Some(stream_rx),
+        });
+        // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
+        self.streaming_text.clear();
     }
 
     /// 未连接时的连接检查：后台执行健康检查，通过后继续真实请求。
@@ -909,6 +1059,7 @@ impl App {
             },
             task: Some(task),
             session_id: String::new(),
+            stream_rx: None,
         });
     }
 
@@ -927,13 +1078,29 @@ impl App {
     /// 主循环轮询：后台请求完成则应用结果（返回是否有待办请求，供渲染循环判断）。
     ///
     /// 用户暂停（Ctrl+Z）期间不消费结果——请求继续在网关执行，恢复后结果照常应用。
+    /// 流式请求（StreamRound）：先消费 mpsc 增量块实时追加到 streaming_text，
+    /// 再检查 oneshot 完整结果（结束信号）。
     pub fn poll_pending(&mut self) -> bool {
         if self.task_control == TaskControl::Paused {
             return true;
         }
+        // 审批轮询：请求在途时查询 tool.pending（在借用 self.pending 前调用，
+        // 且 poll_approvals 内部自判 pending 是否存在并做 1.5s 节流）
+        self.poll_approvals();
         let Some(p) = &mut self.pending else {
             return false;
         };
+        // ── 流式增量消费：SSE 块 → streaming_text（chat.rs 逐帧渲染）──
+        if let Some(stream_rx) = &mut p.stream_rx {
+            let mut got = false;
+            while let Ok(chunk) = stream_rx.try_recv() {
+                got = true;
+                self.streaming_text.push_str(&chunk);
+            }
+            if got {
+                log::trace!("stream chunk: total={} chars", self.streaming_text.len());
+            }
+        }
         let outcome = match p.rx.try_recv() {
             Ok(o) => o,
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return true,
@@ -949,6 +1116,93 @@ impl App {
         log::info!("poll_pending: 消费后台请求结果（kind={:?}）", kind);
         self.apply_result(kind, outcome);
         self.pending.is_some()
+    }
+
+    /// 审批轮询：后台请求进行中时查询 tool_d pending 审批列表。
+    ///
+    /// 被静态审批拒绝（如 shell_run）的工具会阻塞等待 tool.approve 决议
+    /// （AIRY_TOOL_APPROVAL_MODE=interactive）。此处轮询工具侧 pending，
+    /// 有新请求则上屏提示用户按 a/A/n 决议（Claude Code 风格 permission prompt）。
+    fn poll_approvals(&mut self) {
+        // 仅当后台请求进行中（工具执行可能正在等待审批）
+        if self.pending.is_none() {
+            return;
+        }
+        // 消费在途轮询结果（上次 spawn 的异步查询）
+        if let Some(mut rx) = self.approval_poll_rx.take() {
+            match rx.try_recv() {
+                Ok(pending_list) => {
+                    // 新请求：去重后上屏提示
+                    for a in pending_list {
+                        if !self.approvals.iter().any(|x| x.request_id == a.request_id) {
+                            self.approvals.push(a.clone());
+                            self.add_message(
+                                MessageRole::System,
+                                format!(
+                                    "工具「{}」请求权限执行（agent: {}，参数: {}）\n按 A=始终允许 · a=允许本次 · n=拒绝",
+                                    a.tool, a.agent_id, truncate_for_display(&a.params, 160)
+                                ),
+                            );
+                            self.add_log("INFO",
+                                format!("权限审批待决议: {} ({})", a.tool, a.request_id));
+                        }
+                    }
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // 尚未返回：存回，下次继续
+                    self.approval_poll_rx = Some(rx);
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    // 查询任务异常结束：忽略，下个周期重新发起
+                }
+            }
+        }
+        // 节流发起新查询：每 1.5s 一次
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_approval_poll) < std::time::Duration::from_millis(1500) {
+            return;
+        }
+        self.last_approval_poll = now;
+        let gw = self.gateway.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let list = gw.list_pending_approvals().await.unwrap_or_default();
+            let _ = tx.send(list);
+        });
+        self.approval_poll_rx = Some(rx);
+    }
+
+    /// 决议一个审批请求（Claude Code 风格权限确认）。
+    ///
+    /// `decision` ∈ {"allow", "always", "deny"}。决议成功后从待办列表移除
+    /// 并回显结果；失败（已超时/已决议）提示用户。
+    pub fn approve_request(&mut self, decision: &str) {
+        let Some(a) = self.approvals.first() else {
+            self.add_message(
+                MessageRole::System,
+                "当前没有待决议的权限请求。".to_string(),
+            );
+            return;
+        };
+        let request_id = a.request_id.clone();
+        let tool = a.tool.clone();
+        let gw = self.gateway.clone();
+        let decision = decision.to_string();
+        let mut approvals = std::mem::take(&mut self.approvals);
+        approvals.remove(0);
+        self.approvals = approvals;
+        let label = match decision.as_str() {
+            "always" => "始终允许",
+            "allow" => "允许本次",
+            _ => "拒绝",
+        };
+        self.add_message(MessageRole::System, format!("已{label}工具「{}」", tool));
+        self.add_log("INFO", format!("权限决议: {} → {} ({})", request_id, label, tool));
+        tokio::spawn(async move {
+            if let Err(e) = gw.resolve_approval(&request_id, &decision).await {
+                log::warn!("tool.approve 请求失败 ({}): {}", request_id, e);
+            }
+        });
     }
 
     /// 人工中止当前后台请求（Ctrl+X）：取消 tokio 任务并清理待办状态。
@@ -1008,6 +1262,10 @@ impl App {
             PendingKind::ChatRound { .. } => {
                 self.add_message(MessageRole::System, "已中止本次请求。".to_string());
             }
+            PendingKind::StreamRound { .. } => {
+                self.streaming_text.clear();
+                self.add_message(MessageRole::System, "已中止流式回复。".to_string());
+            }
             PendingKind::AskGccp { .. } => {
                 self.set_flow_phase(FlowPhase::Chat);
                 self.add_message(MessageRole::System, "任务事实确认已中止，任务放弃。".to_string());
@@ -1062,6 +1320,11 @@ impl App {
                     self.apply_chat_result(input, res);
                 }
             }
+            PendingKind::StreamRound { input } => {
+                if let PendingOutcome::Run(res) = outcome {
+                    self.apply_stream_result(input, res);
+                }
+            }
             PendingKind::AskGccp { round } => {
                 if let PendingOutcome::Run(res) = outcome {
                     self.apply_ask_gccp(round, res);
@@ -1114,7 +1377,8 @@ impl App {
 
     /// 构造发送给 LLM 的增强 prompt。
     ///
-    /// 结构：系统判定指令 → 召回的可复用技能 → 相关记忆 → 用户输入。
+    /// 结构：系统判定指令 → 项目上下文（AGENTS.md 等价物）→ 召回的可复用技能
+    /// → 相关记忆 → 用户输入。
     /// "是否进入任务集"由 LLM 判断：回复以 [MODE:TASK]/[MODE:CHAT]/[MODE:TASK:GCCP] 开头。
     /// 对话历史已改由 messages 数组承载（build_history_messages），不再挤进
     /// prompt 文本（M1/M2/M3 修复：网络层透传真实多轮上下文，上限 40 条）。
@@ -1127,6 +1391,14 @@ impl App {
              - 若属于大型/高复杂度任务集（需先确认任务事实再执行），回复以 [MODE:TASK:GCCP] 开头；\n\
              - 任务集执行完成时，可在回复末尾追加 [TASK:DONE]。\n\n",
         );
+
+        // 项目上下文（AGENTS.md / CLAUDE.md 等价物）：工作目录约定最先注入，
+        // 让 LLM 一开始就了解项目规范（P1 项，与 openlab 侧一致）
+        if !self.project_context.is_empty() {
+            ctx.push_str("【项目约定】\n");
+            ctx.push_str(&self.project_context);
+            ctx.push_str("\n\n");
+        }
 
         // 技能上下文：召回本地技能库中沉淀的相关技能（越用越聪明）
         let skill_hits = self.skills.find(input, 3);
@@ -1508,6 +1780,7 @@ fn format_thinking_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{JsonlMemory, MemoryRecord};
 
     /// 环境变量测试互斥锁（并行测试共享进程内 AIRY_HOME，必须串行）。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1554,5 +1827,79 @@ mod tests {
         app.cmd_model("/model");
         // 查询不改变当前模型
         assert_eq!(app.model, "deepseek-v4-flash");
+    }
+
+    /// --resume 会话恢复：记忆库 user/assistant 记录还原到消息列表。
+    #[test]
+    fn resume_session_restores_history() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("AIRY_HOME", dir.path());
+        let mem_dir = dir.path().join("tui");
+        std::fs::create_dir_all(&mem_dir).expect("create mem dir");
+        let recs = [
+            MemoryRecord {
+                role: "user".into(),
+                content: "上次的问题".into(),
+                timestamp: "2026-08-08T10:00:00".into(),
+                tags: "chat".into(),
+            },
+            MemoryRecord {
+                role: "assistant".into(),
+                content: "上次的回答".into(),
+                timestamp: "2026-08-08T10:00:01".into(),
+                tags: "chat".into(),
+            },
+            MemoryRecord {
+                role: "system".into(),
+                content: "不应恢复的系统消息".into(),
+                timestamp: "2026-08-08T10:00:02".into(),
+                tags: "chat".into(),
+            },
+        ];
+        let path = mem_dir.join("memory.jsonl");
+        let mut lines = String::new();
+        for r in &recs {
+            lines.push_str(&serde_json::to_string(r).expect("serialize"));
+            lines.push('\n');
+        }
+        std::fs::write(&path, lines).expect("write memory");
+
+        let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
+            .expect("gateway client");
+        let mut app = App::new("agents/main.agent.yaml", gw);
+        // build_memory 在 memoryrovol feature 下优先 MemoryRovol 后端（不读 JSONL），
+        // 此处显式注入 JsonlMemory 以验证 resume_session 的恢复逻辑本身。
+        app.memory = Box::new(JsonlMemory::new(Some(&mem_dir)).expect("jsonl memory"));
+        let n = app.resume_session();
+        // user + assistant 共 2 条恢复；system 跳过
+        assert_eq!(n, 2);
+        let contents: Vec<String> =
+            app.messages.iter().map(|m| m.content.clone()).collect();
+        assert!(contents.iter().any(|c| c.contains("上次的问题")));
+        assert!(contents.iter().any(|c| c.contains("上次的回答")));
+        assert!(contents.iter().any(|c| c.contains("已恢复上次会话")));
+        assert!(!contents.iter().any(|c| c.contains("不应恢复的系统消息")));
+    }
+
+    /// 项目上下文：AGENTS.md 等价物向上查找并注入。
+    #[test]
+    fn load_project_context_finds_agents_md() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        // 模拟项目根：.git 目录 + AGENTS.md
+        std::fs::create_dir_all(dir.path().join(".git")).expect("create .git");
+        std::fs::write(dir.path().join("AGENTS.md"), "项目约定：优先使用相对路径")
+            .expect("write AGENTS.md");
+        // 嵌套子目录：从子目录向上查找
+        let sub = dir.path().join("src/sub");
+        std::fs::create_dir_all(&sub).expect("create sub");
+
+        let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
+            .expect("gateway client");
+        let mut app = App::new("agents/main.agent.yaml", gw);
+        assert!(app.load_project_context(Some(&sub)));
+        assert!(app.project_context.contains("项目约定"));
+        assert!(app.project_context.contains("AGENTS.md"));
     }
 }

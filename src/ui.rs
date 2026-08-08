@@ -17,7 +17,7 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Paragraph},
     Frame,
 };
@@ -66,14 +66,20 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    let mut constraints = vec![
+        Constraint::Length(1), // Brand bar
+        Constraint::Min(3),    // Main content（自适应）
+    ];
+    // 有未决议的工具审批时，在输入栏上方插入审批提示条（Claude Code 风格）
+    let has_approval = !app.approvals.is_empty();
+    if has_approval {
+        constraints.push(Constraint::Length(2));
+    }
+    constraints.push(Constraint::Length(2)); // Input bar（内容行 + 底部细分隔线）
+    constraints.push(Constraint::Length(1)); // Shortcuts
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Brand bar
-            Constraint::Min(3),    // Main content（自适应）
-            Constraint::Length(2), // Input bar（内容行 + 底部细分隔线）
-            Constraint::Length(1), // Shortcuts
-        ])
+        .constraints(constraints)
         .split(area);
 
     render_brand_bar(f, main_layout[0], app);
@@ -85,8 +91,70 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActivePanel::Memory => panels::memory::render(f, main_layout[1], app),
         ActivePanel::Plugins => panels::plugins::render(f, main_layout[1], app),
     }
-    render_input_bar(f, main_layout[2], app);
-    render_shortcuts(f, main_layout[3], app);
+    let mut idx = 2;
+    if has_approval {
+        render_approval_banner(f, main_layout[idx], app);
+        idx += 1;
+    }
+    render_input_bar(f, main_layout[idx], app);
+    render_shortcuts(f, main_layout[idx + 1], app);
+}
+
+/// 工具审批提示条：pending 审批时在输入栏上方高亮显示（Claude Code 风格
+/// permission prompt），给出工具、主体与 [a]/[A]/[n] 快捷决议提示。
+fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
+    let Some(a) = app.approvals.first() else {
+        return;
+    };
+    // 参数预览单行截断：避免长 JSON 撑满横幅
+    let mut params_preview = a.params.clone();
+    if params_preview.chars().count() > area.width.saturating_sub(6) as usize {
+        params_preview = params_preview
+            .chars()
+            .take(area.width.saturating_sub(9) as usize)
+            .collect::<String>()
+            + "…";
+    }
+    let line1 = Line::from(vec![
+        Span::styled(
+            " ⚠ ",
+            Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "工具审批请求",
+            Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  ·  主体: {}", if a.agent_id.is_empty() { "unknown" } else { &a.agent_id }),
+            Style::default().fg(theme::dim()),
+        ),
+        Span::styled(
+            format!("  ·  工具: {}", a.tool),
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let line2 = Line::from(vec![
+        Span::raw(format!("   {params_preview}")),
+        Span::raw("  "),
+        Span::styled(
+            "[a] 允许本次",
+            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "[A] 始终允许",
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "[n] 拒绝",
+            Style::default().fg(theme::DANGER).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(
+        Paragraph::new(Text::from(vec![line1, line2])).style(Style::default().bg(theme::surface())),
+        area,
+    );
 }
 
 /// 品牌栏（左）：品牌 + 连接状态灯 + 宿主机当前时间；右：模型 + 用量 + 阶段徽章。

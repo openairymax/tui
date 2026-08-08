@@ -47,6 +47,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // 流式输出：SSE 增量块已累计在 streaming_text，实时渲染为「Airymax」气泡
+    // （Claude 风格逐字上屏；完成后由 apply_stream_result 落为正式消息）
+    if app.loading && !app.streaming_text.is_empty() {
+        let streaming_msg = crate::app::ChatMessage {
+            role: crate::app::MessageRole::Agent,
+            content: app.streaming_text.clone(),
+            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+        };
+        append_message(&mut lines, &streaming_msg, width);
+    }
+
     if app.loading {
         // 思考动效：thinking... 11 字符逐一循环（与 ui.rs 同一时钟，0.05s 一帧；
         // 苹果轻量字重风格：无粗体无斜体，极浅色，优雅低调）
