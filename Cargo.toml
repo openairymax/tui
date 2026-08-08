@@ -12,9 +12,11 @@ name = "agentrt-tui"
 path = "src/main.rs"
 
 [features]
-default = []
-# 启用 MemoryRovol 商业记忆库 FFI（需先构建 products/memoryrovol 并提供
-# MEMORYROVOL_LIB 环境变量指向 libagentrt_memoryrovol.a）
+# IRON-8：MemoryRovol（L1-L4 四层记忆卷载）为默认记忆后端。
+# 构建时由 build.rs 定位 libagentrt_memoryrovol.a：
+#   MEMORYROVOL_LIB env → $AIRY_HOME/lib/libagentrt_memoryrovol.a → 伞仓构建产物
+# 库缺失时 FFI 不编译，运行时优雅降级 JsonlMemory（真实可用后备）。
+default = ["memoryrovol"]
 memoryrovol = ["dep:libc"]
 
 [dependencies]
@@ -31,6 +33,7 @@ tokio = { version = "1", features = ["full"] }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.8"
 
 # CLI argument parsing
 clap = { version = "4.5", features = ["derive", "env"] }

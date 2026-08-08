@@ -9,10 +9,12 @@
 //   - 默认后端 JsonlMemory：以 JSONL 追加写方式持久化对话记忆，跨会话
 //     "记得住"。每条记录含角色、内容、时间戳与标签，支持按关键词与
 //     时效召回相关记忆，注入后续请求上下文。
-//   - 可选后端 MemoryRovol：通过 C FFI 链接 products/memoryrovol 商业
-//     记忆库（L1-L4 分层 + 遗忘衰减 + 语义检索）。启用方式：
-//       cargo build --features memoryrovol -- --config env MEMORYROVOL_LIB
-//     未启用 feature 时编译期不包含 FFI（不产生桩代码）。
+//   - 首选后端 MemoryRovol：通过 C FFI 链接 products/memoryrovol 商业
+//     记忆库（L1-L4 分层 + 遗忘衰减 + 语义检索）。feature `memoryrovol`
+//     默认启用（IRON-8），构建时由 build.rs 定位 libagentrt_memoryrovol.a
+//     （MEMORYROVOL_LIB env → $AIRY_HOME/lib → 伞仓构建产物）并声明
+//     cfg(mr_linked)；库缺失时 FFI 不编译（不产生桩代码），build_memory()
+//     优雅降级为 JsonlMemory。
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -202,21 +204,20 @@ fn memory_dir() -> PathBuf {
     PathBuf::from(".airymaxrt").join("tui")
 }
 
-#[cfg(feature = "memoryrovol")]
+#[cfg(all(feature = "memoryrovol", mr_linked))]
 pub mod memoryrovol {
     //! MemoryRovol FFI 绑定（商业记忆库，L1-L4 全功能）。
     //!
-    //! 启用方式：
-    //!   cargo build --features memoryrovol
-    //! 并通过环境变量 MEMORYROVOL_LIB 指定预构建静态库路径。
+    //! feature `memoryrovol` 默认启用；本模块是否编译由 build.rs 决定：
+    //! build.rs 定位到 libagentrt_memoryrovol.a 时声明 cfg(mr_linked)，
+    //! 否则本模块不编译（无桩代码），build_memory() 降级 JsonlMemory。
     //!
     //! 绑定的是 products/memoryrovol/include/memoryrovol.h 的真实 C API，
-    //! 与 `airy_mr_*` 符号一一对应；库缺失时编译失败（不提供桩实现）。
+    //! 与 `airy_mr_*` 符号一一对应。
 
     use super::{ConversationMemory, MemoryHit, MemoryRecord};
     use std::ffi::{CStr, CString};
     use std::os::raw::{c_char, c_int, c_void};
-    use std::path::Path;
 
     // ---- FFI 声明（与 memoryrovol.h 严格对齐） ----
 
@@ -263,8 +264,9 @@ pub mod memoryrovol {
     unsafe impl Sync for MemoryRovol {}
 
     impl MemoryRovol {
-        /// 初始化 MemoryRovol。lib 不存在时返回 Err（不静默降级）。
-        pub fn new(_lib: &Path) -> std::io::Result<Self> {
+        /// 初始化 MemoryRovol。静态库由 build.rs 在链接期定位（见
+        /// build.rs / cfg(mr_linked)），此处仅做运行时初始化。
+        pub fn new() -> std::io::Result<Self> {
             unsafe {
                 let mut h: *mut airy_mr_handle = std::ptr::null_mut();
                 let rc = airy_mr_init(std::ptr::null(), &mut h);
@@ -317,15 +319,16 @@ pub mod memoryrovol {
                         CStr::from_ptr(item.record_id).to_string_lossy().into_owned()
                     };
                     let score = item.score;
-                    // 释放 C 侧分配
+                    // 释放 C 侧分配（mr_free 定义于本模块，原 crate::memory::mr_free
+                    // 路径错误——FFI 首次编译时暴露的存量 bug）
                     if !item.record_id.is_null() {
-                        crate::memory::mr_free(item.record_id as *mut c_void);
+                        mr_free(item.record_id as *mut c_void);
                     }
                     if !item.data.is_null() {
-                        crate::memory::mr_free(item.data);
+                        mr_free(item.data);
                     }
                     if !item.metadata.is_null() {
-                        crate::memory::mr_free(item.metadata as *mut c_void);
+                        mr_free(item.metadata as *mut c_void);
                     }
                     hits.push(MemoryHit { content, role: "memory".into(), score });
                 }
@@ -364,22 +367,18 @@ pub mod memoryrovol {
     }
 }
 
-/// 构造记忆模块：优先 MemoryRovol（feature 开启时），否则 JSONL。
+/// 构造记忆模块：优先 MemoryRovol（feature 启用且 build.rs 定位到静态库、
+/// 即 cfg(mr_linked) 生效时），否则 JSONL。
 pub fn build_memory(dir: Option<&Path>) -> Box<dyn ConversationMemory> {
-    #[cfg(feature = "memoryrovol")]
+    #[cfg(all(feature = "memoryrovol", mr_linked))]
     {
         use self::memoryrovol::MemoryRovol;
-        if let Ok(lib) = std::env::var("MEMORYROVOL_LIB") {
-            let p = Path::new(&lib);
-            if p.exists() {
-                match MemoryRovol::new(p) {
-                    Ok(mr) => {
-                        log::info!("memory: MemoryRovol backend enabled (lib={})", lib);
-                        return Box::new(mr);
-                    }
-                    Err(e) => log::warn!("memory: MemoryRovol init failed ({}), fallback JSONL", e),
-                }
+        match MemoryRovol::new() {
+            Ok(mr) => {
+                log::info!("memory: MemoryRovol backend enabled (L1-L4)");
+                return Box::new(mr);
             }
+            Err(e) => log::warn!("memory: MemoryRovol init failed ({}), fallback JSONL", e),
         }
     }
     match JsonlMemory::new(dir) {
