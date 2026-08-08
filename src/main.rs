@@ -58,6 +58,14 @@ struct Cli {
     /// Agent definition file
     #[arg(short, long, default_value = "agents/main.agent.yaml")]
     agent_file: String,
+
+    /// 会话恢复：加载上次会话历史（对标 Codex sessions / Claude /resume）
+    #[arg(long, default_value_t = false)]
+    resume: bool,
+
+    /// 项目根目录（查找 AGENTS.md/CLAUDE.md 项目上下文；默认当前工作目录）
+    #[arg(long)]
+    project: Option<String>,
 }
 
 #[tokio::main]
@@ -85,6 +93,8 @@ async fn main() {
     info!("CLI args parsed:");
     info!("  gateway_url = {}", cli.gateway_url);
     info!("  agent_file  = {}", cli.agent_file);
+    info!("  resume      = {}", cli.resume);
+    info!("  project     = {:?}", cli.project);
 
     // ── Phase 1: Pre-flight checks ──
     let start_time = Instant::now();
@@ -194,6 +204,20 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
 
     // Create app state
     let mut app = App::new(&cli.agent_file, gateway);
+
+    // ── Phase 3c: 项目上下文文件机制（AGENTS.md / CLAUDE.md 等价物，P1）──
+    let project_dir = cli.project.as_ref().map(std::path::PathBuf::from);
+    if app.load_project_context(project_dir.as_deref()) {
+        info!("Project context loaded (AGENTS.md equivalent)");
+    } else {
+        debug!("No project context file found (AGENTS.md/CLAUDE.md)");
+    }
+
+    // ── Phase 3d: 会话恢复 --resume（Codex sessions / Claude /resume，P0）──
+    if cli.resume {
+        let n = app.resume_session();
+        info!("Session resume: restored {} messages", n);
+    }
 
     // ── Phase 3b: Deferred connection check in app ──
     if let Err(e) = app.check_connection().await {
@@ -337,26 +361,40 @@ async fn run_app<B: Backend>(
                     //   - thinking... 动效（chat.rs / ui.rs 按时间取帧，50ms 一帧更丝滑）
                     //   - 回复到达后自动上屏（add_message 自动回到底部）
                     //   - Ctrl+X 中止 / Ctrl+Z 暂停（等待期间可人工控制）
+                    //   - 工具权限审批：a=允许本次 · A=始终允许 · n=拒绝（Claude Code 风格）
                     while app.is_busy() {
                         terminal.draw(|f| ui::render(f, app))?;
-                        // 等待期间轮询按键：Ctrl+X 中止、Ctrl+Z 暂停/恢复
+                        // 等待期间轮询按键：Ctrl+X 中止、Ctrl+Z 暂停/恢复、审批决议
                         if event::poll(Duration::ZERO)? {
                             if let Event::Key(key) = event::read()? {
                                 if key.kind == KeyEventKind::Press {
-                                    if (key.code == KeyCode::Char('x')
-                                        || key.code == KeyCode::Char('X'))
-                                        && key.modifiers.contains(event::KeyModifiers::CONTROL)
-                                    {
-                                        app.abort_task();
-                                    } else if (key.code == KeyCode::Char('z')
-                                        || key.code == KeyCode::Char('Z'))
-                                        && key.modifiers.contains(event::KeyModifiers::CONTROL)
-                                    {
-                                        if app.task_control == TaskControl::Paused {
-                                            app.resume_task();
-                                        } else {
-                                            app.pause_task();
+                                    match key.code {
+                                        KeyCode::Char('x') | KeyCode::Char('X')
+                                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                        {
+                                            app.abort_task();
                                         }
+                                        KeyCode::Char('z') | KeyCode::Char('Z')
+                                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                        {
+                                            if app.task_control == TaskControl::Paused {
+                                                app.resume_task();
+                                            } else {
+                                                app.pause_task();
+                                            }
+                                        }
+                                        // 工具级权限审批（Claude Code 风格 permission prompt）
+                                        KeyCode::Char('a') | KeyCode::Char('y') => {
+                                            app.approve_request("allow");
+                                        }
+                                        KeyCode::Char('A') => {
+                                            app.approve_request("always");
+                                        }
+                                        KeyCode::Char('n') | KeyCode::Char('N')
+                                            | KeyCode::Char('d') | KeyCode::Char('D') => {
+                                            app.approve_request("deny");
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
