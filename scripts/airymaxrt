@@ -7,7 +7,8 @@
 # 在任意项目目录执行 `airymaxrt` 即可进入交互界面：
 #   1. 定位组件（TUI / gateway_d / llm_d）
 #   2. gateway 在线 → 直接进入 TUI；离线 → 自动拉起 llm_d + gateway_d
-#   3. TUI 退出后清理本次拉起的守护进程（不影响已运行的外部 gateway）
+#   3. TUI 退出后清理本次拉起的守护进程（不影响已运行的外部 gateway）；
+#      外部强杀（timeout/SIGTERM）同样经 trap 回收，不残留 daemon
 #
 # 安装（加入 PATH 即可）：
 #   ln -s "$PWD/sdk/tui/scripts/airymaxrt" ~/bin/airymaxrt
@@ -50,7 +51,10 @@ AIRYRT_HOME="${AIRYRT_HOME:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 # （get-agentrt.sh 安装时写入，airymaxrt 应尊重已安装的节点运行时根）
 # > 默认 ~/.airymaxrt。
 if [ -z "${AIRY_HOME:-}" ]; then
-    for _CAND in "$HOME/.local/share/airymaxrt/config/install.env" \
+    # 候选顺序：启动器自身所在安装根（$AIRY_HOME/bin/airymaxrt → ../config/install.env，
+    # 支持 --prefix 自定义安装位置）→ 常用位置兼容。
+    for _CAND in "${SCRIPT_DIR}/../config/install.env" \
+                 "$HOME/.local/share/airymaxrt/config/install.env" \
                  "$HOME/.airymaxrt/config/install.env"; do
         if [ -f "$_CAND" ] && _HOME="$(sed -n 's/^AIRY_HOME=//p' "$_CAND" 2>/dev/null | head -1)"; then
             if [ -n "$_HOME" ]; then
@@ -64,7 +68,13 @@ AIRY_HOME="${AIRY_HOME:-$HOME/.airymaxrt}"
 RUNTIME_DIR="${AIRY_RUNTIME_DIR:-$AIRY_HOME/run}"
 GATEWAY_PORT="${AIRY_GATEWAY_PORT:-8080}"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
-MODEL_CONFIG="${AIRY_MODEL_CONFIG:-$AIRYRT_HOME/ecosystem/manager/model/model.yaml}"
+# 模型配置优先取安装目录 $AIRY_HOME/config/model.yaml（install.sh/build.sh 已固化），
+# 兼容旧源码树路径 $AIRYRT_HOME/ecosystem/manager/model/model.yaml。
+if [ -f "${AIRY_MODEL_CONFIG:-$AIRY_HOME/config/model.yaml}" ]; then
+    MODEL_CONFIG="${AIRY_MODEL_CONFIG:-$AIRY_HOME/config/model.yaml}"
+else
+    MODEL_CONFIG="${AIRY_MODEL_CONFIG:-$AIRYRT_HOME/ecosystem/manager/model/model.yaml}"
+fi
 AGENT_FILE="${AIRY_AGENT_FILE:-agents/main.agent.yaml}"
 
 # ── 日志系统：debug 全量写文件，info+ 打印终端 ─────────────────────────────
@@ -167,16 +177,24 @@ LLM_BIN="$(find_tool AIRY_LLM_BIN llm_d \
     "$AIRYRT_HOME/agentrt/build/bin/llm_d" \
     "$AIRYRT_HOME/build/bin/llm_d")"
 
+THINK_BIN="$(find_tool AIRY_THINK_BIN think_d \
+    "$AIRY_HOME/bin/think_d" \
+    "$AIRYRT_HOME/agentrt/build/bin/think_d" \
+    "$AIRYRT_HOME/build/bin/think_d")"
+
 log debug "组件定位结果: TUI_BIN=${TUI_BIN:-（缺失）}"
 log debug "组件定位结果: GATEWAY_BIN=${GATEWAY_BIN:-（缺失）}"
 log debug "组件定位结果: LLM_BIN=${LLM_BIN:-（缺失）}"
+log debug "组件定位结果: THINK_BIN=${THINK_BIN:-（缺失）}"
 
 # ── 等待辅助（每轮打点，便于排查就绪时序） ─────────────────────────────────
+# gateway 无 /health HTTP 端点，就绪检测使用 JSON-RPC ping（HTTP POST）。
 wait_for_health() { # <url> <秒数>
     local url="$1" tries="$2" i
     log debug "健康检查开始: $url（最多 ${tries}s）"
     for ((i = 0; i < tries; i++)); do
-        if curl -fsS -m 1 "$url" >/dev/null 2>&1; then
+        if curl -fsS -m 1 -X POST -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"ping","id":1}' "$url" >/dev/null 2>&1; then
             log debug "健康检查通过: $url（第 $((i + 1)) 次尝试）"
             return 0
         fi
@@ -202,6 +220,56 @@ wait_for_sock() { # <socket路径> <秒数>
     return 1
 }
 
+# ── 子命令：help / status / doctor / uninstall ──────────────────────────────
+CMD="${1:-}"
+case "$CMD" in
+    --help|-h|help)
+        echo "用法: airymaxrt [--gateway-url URL] [--agent-file FILE]"
+        echo "      airymaxrt status      查看运行时状态"
+        echo "      airymaxrt doctor      组件健康检查"
+        echo "      airymaxrt uninstall   一键卸载（--keep-data 保留记忆数据）"
+        exit 0
+        ;;
+    status)
+        log info "AIRY_HOME=$AIRY_HOME"
+        log info "组件: TUI=${TUI_BIN:-缺失} GATEWAY=${GATEWAY_BIN:-缺失} LLM=${LLM_BIN:-缺失}"
+        if wait_for_health "$GATEWAY_URL" 1; then
+            log info "gateway: 在线（$GATEWAY_URL）"
+        else
+            log warn "gateway: 离线"
+        fi
+        if [ -S "$RUNTIME_DIR/llm.sock" ]; then log info "llm.sock: 就绪"; else log warn "llm.sock: 未就绪"; fi
+        # 注：不能用 "airy-maxrt/bin/" 模式——正则中 "-" 是字面量，匹配不到
+        # 实际路径 .airymaxrt/bin/；用 AIRY_HOME 展开后的运行目录精确匹配
+        if pgrep -f "${AIRY_HOME}/bin/" >/dev/null 2>&1; then log info "daemon 进程: 运行中"; else log info "daemon 进程: 无"; fi
+        exit 0
+        ;;
+    doctor)
+        miss=0
+        for name in TUI_BIN GATEWAY_BIN LLM_BIN THINK_BIN; do
+            eval "val=\${$name:-}"
+            if [ -n "$val" ] && [ -x "$val" ]; then log info "$name: $val"; else log warn "$name: 缺失"; miss=1; fi
+        done
+        if [ -f "$AIRY_HOME/config/secrets.env" ]; then log info "secrets.env: 就绪"; else log warn "secrets.env: 缺失（LLM 不可用）"; miss=1; fi
+        if [ -f "$AIRY_HOME/config/install.env" ]; then log info "install.env: 就绪"; else log warn "install.env: 缺失"; fi
+        if command -v curl >/dev/null 2>&1; then log info "curl: 就绪"; else log warn "curl: 缺失"; miss=1; fi
+        if [ "$miss" = "0" ]; then log info "doctor: 全部就绪"; else log warn "doctor: 存在缺失项"; fi
+        exit 0
+        ;;
+    uninstall)
+        inst="${AIRY_HOME}/scripts/install.sh"
+        if [ -f "$inst" ]; then
+            log info "委托安装器执行卸载: $inst"
+            shift
+            exec sh "$inst" --uninstall "$@"
+        else
+            log warn "未找到安装器脚本，请手动删除: $AIRY_HOME"
+            exit 1
+        fi
+        ;;
+esac
+# 正常启动：透传剩余参数给 TUI
+
 # ── 前置检查 ─────────────────────────────────────────────────────────────────
 if [ -z "$TUI_BIN" ]; then
     log error "未找到 agentrt-tui，请先构建：cd \"$AIRYRT_HOME/sdk/tui\" && cargo build --release"
@@ -210,7 +278,7 @@ fi
 log info "组件就绪: TUI=$(basename "$TUI_BIN")"
 
 # ── 状态判断 1：gateway 已在线？直接进入 ───────────────────────────────────
-if wait_for_health "$GATEWAY_URL/health" 1; then
+if wait_for_health "$GATEWAY_URL" 1; then
     log info "gateway 在线（$GATEWAY_URL），直接进入交互界面"
     log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
     exec "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE"
@@ -219,67 +287,142 @@ log info "gateway 离线（$GATEWAY_URL），尝试拉起守护进程"
 
 # ── 拉起守护进程（仅本次会话，退出后清理） ─────────────────────────────────
 DAEMONS_STARTED=0
+ALL_DAEMON_PIDS=()
 GATEWAY_PID=""
 LLM_PID=""
+TUI_PID=""
 
-cleanup() {
-    if [ "$DAEMONS_STARTED" != "1" ]; then
-        log debug "清理跳过：本次未拉起任何守护进程"
+# _stop_pid <PID> <名称>：TERM → 轮询 → KILL 兜底，确保进程真正退出
+_stop_pid() {
+    local pid="$1" name="$2" i
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
         return 0
     fi
-    log debug "清理开始：停止本次拉起的守护进程"
-    if [ -n "$GATEWAY_PID" ]; then
-        log debug "kill gateway_d (PID=$GATEWAY_PID)"
-        if kill "$GATEWAY_PID" 2>/dev/null; then
-            log info "已停止 gateway_d（PID=$GATEWAY_PID）"
-        else
-            log warn "gateway_d（PID=$GATEWAY_PID）可能已退出，无需停止"
+    log debug "停止 $name（PID=$pid）：发送 TERM"
+    kill "$pid" 2>/dev/null || return 0
+    # 10s 轮询窗口：守护进程需执行完整清理链（IPC/SD 心跳 join/传输 teardown），
+    # 3s 过短会误杀正在优雅清理的进程（实测 gateway_d 完整退出需数秒）。
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            log info "已停止 $name（PID=$pid）"
+            return 0
         fi
+        sleep 1
+    done
+    log warn "$name（PID=$pid）未响应 TERM，强制 KILL"
+    kill -9 "$pid" 2>/dev/null || true
+    log info "已强制停止 $name（PID=$pid）"
+}
+
+cleanup() {
+    if [ "$DAEMONS_STARTED" != "1" ] && [ -z "$TUI_PID" ]; then
+        log debug "清理跳过：本次未拉起任何进程"
+        return 0
     fi
-    if [ -n "$LLM_PID" ]; then
-        log debug "kill llm_d (PID=$LLM_PID)"
-        if kill "$LLM_PID" 2>/dev/null; then
-            log info "已停止 llm_d（PID=$LLM_PID）"
-        else
-            log warn "llm_d（PID=$LLM_PID）可能已退出，无需停止"
-        fi
+    log debug "清理开始：停止本次拉起的 TUI 与守护进程"
+    # 1. TUI：bash 若被外部信号打断 wait，TUI 仍是存活子进程，必须先回收
+    if [ -n "$TUI_PID" ]; then
+        _stop_pid "$TUI_PID" "agentrt-tui"
+    fi
+    # 2. 本次拉起的 daemons（不影响外部已运行的同名进程）：gateway 先停（统一
+    #    入口，其余 daemon 不再接收外部请求），再逐个回收 Unix socket daemon。
+    _stop_pid "$GATEWAY_PID" "gateway_d"
+    if [ -n "$GATEWAY_PID" ]; then
+        for pid in "${ALL_DAEMON_PIDS[@]}"; do
+            _stop_pid "$pid" "daemon"
+        done
     fi
     wait 2>/dev/null || true
     log debug "清理完成"
 }
 trap cleanup EXIT
+# 外部信号（如 timeout 强杀）转入 exit 路径，确保 EXIT trap（cleanup）执行，
+# 不残留本次拉起的 TUI / gateway_d / llm_d 进程。bash 默认对未 trap 的
+# SIGTERM 直接终止、不执行 EXIT trap，这正是此前残留的根因。
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 if [ -z "$GATEWAY_BIN" ] || [ -z "$LLM_BIN" ]; then
     log warn "gateway_d/llm_d 未找到，将以 OFFLINE 模式进入（对话功能不可用）。"
     log warn "构建 daemons：cd \"$AIRYRT_HOME/agentrt\" && cmake -B build && cmake --build build -j"
 else
-    # ---- 拉起 llm_d：后台启动，等待 socket 就绪 ----
-    if [ -f "$MODEL_CONFIG" ]; then
-        log debug "llm_d 使用模型配置: $MODEL_CONFIG"
-        log debug "执行: \"$LLM_BIN\" --manager \"$MODEL_CONFIG\" > \"$AIRY_HOME/logs/llm_d.out\" 2>&1 &"
-        "$LLM_BIN" --manager "$MODEL_CONFIG" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
-    else
-        log warn "模型配置不存在（$MODEL_CONFIG），llm_d 使用默认配置"
-        log debug "执行: \"$LLM_BIN\" > \"$AIRY_HOME/logs/llm_d.out\" 2>&1 &"
-        "$LLM_BIN" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
-    fi
-    LLM_PID=$!
+    # ---- 全量拉起守护进程（0.1.1 全功能运行） ----
+    # 16 个 Unix socket daemon + gateway_d（TCP）。顺序：llm（核心依赖）→
+    # think（双思考）→ 其余 14 个 → gateway（统一入口，最后启动）。
+    # socket 就绪校验：llm/think 严格等待（核心链路依赖）；其余尽力等待，
+    # 超时仅告警不阻断（daemon 缺失/未就绪时 gateway 转发返回对应错误）。
+    ALL_DAEMON_PIDS=()   # 本次拉起的 daemon PID（cleanup 统一回收）
     DAEMONS_STARTED=1
-    log info "llm_d 已拉起（PID=$LLM_PID），日志: $AIRY_HOME/logs/llm_d.out"
 
-    if wait_for_sock "$RUNTIME_DIR/llm.sock" 8; then
-        log info "llm_d 就绪（$RUNTIME_DIR/llm.sock）"
-    else
-        log warn "llm_d socket 未就绪（$RUNTIME_DIR/llm.sock），查看日志: $AIRY_HOME/logs/llm_d.out"
+    # _start_daemon <bin> <sock名> <等待秒数>：拉起并等待 socket 就绪
+    _start_daemon() {
+        local bin="$1" sock_name="$2" tries="$3" bname
+        bname="$(basename "$bin")"
+        if [ ! -x "$bin" ]; then
+            log warn "$bname 未找到，跳过"
+            return 1
+        fi
+        "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
+        local pid=$!
+        ALL_DAEMON_PIDS+=("$pid")
+        log info "$bname 已拉起（PID=$pid），日志: $AIRY_HOME/logs/${bname}.out"
+        if wait_for_sock "$RUNTIME_DIR/$sock_name" "$tries"; then
+            log info "$bname 就绪（$RUNTIME_DIR/$sock_name）"
+        else
+            log warn "$bname socket 未就绪（$RUNTIME_DIR/$sock_name），查看日志: $AIRY_HOME/logs/${bname}.out"
+        fi
+    }
+
+    # ---- 1. llm_d：核心依赖，--manager 指定模型配置（provider/endpoint 来源）----
+    if [ -x "$LLM_BIN" ]; then
+        if [ -f "$MODEL_CONFIG" ]; then
+            log debug "llm_d 使用模型配置: $MODEL_CONFIG"
+            "$LLM_BIN" --manager "$MODEL_CONFIG" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
+        else
+            log warn "模型配置不存在（$MODEL_CONFIG），llm_d 使用默认配置"
+            "$LLM_BIN" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
+        fi
+        LLM_PID=$!
+        ALL_DAEMON_PIDS+=("$LLM_PID")
+        log info "llm_d 已拉起（PID=$LLM_PID），日志: $AIRY_HOME/logs/llm_d.out"
+        if wait_for_sock "$RUNTIME_DIR/llm.sock" 8; then
+            log info "llm_d 就绪（$RUNTIME_DIR/llm.sock）"
+        else
+            log warn "llm_d socket 未就绪（$RUNTIME_DIR/llm.sock），查看日志: $AIRY_HOME/logs/llm_d.out"
+        fi
     fi
 
-    # ---- 拉起 gateway_d：后台启动，等待健康检查通过 ----
+    # ---- 2. think_d：双思考（GCCP+GRAD），gateway 经 think.sock 调用 ----
+    if [ -n "$THINK_BIN" ]; then
+        _start_daemon "$THINK_BIN" "think.sock" 8
+    else
+        log warn "think_d 未找到，双思考（GCCP+GRAD）不可用，gateway 将降级直连"
+    fi
+
+    # ---- 3. 其余 14 个 daemon：全功能接线（agent/tool/hook/plugin/monit/sched/
+    #         channel/market/cupolas/mem/a2a/info/notify/observe）----
+    _start_daemon "$(find_tool AIRY_AGENT_BIN agent_d "$AIRY_HOME/bin/agent_d" "$AIRYRT_HOME/agentrt/build/bin/agent_d" "$AIRYRT_HOME/build/bin/agent_d")" "agent.sock" 6
+    _start_daemon "$(find_tool AIRY_TOOL_BIN tool_d "$AIRY_HOME/bin/tool_d" "$AIRYRT_HOME/agentrt/build/bin/tool_d" "$AIRYRT_HOME/build/bin/tool_d")" "tool.sock" 6
+    _start_daemon "$(find_tool AIRY_HOOK_BIN hook_d "$AIRY_HOME/bin/hook_d" "$AIRYRT_HOME/agentrt/build/bin/hook_d" "$AIRYRT_HOME/build/bin/hook_d")" "hook.sock" 6
+    _start_daemon "$(find_tool AIRY_PLUGIN_BIN plugin_d "$AIRY_HOME/bin/plugin_d" "$AIRYRT_HOME/agentrt/build/bin/plugin_d" "$AIRYRT_HOME/build/bin/plugin_d")" "plugin.sock" 6
+    _start_daemon "$(find_tool AIRY_MONIT_BIN monit_d "$AIRY_HOME/bin/monit_d" "$AIRYRT_HOME/agentrt/build/bin/monit_d" "$AIRYRT_HOME/build/bin/monit_d")" "monit.sock" 6
+    _start_daemon "$(find_tool AIRY_SCHED_BIN sched_d "$AIRY_HOME/bin/sched_d" "$AIRYRT_HOME/agentrt/build/bin/sched_d" "$AIRYRT_HOME/build/bin/sched_d")" "sched.sock" 6
+    _start_daemon "$(find_tool AIRY_CHANNEL_BIN channel_d "$AIRY_HOME/bin/channel_d" "$AIRYRT_HOME/agentrt/build/bin/channel_d" "$AIRYRT_HOME/build/bin/channel_d")" "channel.sock" 6
+    _start_daemon "$(find_tool AIRY_MARKET_BIN market_d "$AIRY_HOME/bin/market_d" "$AIRYRT_HOME/agentrt/build/bin/market_d" "$AIRYRT_HOME/build/bin/market_d")" "market.sock" 6
+    _start_daemon "$(find_tool AIRY_CUPOLAS_BIN cupolas_d "$AIRY_HOME/bin/cupolas_d" "$AIRYRT_HOME/agentrt/build/bin/cupolas_d" "$AIRYRT_HOME/build/bin/cupolas_d")" "cupolas.sock" 6
+    _start_daemon "$(find_tool AIRY_MEM_BIN mem_d "$AIRY_HOME/bin/mem_d" "$AIRYRT_HOME/agentrt/build/bin/mem_d" "$AIRYRT_HOME/build/bin/mem_d")" "mem.sock" 6
+    _start_daemon "$(find_tool AIRY_A2A_BIN a2a_d "$AIRY_HOME/bin/a2a_d" "$AIRYRT_HOME/agentrt/build/bin/a2a_d" "$AIRYRT_HOME/build/bin/a2a_d")" "a2a.sock" 6
+    _start_daemon "$(find_tool AIRY_INFO_BIN info_d "$AIRY_HOME/bin/info_d" "$AIRYRT_HOME/agentrt/build/bin/info_d" "$AIRYRT_HOME/build/bin/info_d")" "info.sock" 6
+    _start_daemon "$(find_tool AIRY_NOTIFY_BIN notify_d "$AIRY_HOME/bin/notify_d" "$AIRYRT_HOME/agentrt/build/bin/notify_d" "$AIRYRT_HOME/build/bin/notify_d")" "notify.sock" 6
+    _start_daemon "$(find_tool AIRY_OBSERVE_BIN observe_d "$AIRY_HOME/bin/observe_d" "$AIRYRT_HOME/agentrt/build/bin/observe_d" "$AIRYRT_HOME/build/bin/observe_d")" "observe.sock" 6
+
+    # ---- 4. gateway_d：统一协议入口（HTTP/WS/HTTP2），最后启动 ----
     log debug "执行: \"$GATEWAY_BIN\" -h 127.0.0.1 -p \"$GATEWAY_PORT\" > \"$AIRY_HOME/logs/gateway_d.out\" 2>&1 &"
     "$GATEWAY_BIN" -h 127.0.0.1 -p "$GATEWAY_PORT" >"$AIRY_HOME/logs/gateway_d.out" 2>&1 &
     GATEWAY_PID=$!
     log info "gateway_d 已拉起（PID=$GATEWAY_PID），日志: $AIRY_HOME/logs/gateway_d.out"
 
-    if wait_for_health "$GATEWAY_URL/health" 10; then
+    if wait_for_health "$GATEWAY_URL" 15; then
         log info "gateway 就绪（$GATEWAY_URL）"
     else
         log warn "gateway 启动超时，查看日志: $AIRY_HOME/logs/gateway_d.out"
@@ -287,9 +430,13 @@ else
 fi
 
 # ── 前台进入 TUI（退出后由 EXIT trap 清理本次拉起的 daemons）──────────────
+# TUI 以子进程运行而非 exec 替换：bash 保持对信号的处理能力，外部强杀
+# （SIGTERM/SIGINT）时经 trap 转入 exit 路径，cleanup 可回收 TUI 与 daemons。
 log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
 log info "进入交互界面（Ctrl+C 退出）"
-"$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE"
-rc=$?
+"$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" &
+TUI_PID=$!
+rc=0
+wait "$TUI_PID" || rc=$?
 log info "交互界面退出（exit=$rc）"
 exit $rc
