@@ -38,13 +38,27 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // 任务流阶段引导区（GCCP/GRAD/执行中展示进度与提示）
     render_flow_header(&mut lines, app, width);
 
-    // 消息列表（全量拼行）
+    // 消息列表（全量拼行；每条用户消息前插入回合分隔线，Claude Code 惯例）
     if app.messages.is_empty() && app.flow_phase == FlowPhase::Chat {
         append_welcome(&mut lines, width, viewport);
     } else {
+        let mut is_first = true;
         for msg in app.messages.iter() {
+            if msg.role == MessageRole::User && !is_first {
+                push_turn_separator(&mut lines, app);
+            }
+            is_first = false;
             append_message(&mut lines, msg, width);
         }
+    }
+
+    // 流式工具状态行（SSE tool_call/tool_result 事件，Claude Code 风格：
+    // 工具调用时显示 [Sub <tool> Agent] 状态，不污染正文气泡）
+    for evt_line in app.stream_tool_events.iter() {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(evt_line.as_str(), Style::default().fg(theme::TOOL_FG)),
+        ]));
     }
 
     // 流式输出：SSE 增量块已累计在 streaming_text，实时渲染为「Airymax」气泡
@@ -214,25 +228,79 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
     }
 }
 
+/// 回合分隔线：`── Worked for Ns · N tok · $x ──`（Claude Code 惯例，C 版 airy_cli 同款）。
+///
+/// 展示上一回合耗时 + 会话累计用量；无已结算回合（首回合）时降级为细分隔线。
+fn push_turn_separator(lines: &mut Vec<Line>, app: &App) {
+    let (elapsed, metrics) = match app.last_turn_elapsed {
+        Some(started) => {
+            let secs = started.elapsed().as_secs_f64();
+            (
+                format!(" Worked for {:.1}s", secs),
+                format!(" · {} tok · ${:.4}", app.tokens, app.cost),
+            )
+        }
+        None => (String::new(), String::new()),
+    };
+    let sep = "─".repeat(6);
+    let text = format!("{}{}{}{}", sep, elapsed, metrics, sep);
+    lines.push(Line::from(Span::styled(
+        text,
+        Style::default().fg(theme::faint()),
+    )));
+    lines.push(Line::raw(""));
+}
+
 /// 追加一条消息：角色名 + 时间戳头部 + markdown 渲染内容（P2-A/P2-B 修复）。
 ///
-/// 统一中文角色名（你/Airymax/系统/工具/结果），时间戳展示在头部行；
-/// 内容固定缩进 4 列（解决此前随角色名长度参差的问题）；用户消息以
-/// 气泡背景色块区分（Claude 式左右分层），其余角色左对齐流式。
+/// 角色命名规范（与 C 版 airy_cli / 文档 03-cli-reference 对齐）：
+///   [For Thee]       青   用户（操作者）输入
+///   [Super Agent]    绿   agentrt 本体：最终答复与决策
+///   [Super Think]    黄   系统级思考：GCCP / 双思考 / 蓝图路由轨迹
+///   [Sub xxx Agent]  品红 子代理与执行体（xxx = 代理类型，取自工具名）
+/// 时间戳展示在头部行；内容固定缩进 4 列；用户消息以气泡背景色块区分，
+/// 其余角色左对齐流式。
 fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: usize) {
     let (name, color) = match msg.role {
-        MessageRole::User => ("你", theme::SUCCESS),
-        MessageRole::Agent => ("Airymax", theme::PRIMARY),
-        MessageRole::System => ("系统", theme::WARNING),
-        MessageRole::ToolCall => ("工具", theme::MAGENTA),
-        MessageRole::ToolResult => ("结果", theme::ACCENT),
+        MessageRole::User => ("[For Thee]".to_string(), theme::CYAN),
+        MessageRole::Agent => ("[Super Agent]".to_string(), theme::SUCCESS),
+        MessageRole::System => ("[Super Think]".to_string(), theme::WARNING),
+        MessageRole::ToolCall | MessageRole::ToolResult => {
+            // [Sub <tag> Agent]：tag 取工具名（ToolCall 首 token）；ToolResult
+            // 是工具结果（JSON 等），无工具名可识别时回退 "exec"
+            let first = msg.content.split_whitespace().next().unwrap_or("");
+            let is_jsonish =
+                first.starts_with('{') || first.starts_with('[') || first.starts_with('"');
+            let tag = if first.is_empty() || is_jsonish { "exec" } else { first };
+            let tag: String = tag.chars().take(12).collect();
+            (format!("[Sub {} Agent]", tag), theme::MAGENTA)
+        }
     };
 
-    // 头部行：角色名（加粗语义色）+ 时间戳（极弱色）
+    // 工具调用/结果状态图标（头部行右侧，语义色）：
+    //   工具调用  ✓ 成功 / ✗ 失败（content 以「（失败）」结尾判定）
+    //   工具结果  ▸ 结果回传
+    let (icon, icon_color) = match msg.role {
+        MessageRole::ToolCall => {
+            if msg.content.trim_end().ends_with("（失败）") {
+                (" ✗", theme::DANGER)
+            } else {
+                (" ✓", theme::SUCCESS)
+            }
+        }
+        MessageRole::ToolResult => (" ▸", theme::faint()),
+        _ => ("", theme::faint()),
+    };
+
+    // 头部行：角色名（加粗语义色）+ 状态图标 + 时间戳（极弱色）
     lines.push(Line::from(vec![
         Span::styled(
-            name.to_string(),
+            name,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            icon.to_string(),
+            Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  {}", msg.timestamp),
@@ -317,6 +385,7 @@ fn append_welcome(lines: &mut Vec<Line>, width: usize, height: usize) {
 #[cfg(test)]
 mod tests {
     // wrap_line 实现已迁至 markdown 模块（P2-A 渲染器共用）
+    use super::append_message;
     use crate::markdown::wrap_line;
 
     #[test]
@@ -344,5 +413,69 @@ mod tests {
     fn wrap_line_mixed_widths() {
         // "a你好b" = 1+2+2+1 = 6 列，宽度 4 → "a你"（3 列）+ "好b"（3 列）
         assert_eq!(wrap_line("a你好b", 4), vec!["a你", "好b"]);
+    }
+
+    /// 角色命名规范：头部行必须为 [For Thee]/[Super Agent]/[Super Think]/[Sub xxx Agent]。
+    #[test]
+    fn role_headers_follow_naming_scheme() {
+        use crate::app::{ChatMessage, MessageRole};
+
+        let cases = [
+            (MessageRole::User, "[For Thee]", "hi"),
+            (MessageRole::Agent, "[Super Agent]", "hello!"),
+            (MessageRole::System, "[Super Think]", "GCCP 提示"),
+            (MessageRole::ToolCall, "[Sub web_fetch Agent]", "web_fetch {\"url\":\"x\"}"),
+            (MessageRole::ToolResult, "[Sub exec Agent]", "{\"ok\":1}"),
+        ];
+        for (role, expect_head, content) in cases.iter() {
+            let mut lines = Vec::new();
+            let msg = ChatMessage {
+                role: role.clone(),
+                content: content.to_string(),
+                timestamp: "00:00:00".to_string(),
+            };
+            append_message(&mut lines, &msg, 80);
+            assert!(
+                !lines.is_empty(),
+                "role {:?}: 应至少渲染头部行",
+                role
+            );
+            let head = lines[0].to_string();
+            assert!(
+                head.starts_with(expect_head),
+                "role {:?}: 头部应为 '{}'，实际 '{}'",
+                role,
+                expect_head,
+                head
+            );
+        }
+    }
+
+    /// 子代理 tag 兜底：空内容 / 无工具名时回退 "exec"。
+    #[test]
+    fn sub_agent_tag_fallback() {
+        use crate::app::{ChatMessage, MessageRole};
+        let mut lines = Vec::new();
+        let msg = ChatMessage {
+            role: MessageRole::ToolResult,
+            content: String::new(),
+            timestamp: "00:00:00".to_string(),
+        };
+        append_message(&mut lines, &msg, 80);
+        assert!(lines[0].to_string().starts_with("[Sub exec Agent]"));
+    }
+
+    /// 超长工具名 tag 截断到 12 字符，保持 "[Sub xxx Agent]" 结构完整。
+    #[test]
+    fn sub_agent_tag_truncated() {
+        use crate::app::{ChatMessage, MessageRole};
+        let mut lines = Vec::new();
+        let msg = ChatMessage {
+            role: MessageRole::ToolCall,
+            content: "very_long_tool_name_that_exceeds_budget args".to_string(),
+            timestamp: "00:00:00".to_string(),
+        };
+        append_message(&mut lines, &msg, 80);
+        assert!(lines[0].to_string().starts_with("[Sub very_long_to Agent]"));
     }
 }

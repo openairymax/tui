@@ -52,8 +52,11 @@ AIRYRT_HOME="${AIRYRT_HOME:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 # > 默认 ~/.airymaxrt。
 if [ -z "${AIRY_HOME:-}" ]; then
     # 候选顺序：启动器自身所在安装根（$AIRY_HOME/bin/airymaxrt → ../config/install.env，
-    # 支持 --prefix 自定义安装位置）→ 常用位置兼容。
+    # 支持 --prefix 自定义安装位置）→ 源码树同级的运行根（开发布局：
+    # 运行根与仓库并列，如 <workspace>/.airymaxrt + <workspace>/airymaxhub）
+    # → 常用位置兼容。
     for _CAND in "${SCRIPT_DIR}/../config/install.env" \
+                 "$AIRYRT_HOME/../.airymaxrt/config/install.env" \
                  "$HOME/.local/share/airymaxrt/config/install.env" \
                  "$HOME/.airymaxrt/config/install.env"; do
         if [ -f "$_CAND" ] && _HOME="$(sed -n 's/^AIRY_HOME=//p' "$_CAND" 2>/dev/null | head -1)"; then
@@ -65,6 +68,8 @@ if [ -z "${AIRY_HOME:-}" ]; then
     done
 fi
 AIRY_HOME="${AIRY_HOME:-$HOME/.airymaxrt}"
+# 导出给子进程（TUI / airy_cli / daemon 群统一运行时根，避免默认 $HOME 分叉）
+export AIRY_HOME
 RUNTIME_DIR="${AIRY_RUNTIME_DIR:-$AIRY_HOME/run}"
 GATEWAY_PORT="${AIRY_GATEWAY_PORT:-8080}"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
@@ -134,6 +139,18 @@ log debug "==== airymaxrt 启动 ===="
 log debug "配置: AIRYRT_HOME=$AIRYRT_HOME AIRY_HOME=$AIRY_HOME RUNTIME_DIR=$RUNTIME_DIR"
 log debug "配置: GATEWAY_URL=$GATEWAY_URL MODEL_CONFIG=$MODEL_CONFIG AGENT_FILE=$AGENT_FILE"
 
+# ── 运行环境注入：agentrt-env.sh（build.sh 生成，含 AIRY_AGENT_ACL 等）──────
+# daemon 群与前端统一继承该环境；不 source 时 daemon 以 fail-closed 运行，
+# agent 工具全部被 ACL 拒绝（历史故障：airymaxrt 拉起的 agent_d 无 ACL，
+# 任务执行阶段 shell_run/fs_* 全部 Permission denied）。
+# 仅注入缺失变量，不覆盖用户显式设置（agentrt-env.sh 内 export 的
+# AIRY_HOME 等与脚本已解析值一致，重复赋值无害）。
+if [ -f "$AIRY_HOME/bin/agentrt-env.sh" ]; then
+    log debug "注入运行环境: $AIRY_HOME/bin/agentrt-env.sh"
+    # shellcheck disable=SC1090
+    . "$AIRY_HOME/bin/agentrt-env.sh"
+fi
+
 # ── 组件定位 ─────────────────────────────────────────────────────────────────
 # find_tool <env_name> <command_name> <候选路径...>
 #   优先显式环境变量，其次伞仓内构建产物，最后 PATH 中的命令。
@@ -171,6 +188,13 @@ TUI_BIN="$(find_tool AIRY_TUI_BIN agentrt-tui \
     "$AIRYRT_HOME/sdk/tui/target/release/agentrt-tui" \
     "$AIRYRT_HOME/sdk/tui/target/debug/agentrt-tui")"
 
+# 流式 CLI（非 TTY 降级前端）：C 版 airy_cli，进程内直连 daemon 群，
+# 无 TTY（管道/CI/SSH 重定向）时以流式行输出工作，无需全屏。
+CLI_BIN="$(find_tool AIRY_CLI_BIN airy_cli \
+    "$AIRY_HOME/bin/airy_cli" \
+    "$AIRYRT_HOME/agentrt/build/tools/airy_cli/airy_cli" \
+    "$AIRYRT_HOME/build/tools/airy_cli/airy_cli")"
+
 GATEWAY_BIN="$(find_tool AIRY_GATEWAY_BIN gateway_d \
     "$AIRY_HOME/bin/gateway_d" \
     "$AIRYRT_HOME/agentrt/build/bin/gateway_d" \
@@ -187,6 +211,7 @@ THINK_BIN="$(find_tool AIRY_THINK_BIN think_d \
     "$AIRYRT_HOME/build/bin/think_d")"
 
 log debug "组件定位结果: TUI_BIN=${TUI_BIN:-（缺失）}"
+log debug "组件定位结果: CLI_BIN=${CLI_BIN:-（缺失）}"
 log debug "组件定位结果: GATEWAY_BIN=${GATEWAY_BIN:-（缺失）}"
 log debug "组件定位结果: LLM_BIN=${LLM_BIN:-（缺失）}"
 log debug "组件定位结果: THINK_BIN=${THINK_BIN:-（缺失）}"
@@ -213,7 +238,7 @@ wait_for_sock() { # <socket路径> <秒数>
     local path="$1" tries="$2" i
     log debug "socket 等待开始: $path（最多 ${tries}s）"
     for ((i = 0; i < tries; i++)); do
-        if [ -S "$path" ]; then
+        if _sock_alive "$path"; then
             log debug "socket 已就绪: $path（第 $((i + 1)) 次尝试）"
             return 0
         fi
@@ -222,6 +247,17 @@ wait_for_sock() { # <socket路径> <秒数>
     done
     log debug "socket 等待超时: $path"
     return 1
+}
+
+# _sock_alive <socket路径>：真实连接探测（0=有进程监听，可复用）。
+# 仅查文件存在（-S）不可靠：崩溃/重复拉起后可能残留无监听者的
+# 死 socket（stale），此时 connect 返回 ECONNREFUSED。进程路径匹配
+# （pgrep -f 完整路径）同样不可靠：daemon 以相对路径启动时匹配不到，
+# 会误判离线而重复拉起，新实例 unlink 旧 socket 造成死链。
+_sock_alive() { # <socket路径>
+    local path="$1"
+    [ -S "$path" ] || return 1
+    python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect(sys.argv[1])" "$path" 2>/dev/null
 }
 
 # ── 子命令：help / status / doctor / uninstall ──────────────────────────────
@@ -284,11 +320,38 @@ if [ -z "$TUI_BIN" ]; then
 fi
 log info "组件就绪: TUI=$(basename "$TUI_BIN")"
 
+# ── 智能双模前端启动（2026-08-15 用户决策：所有端统一经 airymaxrt 启动）──
+#   有 TTY（交互终端/SSH -t） → Rust TUI（全屏，交互丰富）
+#   无 TTY（管道/CI/脚本重定向）→ C 版 airy_cli 流式（-p 单轮，stdin 读指令）
+# 前端以子进程运行：bash 保持信号处理能力，外部强杀经 trap 转 exit，
+# cleanup 可回收前端与本次拉起的 daemons。
+launch_frontend() {
+    log debug "TTY 检测: stdin=$([ -t 0 ] && echo tty || echo pipe) stdout=$([ -t 1 ] && echo tty || echo pipe)"
+    # 前端子进程必须显式继承脚本 stdin（<&0）：非交互 bash 会把后台命令的
+    # stdin 重定向为 /dev/null（POSIX 行为），导致 TUI 收不到按键、CLI -p
+    # 的 fgets 立即 EOF（表现为「airymaxrt 无输出即退出」）。
+    if [ -t 0 ] && [ -t 1 ]; then
+        log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
+        log info "进入交互界面（Rust TUI，Ctrl+C 退出）"
+        "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" <&0 &
+    elif [ -n "$CLI_BIN" ]; then
+        log debug "执行: \"$CLI_BIN\" -p（非 TTY 流式单轮，stdin 读指令）"
+        log info "进入流式 CLI（airy_cli，非 TTY 环境；stdin 读指令）"
+        "$CLI_BIN" -p <&0 &
+    else
+        log warn "非 TTY 且未找到 airy_cli，回退 Rust TUI（可能需要 TTY）"
+        "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" <&0 &
+    fi
+    TUI_PID=$!
+    wait "$TUI_PID" || return $?
+    return 0
+}
+
 # ── 状态判断 1：gateway 已在线？直接进入 ───────────────────────────────────
 if wait_for_health "$GATEWAY_URL" 1; then
     log info "gateway 在线（$GATEWAY_URL），直接进入交互界面"
-    log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
-    exec "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE"
+    launch_frontend
+    exit $?
 fi
 log info "gateway 离线（$GATEWAY_URL），尝试拉起守护进程"
 
@@ -333,12 +396,13 @@ cleanup() {
     fi
     # 2. 本次拉起的 daemons（不影响外部已运行的同名进程）：gateway 先停（统一
     #    入口，其余 daemon 不再接收外部请求），再逐个回收 Unix socket daemon。
+    #    注意：无论 gateway 是否复用（GATEWAY_PID 可能为空），本次会话拉起的
+    #    daemon 一律回收——此前以 GATEWAY_PID 非空为门，复用场景下 daemon 不
+    #    被停止，cleanup 末尾 `wait` 等待未退出的 daemon 子进程而永久挂起。
     _stop_pid "$GATEWAY_PID" "gateway_d"
-    if [ -n "$GATEWAY_PID" ]; then
-        for pid in "${ALL_DAEMON_PIDS[@]}"; do
-            _stop_pid "$pid" "daemon"
-        done
-    fi
+    for pid in "${ALL_DAEMON_PIDS[@]}"; do
+        _stop_pid "$pid" "daemon"
+    done
     wait 2>/dev/null || true
     log debug "清理完成"
 }
@@ -369,6 +433,20 @@ else
             log warn "$bname 未找到，跳过"
             return 1
         fi
+        # 去重：同名 daemon 已运行（socket 可连接 → 进程真实监听）→ 复用。
+        # 判定用连接探测而非 pgrep -f 完整路径：daemon 以相对路径启动时
+        # pgrep 匹配不到，会误判离线而重复拉起（历史故障：多实例抢占
+        # tool.sock/llm.sock，新实例 unlink 旧 socket 造成死链）。
+        if _sock_alive "$RUNTIME_DIR/$sock_name"; then
+            log info "$bname 已在运行（复用 $RUNTIME_DIR/$sock_name）"
+            return 0
+        fi
+        # socket 存在但无监听（崩溃残留/上次会话未清理）→ 先移除，否则
+        # 新实例 bind 报 Address already in use 而启动失败。
+        if [ -S "$RUNTIME_DIR/$sock_name" ]; then
+            log warn "$bname 检测到 stale socket（无监听），移除后重新拉起: $RUNTIME_DIR/$sock_name"
+            rm -f "$RUNTIME_DIR/$sock_name"
+        fi
         "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
         local pid=$!
         ALL_DAEMON_PIDS+=("$pid")
@@ -382,20 +460,28 @@ else
 
     # ---- 1. llm_d：核心依赖，--manager 指定模型配置（provider/endpoint 来源）----
     if [ -x "$LLM_BIN" ]; then
-        if [ -f "$MODEL_CONFIG" ]; then
-            log debug "llm_d 使用模型配置: $MODEL_CONFIG"
-            "$LLM_BIN" --manager "$MODEL_CONFIG" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
+        if _sock_alive "$RUNTIME_DIR/llm.sock"; then
+            log info "llm_d 已在运行（复用 $RUNTIME_DIR/llm.sock）"
         else
-            log warn "模型配置不存在（$MODEL_CONFIG），llm_d 使用默认配置"
-            "$LLM_BIN" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
-        fi
-        LLM_PID=$!
-        ALL_DAEMON_PIDS+=("$LLM_PID")
-        log info "llm_d 已拉起（PID=$LLM_PID），日志: $AIRY_HOME/logs/llm_d.out"
-        if wait_for_sock "$RUNTIME_DIR/llm.sock" 8; then
-            log info "llm_d 就绪（$RUNTIME_DIR/llm.sock）"
-        else
-            log warn "llm_d socket 未就绪（$RUNTIME_DIR/llm.sock），查看日志: $AIRY_HOME/logs/llm_d.out"
+            if [ -S "$RUNTIME_DIR/llm.sock" ]; then
+                log warn "llm_d 检测到 stale socket（无监听），移除后重新拉起: $RUNTIME_DIR/llm.sock"
+                rm -f "$RUNTIME_DIR/llm.sock"
+            fi
+            if [ -f "$MODEL_CONFIG" ]; then
+                log debug "llm_d 使用模型配置: $MODEL_CONFIG"
+                "$LLM_BIN" --manager "$MODEL_CONFIG" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
+            else
+                log warn "模型配置不存在（$MODEL_CONFIG），llm_d 使用默认配置"
+                "$LLM_BIN" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
+            fi
+            LLM_PID=$!
+            ALL_DAEMON_PIDS+=("$LLM_PID")
+            log info "llm_d 已拉起（PID=$LLM_PID），日志: $AIRY_HOME/logs/llm_d.out"
+            if wait_for_sock "$RUNTIME_DIR/llm.sock" 8; then
+                log info "llm_d 就绪（$RUNTIME_DIR/llm.sock）"
+            else
+                log warn "llm_d socket 未就绪（$RUNTIME_DIR/llm.sock），查看日志: $AIRY_HOME/logs/llm_d.out"
+            fi
         fi
     fi
 
@@ -424,10 +510,43 @@ else
     _start_daemon "$(find_tool AIRY_OBSERVE_BIN observe_d "$AIRY_HOME/bin/observe_d" "$AIRYRT_HOME/agentrt/build/bin/observe_d" "$AIRYRT_HOME/build/bin/observe_d")" "observe.sock" 6
 
     # ---- 4. gateway_d：统一协议入口（HTTP/WS/HTTP2），最后启动 ----
-    log debug "执行: \"$GATEWAY_BIN\" -h 127.0.0.1 -p \"$GATEWAY_PORT\" > \"$AIRY_HOME/logs/gateway_d.out\" 2>&1 &"
-    "$GATEWAY_BIN" -h 127.0.0.1 -p "$GATEWAY_PORT" >"$AIRY_HOME/logs/gateway_d.out" 2>&1 &
-    GATEWAY_PID=$!
-    log info "gateway_d 已拉起（PID=$GATEWAY_PID），日志: $AIRY_HOME/logs/gateway_d.out"
+    # 端口自适应：默认端口不可 bind（如残留半开连接占位）时自动探测 8083+
+    # 可用端口，避免 "8080 被占 → gateway 起不来 → TUI 连不上" 的启动失败。
+    _gw_port_available() { # <port>：python3 探测 bind 可用性（返回 0=可用）
+        python3 -c "import socket,sys; s=socket.socket(); s.bind(('127.0.0.1',int(sys.argv[1]))); s.close()" "$1" 2>/dev/null
+    }
+    GW_START="yes"   # 默认启动；探测到已有在线 gateway 时置 no 复用
+    if command -v python3 >/dev/null 2>&1; then
+        for _p in "$GATEWAY_PORT" $(seq 8083 8090); do
+            if _gw_port_available "$_p"; then
+                if [ "$_p" != "$GATEWAY_PORT" ]; then
+                    log warn "端口 $GATEWAY_PORT 被占用（残留连接），gateway 改用端口 $_p"
+                    GATEWAY_PORT="$_p"
+                    GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+                fi
+                break
+            fi
+            # 端口不可 bind 但已有健康 gateway 在线 → 直接复用（避免重复拉起，
+            # 此前缺陷：复用后仍无条件启动新实例，产生双 gateway 与进程泄漏）
+            if wait_for_health "http://127.0.0.1:$_p" 1; then
+                if [ "$_p" != "$GATEWAY_PORT" ]; then
+                    log info "端口 $_p 已有在线 gateway，直接复用"
+                    GATEWAY_PORT="$_p"
+                    GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+                fi
+                GW_START="no"
+                break
+            fi
+        done
+    fi
+    if [ "$GW_START" = "yes" ]; then
+        log debug "执行: \"$GATEWAY_BIN\" -h 127.0.0.1 -p \"$GATEWAY_PORT\" > \"$AIRY_HOME/logs/gateway_d.out\" 2>&1 &"
+        "$GATEWAY_BIN" -h 127.0.0.1 -p "$GATEWAY_PORT" >"$AIRY_HOME/logs/gateway_d.out" 2>&1 &
+        GATEWAY_PID=$!
+        log info "gateway_d 已拉起（PID=$GATEWAY_PID），日志: $AIRY_HOME/logs/gateway_d.out"
+    else
+        log info "gateway 复用在线实例（$GATEWAY_URL），本次会话不接管其生命周期"
+    fi
 
     if wait_for_health "$GATEWAY_URL" 15; then
         log info "gateway 就绪（$GATEWAY_URL）"
@@ -436,14 +555,9 @@ else
     fi
 fi
 
-# ── 前台进入 TUI（退出后由 EXIT trap 清理本次拉起的 daemons）──────────────
-# TUI 以子进程运行而非 exec 替换：bash 保持对信号的处理能力，外部强杀
-# （SIGTERM/SIGINT）时经 trap 转入 exit 路径，cleanup 可回收 TUI 与 daemons。
-log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
-log info "进入交互界面（Ctrl+C 退出）"
-"$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" &
-TUI_PID=$!
-rc=0
-wait "$TUI_PID" || rc=$?
+# ── 前台进入交互界面（退出后由 EXIT trap 清理本次拉起的 daemons）──────────
+# 智能双模由 launch_frontend 统一处理（有 TTY → Rust TUI；非 TTY → airy_cli 流式）。
+launch_frontend
+rc=$?
 log info "交互界面退出（exit=$rc）"
 exit $rc

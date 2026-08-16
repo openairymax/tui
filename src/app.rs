@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::client::{GatewayClient, PendingApproval, RunResponse};
+use crate::client::{GatewayClient, HallBoard, HallEvent, HallTask, PendingApproval, RunResponse};
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
 use crate::memory::{self, ConversationMemory};
 use crate::skills::{self, SkillStore};
@@ -30,6 +30,10 @@ pub enum ActivePanel {
     Logs,
     Memory,
     Plugins,
+    /// 任务看板（hall.board：work_hall 执行实例 + 在线 agent，实时刷新）
+    Board,
+    /// 事件流（hall.stream：全局 gseq 因果序回放）
+    Events,
 }
 
 /// Represents a chat message in the conversation.
@@ -69,6 +73,8 @@ pub struct App {
     pub messages: VecDeque<ChatMessage>,
     /// User input buffer
     pub input: String,
+    /// 输入光标位置（UTF-8 字节索引；←→ 移动、Backspace/Delete 删除、字符插入点）
+    pub cursor: usize,
     /// Currently active panel
     pub active_panel: ActivePanel,
     /// Scroll position in chat
@@ -87,6 +93,10 @@ pub struct App {
     pub cost: f64,
     /// Elapsed time since session start
     pub session_start: Instant,
+    /// 当前回合开始时刻（submit_input 记录，结果消费时结算）
+    turn_started: Instant,
+    /// 上一回合耗时（对话区回合分隔线展示：Worked for Ns）
+    pub last_turn_elapsed: Option<Instant>,
     /// Whether MCP is enabled
     pub mcp_enabled: bool,
     /// Whether A2A is enabled
@@ -125,6 +135,8 @@ pub struct App {
     history_pos: Option<usize>,
     /// 流式输出：当前正在流式追加的 Agent 回复文本（chat.rs 增量渲染）
     pub streaming_text: String,
+    /// 流式工具循环事件（SSE __airy_evt 渲染行，如 `[Sub web_search Agent] …`）
+    pub stream_tool_events: Vec<String>,
     /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
@@ -133,7 +145,49 @@ pub struct App {
     last_approval_poll: Instant,
     /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
     approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Vec<PendingApproval>>>,
+    /// 任务看板缓存（hall.board 最近一次成功拉取；Board 面板 1s 节流刷新）
+    pub hall_board: Option<HallBoard>,
+    /// 事件流缓存（hall.stream 最近一次拉取，最新在前）
+    pub hall_events: Vec<HallEvent>,
+    /// hall 面板轮询节流（上次拉取时刻）
+    last_hall_poll: Instant,
+    /// hall 面板在途请求（spawn 后异步返回，下次 poll_hall 消费结果）
+    hall_poll_rx: Option<tokio::sync::oneshot::Receiver<HallPollOutcome>>,
+    /// /chain 在途请求（task_id 为空 = 任务列表）
+    chain_pending: Option<tokio::sync::oneshot::Receiver<ChainOutcome>>,
+    /// /chain 请求的任务 id（" " 空串 = 任务列表，非空 = 该任务决策链）
+    chain_task: String,
+    /// 运维命令（/daemons /agents /tools /models /mem /rpc）在途请求
+    ops_pending: Option<tokio::sync::oneshot::Receiver<OpsOutcome>>,
+    /// 运维命令的展示标签（方法名，错误渲染用）
+    ops_label: String,
 }
+
+/// hall 面板轮询结果（看板/事件流二选一）。
+enum HallPollOutcome {
+    Board(Result<HallBoard>),
+    Events(Result<Vec<HallEvent>>),
+}
+
+/// /chain 决策链查询结果（任务列表 / 单任务事件链）。
+enum ChainOutcome {
+    Tasks(Result<Vec<HallTask>>),
+    Events(Result<Vec<HallEvent>>),
+}
+
+/// 运维命令结果（/daemons 聚合 / 通用方法调用）。
+enum OpsOutcome {
+    /// 16 个 daemon 的 health_check 结果（ns, 结果）
+    Daemons(Vec<(String, Result<serde_json::Value>)>),
+    /// 单个 gateway 方法调用结果
+    Call(Result<serde_json::Value>),
+}
+
+/// gateway 转发的 16 个 daemon 命名空间（与 C CLI CLI_DAEMONS 对齐）。
+const OPS_DAEMON_NS: [&str; 16] = [
+    "agent", "tool", "hook", "plugin", "think", "monit", "sched", "channel", "market", "llm",
+    "cupolas", "mem", "info", "notify", "observe", "a2a",
+];
 
 /// 后台 LLM 请求的类型（决定结果如何应用）。
 #[derive(Debug)]
@@ -171,6 +225,8 @@ struct PendingTurn {
     session_id: String,
     /// 流式输出接收端（StreamRound）：SSE 增量块（option：非流式请求为 None）
     stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// 流式工具事件接收端（tool_call/tool_result JSON，option：非流式请求为 None）
+    tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 }
 
 /// 后台请求的结果载荷（LLM 调用结果 / 连接检查结果）。
@@ -187,6 +243,7 @@ impl App {
             agent_file: agent_file.to_string(),
             messages: VecDeque::with_capacity(MAX_CHAT_MESSAGES),
             input: String::new(),
+            cursor: 0,
             active_panel: ActivePanel::Chat,
             scroll_offset: 0,
             gateway,
@@ -196,6 +253,8 @@ impl App {
             tokens: 0,
             cost: 0.0,
             session_start: Instant::now(),
+            turn_started: Instant::now(),
+            last_turn_elapsed: None,
             mcp_enabled: false,
             a2a_enabled: false,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
@@ -223,10 +282,19 @@ impl App {
             input_history: Vec::with_capacity(16),
             history_pos: None,
             streaming_text: String::new(),
+            stream_tool_events: Vec::new(),
             approvals: Vec::new(),
             project_context: String::new(),
             last_approval_poll: Instant::now(),
             approval_poll_rx: None,
+            hall_board: None,
+            hall_events: Vec::new(),
+            last_hall_poll: Instant::now(),
+            hall_poll_rx: None,
+            chain_pending: None,
+            chain_task: String::new(),
+            ops_pending: None,
+            ops_label: String::new(),
         }
     }
 
@@ -294,6 +362,28 @@ impl App {
     /// 重新打开首次启动向导（/hiairy 命令触发）。
     pub fn open_wizard(&mut self) {
         self.wizard.reopen();
+    }
+
+    /// 应用首次启动向导的快速配置结果：模型名持久化（config.toml，随请求下发）。
+    ///
+    /// API Key 已由向导写回 secrets.env（llm_d 热加载），此处仅记录日志。
+    pub fn apply_wizard_result(&mut self, r: &crate::wizard::WizardResult) {
+        if !r.model.is_empty() {
+            self.model = r.model.clone();
+            persist_model(&self.model);
+            self.add_log(
+                "INFO",
+                format!("向导配置：模型 {}（provider={}）", self.model, r.provider),
+            );
+        } else {
+            self.add_log("INFO", "向导配置：未指定模型，使用网关默认模型".to_string());
+        }
+        if r.api_key_set {
+            self.add_log(
+                "INFO",
+                format!("向导配置：API Key 已写入 secrets.env（provider={}）", r.provider),
+            );
+        }
     }
 
     /// 记录一条运行时日志（F3 面板展示，不依赖网关 HTTP 端点）。
@@ -371,6 +461,8 @@ impl App {
         };
         self.history_pos = Some(next);
         self.input = self.input_history[next].clone();
+        // 历史回填后光标置于末尾（readline 惯例）
+        self.cursor = self.input.len();
     }
 
     /// 浏览下一条输入历史（Alt+↓；越界回到手输状态并清空输入）。
@@ -386,6 +478,193 @@ impl App {
             self.history_pos = None;
             self.input.clear();
         }
+        // 历史回填后光标置于末尾（readline 惯例）
+        self.cursor = self.input.len();
+    }
+
+    // ─────────── 输入编辑（光标感知，readline 风格） ───────────
+
+    /// 在光标处插入一个字符。
+    pub fn input_insert_char(&mut self, c: char) {
+        let pos = self.cursor.min(self.input.len());
+        if !self.input.is_char_boundary(pos) {
+            return;
+        }
+        self.input.insert(pos, c);
+        self.cursor = pos + c.len_utf8();
+    }
+
+    /// 在光标处插入多字节文本（Alt+Enter 换行用）。
+    pub fn input_insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let pos = self.cursor.min(self.input.len());
+        if !self.input.is_char_boundary(pos) {
+            return;
+        }
+        self.input.insert_str(pos, text);
+        self.cursor = pos + text.len();
+    }
+
+    /// Backspace：删除光标前一个字符。
+    pub fn input_backspace(&mut self) {
+        if self.cursor == 0 || self.input.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        let pos = self.cursor.min(self.input.len());
+        if !self.input.is_char_boundary(pos) {
+            return;
+        }
+        // 回退一个字符边界
+        let start = match self.input[..pos].char_indices().next_back() {
+            Some((i, _)) => i,
+            None => return,
+        };
+        self.input.drain(start..pos);
+        self.cursor = start;
+    }
+
+    /// Delete：删除光标后一个字符。
+    pub fn input_delete_after(&mut self) {
+        let pos = self.cursor.min(self.input.len());
+        if pos >= self.input.len() || !self.input.is_char_boundary(pos) {
+            return;
+        }
+        let end = match self.input[pos..].char_indices().nth(1) {
+            Some((i, _)) => pos + i,
+            None => self.input.len(),
+        };
+        self.input.drain(pos..end);
+    }
+
+    /// ←：光标左移一个字符。
+    pub fn cursor_left(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let pos = self.cursor.min(self.input.len());
+        if !self.input.is_char_boundary(pos) {
+            return;
+        }
+        self.cursor = match self.input[..pos].char_indices().next_back() {
+            Some((i, _)) => i,
+            None => 0,
+        };
+    }
+
+    /// →：光标右移一个字符。
+    pub fn cursor_right(&mut self) {
+        let pos = self.cursor.min(self.input.len());
+        if pos >= self.input.len() || !self.input.is_char_boundary(pos) {
+            return;
+        }
+        self.cursor = match self.input[pos..].char_indices().nth(1) {
+            Some((i, _)) => pos + i,
+            None => self.input.len(),
+        };
+    }
+
+    /// Home / Ctrl+A：光标到开头。
+    pub fn cursor_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// End / Ctrl+E：光标到末尾。
+    pub fn cursor_end(&mut self) {
+        self.cursor = self.input.len();
+    }
+
+    /// Ctrl+W：删除光标前一个词（空白分隔）。
+    pub fn input_delete_word_before(&mut self) {
+        let pos = self.cursor.min(self.input.len());
+        if pos == 0 || !self.input.is_char_boundary(pos) {
+            return;
+        }
+        let before = &self.input[..pos];
+        // 先跳过词尾空白，再删到词首
+        let mut end = before.len();
+        while end > 0 {
+            let prev = before[..end].chars().next_back().unwrap();
+            if !prev.is_whitespace() {
+                break;
+            }
+            end -= prev.len_utf8();
+        }
+        while end > 0 {
+            let prev = before[..end].chars().next_back().unwrap();
+            if prev.is_whitespace() {
+                break;
+            }
+            end -= prev.len_utf8();
+        }
+        self.input.drain(end..pos);
+        self.cursor = end;
+    }
+
+    /// Ctrl+U：删除光标前全部内容。
+    pub fn input_delete_to_start(&mut self) {
+        let pos = self.cursor.min(self.input.len());
+        if pos == 0 || !self.input.is_char_boundary(pos) {
+            return;
+        }
+        self.input.drain(..pos);
+        self.cursor = 0;
+    }
+
+    /// Tab 补全：补全 / 命令或技能名。
+    ///
+    /// 取光标前的当前词，按前缀匹配候选；再次 Tab 在当前候选间循环
+    /// （当前词已等于某候选时取下一个，天然支持循环，无需额外状态）。
+    pub fn tab_complete(&mut self) {
+        // 候选：/ 命令 + 本地技能名
+        let mut cands: Vec<String> = vec![
+            "/model".into(),
+            "/hiairy".into(),
+            "/help".into(),
+            "/clear".into(),
+            "/status".into(),
+            "/memory".into(),
+            "/skills".into(),
+            "/board".into(),
+            "/events".into(),
+            "/chain".into(),
+            "/daemons".into(),
+            "/agents".into(),
+            "/tools".into(),
+            "/models".into(),
+            "/mem".into(),
+            "/rpc".into(),
+        ];
+        cands.extend(self.skills.list().into_iter().map(|s| s.name));
+        if cands.is_empty() {
+            return;
+        }
+
+        // 光标前的当前词（最后一段空白分隔 token）
+        let pos = self.cursor.min(self.input.len());
+        if !self.input.is_char_boundary(pos) {
+            return;
+        }
+        let before = &self.input[..pos];
+        let word_start = before.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+        let prefix = before[word_start..].to_string();
+
+        let matches: Vec<&String> = cands
+            .iter()
+            .filter(|c| c.starts_with(&prefix))
+            .collect();
+        if matches.is_empty() {
+            return;
+        }
+        // 当前词已等于某候选 → 取下一个；否则取第一个匹配
+        let next = match matches.iter().position(|c| c.as_str() == prefix) {
+            Some(p) => matches[(p + 1) % matches.len()].clone(),
+            None => matches[0].clone(),
+        };
+        self.input.replace_range(word_start..pos, &next);
+        self.cursor = word_start + next.len();
     }
 
     /// /model 命令：查看（无参数）或设置（/model <模型名>）当前模型。
@@ -418,6 +697,333 @@ impl App {
             MessageRole::System,
             format!("模型已设置为：{}（已持久化）", self.model),
         );
+    }
+
+    /// /status 命令：展示运行时状态总览（连接/版本/模型/用量/记忆/技能）。
+    fn cmd_status(&mut self) {
+        let conn = if self.connected {
+            "ONLINE"
+        } else {
+            "OFFLINE"
+        };
+        let model = if self.model.is_empty() {
+            "默认（网关 / llm_d 自动回落）".to_string()
+        } else {
+            self.model.clone()
+        };
+        let phase = self.flow_phase.label();
+        let text = format!(
+            "运行时状态\n  \
+             连接: {}  v{}\n  \
+             模型: {}\n  \
+             阶段: {} · 回合: {} · Token: {} · 成本: ${:.4} · 耗时: {}\n  \
+             记忆: {} 条 · 技能: {} 条\n  \
+             配置: {}",
+            conn,
+            self.gateway_version.as_deref().unwrap_or("unknown"),
+            model,
+            phase,
+            self.turn,
+            self.tokens,
+            self.cost,
+            self.elapsed_time(),
+            self.memory.len(),
+            self.skills.len(),
+            self.config_file
+        );
+        self.add_message(MessageRole::System, text);
+        self.add_log("INFO", "状态查询（/status）".to_string());
+    }
+
+    /// /skills 命令：列出本地技能库（任务成功后自动沉淀的可复用技能）。
+    fn cmd_skills(&mut self) {
+        let list = self.skills.list();
+        if list.is_empty() {
+            self.add_message(
+                MessageRole::System,
+                "本地技能库为空：任务完成后经验会自动沉淀为可复用技能。".to_string(),
+            );
+            return;
+        }
+        let mut text = format!("本地技能库（{} 条）", list.len());
+        for s in list.iter().take(12) {
+            text.push_str(&format!(
+                "\n  ✓ {}（{} · 复用 {} 次）：{}",
+                s.name, s.category, s.success_count, s.summary
+            ));
+        }
+        if list.len() > 12 {
+            text.push_str(&format!("\n  … 另有 {} 条", list.len() - 12));
+        }
+        self.add_message(MessageRole::System, text);
+    }
+
+    /// /chain 命令：无参数列出 hall_store 任务（最新在前）；带 task_id 回放该任务
+    /// 全部类别事件（按 gseq 因果序 = 决策链）。数据经 gateway hall.tasks/hall.replay。
+    ///
+    /// 结果异步返回：先给"读取中"提示，poll_chain 消费后渲染进对话区。
+    fn cmd_chain(&mut self, input: &str) {
+        let arg = input[6..].trim().to_string();
+        if self.chain_pending.is_some() {
+            self.add_message(
+                MessageRole::System,
+                "决策链查询进行中，请稍候…".to_string(),
+            );
+            return;
+        }
+        let gw = self.gateway.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.chain_task = arg.clone();
+        if arg.is_empty() {
+            self.add_message(MessageRole::System, "正在读取任务列表…".to_string());
+            tokio::spawn(async move {
+                let _ = tx.send(ChainOutcome::Tasks(gw.hall_tasks().await));
+            });
+        } else {
+            self.add_message(
+                MessageRole::System,
+                format!("正在回放决策链（task_id={}）…", arg),
+            );
+            tokio::spawn(async move {
+                let _ = tx.send(ChainOutcome::Events(gw.hall_replay(&arg, None).await));
+            });
+        }
+        self.chain_pending = Some(rx);
+    }
+
+    /// 消费 /chain 的异步结果并渲染进对话区。
+    pub fn poll_chain(&mut self) {
+        let Some(mut rx) = self.chain_pending.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => match outcome {
+                ChainOutcome::Tasks(Ok(tasks)) => {
+                    if tasks.is_empty() {
+                        self.add_message(
+                            MessageRole::System,
+                            "决策链为空：暂无任务文件（$AIRY_HOME/data/agentrt/hall）。"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                    let mut text = format!("任务列表（{} 个，最新在前）", tasks.len());
+                    for t in tasks.iter().take(20) {
+                        text.push_str(&format!(
+                            "\n  {} · {} 事件 · {}",
+                            t.task_id, t.event_count, t.latest_ts
+                        ));
+                    }
+                    if tasks.len() > 20 {
+                        text.push_str(&format!("\n  … 另有 {} 个（/chain <task_id> 查看决策链）", tasks.len() - 20));
+                    } else {
+                        text.push_str("\n  /chain <task_id> 查看决策链");
+                    }
+                    self.add_message(MessageRole::System, text);
+                }
+                ChainOutcome::Tasks(Err(e)) => {
+                    self.add_message(MessageRole::System, format!("任务列表读取失败：{}", e));
+                }
+                ChainOutcome::Events(Ok(events)) => {
+                    let tid = self.chain_task.clone();
+                    if events.is_empty() {
+                        self.add_message(
+                            MessageRole::System,
+                            format!("决策链为空：任务「{}」暂无事件。", tid),
+                        );
+                        return;
+                    }
+                    let mut text = format!("决策链「{}」（{} 条事件，gseq 因果序）", tid, events.len());
+                    for e in events.iter().take(64) {
+                        text.push_str(&format!("\n  {}", crate::panels::events::event_line(e, 96)));
+                    }
+                    if events.len() > 64 {
+                        text.push_str(&format!("\n  … 另有 {} 条（详见 F7 事件流面板）", events.len() - 64));
+                    }
+                    self.add_message(MessageRole::System, text);
+                }
+                ChainOutcome::Events(Err(e)) => {
+                    self.add_message(MessageRole::System, format!("决策链读取失败：{}", e));
+                }
+            },
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                self.chain_pending = Some(rx);
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        }
+    }
+
+    /// /daemons：16 个 daemon 命名空间经 gateway health_check 聚合在线状态。
+    ///
+    /// 结果异步返回：先给"检查中"提示，poll_ops 消费后渲染进对话区。
+    fn cmd_daemons(&mut self) {
+        if self.ops_pending.is_some() {
+            self.add_message(
+                MessageRole::System,
+                "运维命令执行中，请稍候…".to_string(),
+            );
+            return;
+        }
+        self.ops_label = "daemons".to_string();
+        self.add_message(MessageRole::System, "正在检查 daemon 在线状态…".to_string());
+        let gw = self.gateway.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut results = Vec::new();
+            for ns in OPS_DAEMON_NS {
+                let r = gw
+                    .rpc_call(&format!("{}.health_check", ns), serde_json::json!({}))
+                    .await;
+                results.push((ns.to_string(), r));
+            }
+            let _ = tx.send(OpsOutcome::Daemons(results));
+        });
+        self.ops_pending = Some(rx);
+    }
+
+    /// 通用运维方法调用（/agents /tools /models /mem /rpc 共用）。
+    fn cmd_ops_call(&mut self, method: &str, params: serde_json::Value) {
+        if self.ops_pending.is_some() {
+            self.add_message(
+                MessageRole::System,
+                "运维命令执行中，请稍候…".to_string(),
+            );
+            return;
+        }
+        self.ops_label = method.to_string();
+        self.add_message(
+            MessageRole::System,
+            format!("正在调用 {} …", method),
+        );
+        let method_owned = method.to_string();
+        let gw = self.gateway.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(OpsOutcome::Call(gw.rpc_call(&method_owned, params).await));
+        });
+        self.ops_pending = Some(rx);
+    }
+
+    /// /rpc <ns>.<method> [json]：通用 JSON-RPC 直调（对齐 C CLI /rpc）。
+    fn cmd_rpc(&mut self, input: &str) {
+        let rest = input[5..].trim().to_string();
+        if rest.is_empty() {
+            self.add_message(
+                MessageRole::System,
+                "用法：/rpc <ns>.<method> [json]（如 /rpc tool.list_tools）".to_string(),
+            );
+            return;
+        }
+        let (method, params) = match rest.split_once(char::is_whitespace) {
+            Some((m, p)) => (m.trim().to_string(), p.trim().to_string()),
+            None => (rest.clone(), String::new()),
+        };
+        if method.is_empty() || !method.contains('.') {
+            self.add_message(
+                MessageRole::System,
+                format!("方法格式应为 <ns>.<method>，收到：{}", method),
+            );
+            return;
+        }
+        let params_val = if params.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&params)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": params }))
+        };
+        self.cmd_ops_call(&method, params_val);
+    }
+
+    /// 消费运维命令的异步结果并渲染进对话区。
+    pub fn poll_ops(&mut self) {
+        let Some(mut rx) = self.ops_pending.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => match outcome {
+                OpsOutcome::Daemons(results) => {
+                    let online = results.iter().filter(|(_, r)| r.is_ok()).count();
+                    let mut text = format!(
+                        "daemon 在线状态（{} / {} 在线）",
+                        online,
+                        results.len()
+                    );
+                    for (ns, r) in results {
+                        let (icon, st) = if r.is_ok() { ("✓", "在线") } else { ("✗", "离线") };
+                        text.push_str(&format!("\n  {} {} {}", icon, st, ns));
+                    }
+                    self.add_message(MessageRole::System, text);
+                }
+                OpsOutcome::Call(Ok(v)) => {
+                    let pretty = serde_json::to_string_pretty(&v)
+                        .unwrap_or_else(|_| v.to_string());
+                    self.add_message(
+                        MessageRole::System,
+                        format!("{} 结果：\n{}", self.ops_label, pretty),
+                    );
+                }
+                OpsOutcome::Call(Err(e)) => {
+                    self.add_message(
+                        MessageRole::System,
+                        format!("{} 调用失败：{}", self.ops_label, e),
+                    );
+                }
+            },
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                self.ops_pending = Some(rx);
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        }
+    }
+
+    /// hall 面板（看板/事件流）数据拉取：面板激活时 1s 节流刷新。
+    ///
+    /// 看板 = hall.board（work_hall 持久化实例 + 在线 agent）；
+    /// 事件流 = hall.stream（全局 gseq 因果序，最新 512 条）。
+    /// 数据经 gateway 统一转发，任何前端看到同一份状态。
+    pub fn poll_hall(&mut self) {
+        if self.active_panel != ActivePanel::Board && self.active_panel != ActivePanel::Events {
+            return;
+        }
+        // 消费在途结果
+        if let Some(mut rx) = self.hall_poll_rx.take() {
+            match rx.try_recv() {
+                Ok(HallPollOutcome::Board(r)) => match r {
+                    Ok(b) => self.hall_board = Some(b),
+                    Err(e) => log::warn!("hall.board 拉取失败: {}", e),
+                },
+                Ok(HallPollOutcome::Events(r)) => match r {
+                    Ok(evts) => self.hall_events = evts,
+                    Err(e) => log::warn!("hall.stream 拉取失败: {}", e),
+                },
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    self.hall_poll_rx = Some(rx);
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+            }
+        }
+        // 节流：1s
+        let now = Instant::now();
+        if now.duration_since(self.last_hall_poll) < std::time::Duration::from_millis(1000) {
+            return;
+        }
+        self.last_hall_poll = now;
+        let gw = self.gateway.clone();
+        let want_board = self.active_panel == ActivePanel::Board;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if want_board {
+                let _ = tx.send(HallPollOutcome::Board(gw.hall_board().await));
+            } else {
+                let _ = tx.send(HallPollOutcome::Events(gw.hall_stream(512).await));
+            }
+        });
+        self.hall_poll_rx = Some(rx);
+    }
+
+    /// 强制下次 poll_hall 立即拉取（F6/F7 进入面板时调用）。
+    pub fn force_hall_refresh(&mut self) {
+        self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
     }
 
     /// Toggle a panel. If already active, go back to Chat.
@@ -458,8 +1064,87 @@ impl App {
             return Ok(());
         }
 
+        // ── 本地命令（不发送给 LLM，纯前端即时响应）──
+        if lower == "/help" {
+            self.active_panel = ActivePanel::Help;
+            return Ok(());
+        }
+        if lower == "/clear" {
+            self.messages.clear();
+            self.streaming_text.clear();
+            self.add_message(
+                MessageRole::System,
+                "对话已清空。输入 /help 查看可用命令。".to_string(),
+            );
+            self.add_log("INFO", "对话已清空（/clear）".to_string());
+            return Ok(());
+        }
+        if lower == "/status" {
+            self.cmd_status();
+            return Ok(());
+        }
+        if lower == "/memory" {
+            self.toggle_panel(ActivePanel::Memory);
+            return Ok(());
+        }
+        if lower == "/skills" {
+            self.cmd_skills();
+            return Ok(());
+        }
+        if lower == "/board" {
+            // 任务看板面板（F6 等价；进入即强制刷新）
+            self.active_panel = ActivePanel::Board;
+            self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+            return Ok(());
+        }
+        if lower == "/events" {
+            // 事件流面板（F7 等价；进入即强制刷新）
+            self.active_panel = ActivePanel::Events;
+            self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+            return Ok(());
+        }
+        if lower == "/chain" || lower.starts_with("/chain ") {
+            // 决策链：无参列任务；/chain <task_id> 回放该任务决策链
+            self.cmd_chain(&input);
+            return Ok(());
+        }
+
+        // ── 运维命令（经 gateway RPC，结果异步回填对话区）──
+        if lower == "/daemons" {
+            self.cmd_daemons();
+            return Ok(());
+        }
+        if lower == "/agents" {
+            self.cmd_ops_call("agent.list", serde_json::json!({}));
+            return Ok(());
+        }
+        if lower == "/tools" {
+            self.cmd_ops_call("tool.list_tools", serde_json::json!({}));
+            return Ok(());
+        }
+        if lower == "/models" {
+            self.cmd_ops_call("llm.list_models", serde_json::json!({}));
+            return Ok(());
+        }
+        if lower == "/mem" || lower.starts_with("/mem ") {
+            let arg = input[4..].trim();
+            if arg.is_empty() {
+                self.cmd_ops_call("mem.count", serde_json::json!({}));
+            } else {
+                self.cmd_ops_call("mem.search", serde_json::json!({ "query": arg }));
+            }
+            return Ok(());
+        }
+        if lower.starts_with("/rpc ") {
+            self.cmd_rpc(&input);
+            return Ok(());
+        }
+
         // 记录输入历史（Alt+↑/↓ 浏览；去重，最新在后）
         self.push_history(&input);
+
+        // 回合计时开始（结果消费时结算，回合分隔线展示 Worked for Ns）
+        self.turn_started = Instant::now();
 
         // Add user message
         self.add_message(MessageRole::User, input.clone());
@@ -526,6 +1211,11 @@ impl App {
 
     /// 应用流式对话轮的最终结果（流式结束后按普通对话相同逻辑处理）。
     fn apply_stream_result(&mut self, input: String, res: Result<RunResponse>) {
+        // 流式工具状态行 → 落为正式消息（先于最终回答；流式路径无 tool_trace，
+        // 工具事件仅此一处可见）
+        for line in std::mem::take(&mut self.stream_tool_events) {
+            self.add_message(MessageRole::ToolCall, line);
+        }
         // 流式结束：把已渲染的 streaming_text 落为正式消息（防止与 result 双写）
         if !self.streaming_text.is_empty() {
             // 内容已实时渲染在占位消息上；此处仅清理占位，避免重复上屏
@@ -983,6 +1673,7 @@ impl App {
             task: Some(task),
             session_id,
             stream_rx: None,
+            tool_rx: None,
         });
     }
 
@@ -996,14 +1687,23 @@ impl App {
             Some(self.model.clone())
         };
         let session_id = self.new_session_id();
-        // 流式通道：tokio 任务把 SSE 块逐块送进 mpsc，主循环 poll_pending 消费
+        // 流式通道：tokio 任务把 SSE 块逐块送进 mpsc，主循环 poll_pending 消费；
+        // 工具事件（tool_call/tool_result）走独立通道渲染工具状态行
         let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = gateway
-                .stream_chat(messages, model.as_deref(), |chunk| {
-                    let _ = stream_tx.send(chunk.to_string());
-                })
+                .stream_chat(
+                    messages,
+                    model.as_deref(),
+                    |chunk| {
+                        let _ = stream_tx.send(chunk.to_string());
+                    },
+                    |evt| {
+                        let _ = tool_tx.send(evt.to_string());
+                    },
+                )
                 .await;
             let _ = tx.send(PendingOutcome::Run(result.map(|full| RunResponse {
                 session_id: String::new(),
@@ -1023,9 +1723,11 @@ impl App {
             task: Some(task),
             session_id,
             stream_rx: Some(stream_rx),
+            tool_rx: Some(tool_rx),
         });
         // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
         self.streaming_text.clear();
+        self.stream_tool_events.clear();
     }
 
     /// 未连接时的连接检查：后台执行健康检查，通过后继续真实请求。
@@ -1060,7 +1762,42 @@ impl App {
             task: Some(task),
             session_id: String::new(),
             stream_rx: None,
+            tool_rx: None,
         });
+    }
+
+    /// 将 SSE 工具事件（__airy_evt JSON）渲染为对话内的工具状态行。
+    /// tool_call  → `[Sub <tool> Agent] 调用工具 <args>`
+    /// tool_result→ `[Sub <tool> Agent] 完成（ok/失败）<summary>`
+    fn render_tool_event(evt_json: &str) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_str(evt_json).ok()?;
+        let kind = v.get("__airy_evt")?.as_str()?;
+        let tool = v.get("tool").and_then(|t| t.as_str()).unwrap_or("tool");
+        match kind {
+            "tool_call" => {
+                let args = v
+                    .get("args")
+                    .and_then(|a| {
+                        if a.is_object() || a.is_array() {
+                            Some(serde_json::to_string(a).unwrap_or_default())
+                        } else {
+                            a.as_str().map(|s| s.to_string())
+                        }
+                    })
+                    .unwrap_or_default();
+                Some(format!("[Sub {} Agent] 调用工具 {}", tool, args))
+            }
+            "tool_result" => {
+                let ok = v.get("ok").and_then(|o| o.as_i64()).unwrap_or(0) != 0;
+                let summary = v
+                    .get("summary")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+                let status = if ok { "完成" } else { "失败" };
+                Some(format!("[Sub {} Agent] {} · {}", tool, status, summary))
+            }
+            _ => None,
+        }
     }
 
     /// 生成客户端预分配会话 ID（sess_ 前缀，gateway 校验后采用）。
@@ -1101,6 +1838,14 @@ impl App {
                 log::trace!("stream chunk: total={} chars", self.streaming_text.len());
             }
         }
+        // ── 流式工具事件消费：tool_call/tool_result → 工具状态行 ──
+        if let Some(tool_rx) = &mut p.tool_rx {
+            while let Ok(evt) = tool_rx.try_recv() {
+                if let Some(line) = App::render_tool_event(&evt) {
+                    self.stream_tool_events.push(line);
+                }
+            }
+        }
         let outcome = match p.rx.try_recv() {
             Ok(o) => o,
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return true,
@@ -1114,6 +1859,8 @@ impl App {
         self.loading = false;
         self.set_task_control(TaskControl::Running);
         log::info!("poll_pending: 消费后台请求结果（kind={:?}）", kind);
+        // 回合计时结算：回合分隔线展示本回合耗时（Worked for Ns）
+        self.last_turn_elapsed = Some(self.turn_started);
         self.apply_result(kind, outcome);
         self.pending.is_some()
     }
@@ -1635,6 +2382,8 @@ fn build_help_text() -> Vec<String> {
         "  F3          - 显示运行时日志".to_string(),
         "  F4          - 显示记忆统计".to_string(),
         "  F5          - 显示插件列表".to_string(),
+        "  F6          - 任务看板（work_hall 执行实例 + 在线 agent，实时刷新）".to_string(),
+        "  F7          - 事件流（全局 gseq 因果序回放）".to_string(),
         "  Enter       - 发送消息".to_string(),
         "  Alt+Enter   - 换行（多行输入）".to_string(),
         "  Ctrl+C      - 退出 TUI".to_string(),
@@ -1647,6 +2396,21 @@ fn build_help_text() -> Vec<String> {
         "  Ctrl+Z      - 暂停/恢复等待（请求继续在后台执行）".to_string(),
         "  /hiairy     - 重新打开首次启动向导".to_string(),
         "  /model      - 查看当前模型；/model <模型名> 切换并持久化".to_string(),
+        "  /status     - 运行时状态总览（连接/版本/模型/用量/记忆/技能）".to_string(),
+        "  /skills     - 列出本地技能库（任务成功自动沉淀）".to_string(),
+        "  /memory     - 记忆统计面板（F4 等价）".to_string(),
+        "  /clear      - 清空对话区".to_string(),
+        "  /help       - 显示帮助面板（F1 等价）".to_string(),
+        "  Tab         - 补全 / 命令（Tab 再次循环候选）".to_string(),
+        "  /board      - 任务看板面板（F6 等价）".to_string(),
+        "  /events     - 事件流面板（F7 等价）".to_string(),
+        "  /chain      - 决策链：无参列任务，/chain <task_id> 回放该任务决策链".to_string(),
+        "  /daemons    - 16 个 daemon 在线状态（经 gateway health_check）".to_string(),
+        "  /agents     - 已注册智能体（agent.list）".to_string(),
+        "  /tools      - 可用工具（tool.list_tools）".to_string(),
+        "  /models     - LLM 模型（llm.list_models）".to_string(),
+        "  /mem        - 记忆统计；/mem <query> 语义检索".to_string(),
+        "  /rpc        - 通用调用：/rpc <ns>.<method> [json]（如 /rpc tool.list_tools）".to_string(),
         String::new(),
         "任务流:".to_string(),
         "  是否进入任务集由 LLM 判断，状态栏显示当前阶段徽章。".to_string(),
@@ -1784,6 +2548,32 @@ mod tests {
 
     /// 环境变量测试互斥锁（并行测试共享进程内 AIRY_HOME，必须串行）。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// SSE 工具事件渲染：tool_call / tool_result JSON → 状态行文本。
+    #[test]
+    fn render_tool_event_parses_sse_json() {
+        let call = r#"{"__airy_evt":"tool_call","tool":"web_search","args":{"query":"hello"}}"#;
+        let line = App::render_tool_event(call).expect("tool_call renders");
+        assert!(line.contains("web_search"), "line={}", line);
+        assert!(line.contains("调用工具"), "line={}", line);
+        assert!(line.contains("hello"), "line={}", line);
+
+        let result =
+            r#"{"__airy_evt":"tool_result","tool":"web_search","call_id":"c1","ok":1,"summary":"3 results"}"#;
+        let line = App::render_tool_event(result).expect("tool_result renders");
+        assert!(line.contains("web_search"), "line={}", line);
+        assert!(line.contains("完成"), "line={}", line);
+        assert!(line.contains("3 results"), "line={}", line);
+
+        let fail =
+            r#"{"__airy_evt":"tool_result","tool":"shell_run","call_id":"c2","ok":0,"summary":"boom"}"#;
+        let line = App::render_tool_event(fail).expect("failed tool_result renders");
+        assert!(line.contains("失败"), "line={}", line);
+
+        // 非工具事件 / 非法 JSON → None（不污染对话）
+        assert!(App::render_tool_event(r#"{"type":"ping"}"#).is_none());
+        assert!(App::render_tool_event("not json").is_none());
+    }
 
     /// 模型名持久化往返：persist_model → load_saved_model 一致。
     #[test]

@@ -255,6 +255,12 @@ async fn run_app<B: Backend>(
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
+        // 看板/事件流面板数据拉取 + /chain 异步结果消费（空闲节拍轮询）
+        app.poll_hall();
+        app.poll_chain();
+        // 运维命令（/daemons /agents /tools /models /mem /rpc）异步结果消费
+        app.poll_ops();
+
         // 无按键事件时定时重绘（保持动态视觉），有事件则立即处理
         if !event::poll(idle_frame)? {
             continue;
@@ -293,25 +299,41 @@ async fn run_app<B: Backend>(
                         }
                     }
                 // 首次启动向导激活：按键全部交给向导
-                // （↑↓ 移动 · 1-3 直达 · Enter 确认 · Esc 跳过）
+                // （↑↓ 移动 · 1-3 直达 · Enter 确认/编辑 · Esc 跳过/返回）
                 _ if app.wizard.active => {
                     if app.wizard.handle_key(&key) {
-                        // 向导完成：手动配置模型 → 打开配置面板；跳过 → 留在对话
-                        if app.wizard.result.is_some_and(|r| r.configured) {
-                            app.active_panel = ActivePanel::Config;
-                            app.add_message(
-                                app::MessageRole::System,
-                                "已选择「手动配置模型」。请编辑模型配置（model.yaml）\
-                                 并设置对应 API Key 环境变量，或按 F2 查看配置。"
-                                    .to_string(),
-                            );
-                        } else {
-                            app.add_message(
-                                app::MessageRole::System,
-                                "欢迎使用 AirymaxRT！已跳过模型配置，\
-                                 输入 /hiairy 可随时重新打开首次启动向导。"
-                                    .to_string(),
-                            );
+                        // 向导完成：快速配置 → 应用配置并打开配置面板；跳过 → 留在对话
+                        if let Some(r) = app.wizard.result.take() {
+                            if r.configured {
+                                app.apply_wizard_result(&r);
+                                app.active_panel = ActivePanel::Config;
+                                let model_txt = if r.model.is_empty() {
+                                    "默认模型（网关自动回落）".to_string()
+                                } else {
+                                    r.model.clone()
+                                };
+                                let key_txt = if r.api_key_set {
+                                    "API Key 已写入 secrets.env，可直接开始对话。".to_string()
+                                } else {
+                                    "未填写 API Key：请编辑模型配置（model.yaml）\
+                                     或设置对应环境变量后开始对话。"
+                                        .to_string()
+                                };
+                                app.add_message(
+                                    app::MessageRole::System,
+                                    format!(
+                                        "模型配置完成：{}（{}）。{}",
+                                        model_txt, r.provider, key_txt
+                                    ),
+                                );
+                            } else {
+                                app.add_message(
+                                    app::MessageRole::System,
+                                    "欢迎使用 AirymaxRT！已跳过模型配置，\
+                                     输入 /hiairy 可随时重新打开首次启动向导。"
+                                        .to_string(),
+                                );
+                            }
                         }
                     }
                     continue;
@@ -341,13 +363,25 @@ async fn run_app<B: Backend>(
                     debug!("Panel: toggle Plugins");
                     app.toggle_panel(ActivePanel::Plugins);
                 }
+                KeyCode::F(6) => {
+                    debug!("Panel: toggle Board");
+                    // 进入看板：强制下次拉取立即刷新
+                    app.active_panel = ActivePanel::Board;
+                    app.force_hall_refresh();
+                }
+                KeyCode::F(7) => {
+                    debug!("Panel: toggle Events");
+                    app.active_panel = ActivePanel::Events;
+                    app.force_hall_refresh();
+                }
                 KeyCode::Enter => {
-                    // Alt+Enter 换行（多行输入），Enter 发送
+                    // Alt+Enter 换行（多行输入，光标处插入），Enter 发送
                     if key.modifiers.contains(event::KeyModifiers::ALT) {
-                        app.input.push('\n');
+                        app.input_insert_text("\n");
                         continue;
                     }
                     let input = std::mem::take(&mut app.input);
+                    app.cursor = 0;
                     debug!("User submitted input: '{}' ({} chars)",
                            truncate_str(&input, 80), input.len());
                     if let Err(e) = app.submit_input(&input) {
@@ -406,11 +440,64 @@ async fn run_app<B: Backend>(
                     }
                     terminal.draw(|f| ui::render(f, app))?;
                 }
+                // ── 输入编辑：光标感知（readline 风格）──
+                KeyCode::Tab => {
+                    // Tab 补全：/ 命令 + 技能名（仅对话面板）
+                    if app.active_panel == ActivePanel::Chat {
+                        app.tab_complete();
+                    }
+                }
                 KeyCode::Backspace => {
-                    app.input.pop();
+                    // 删除光标前一个字符
+                    app.input_backspace();
+                }
+                KeyCode::Delete => {
+                    // 删除光标后一个字符
+                    app.input_delete_after();
+                }
+                KeyCode::Left => {
+                    // ← 光标左移（Ctrl+← 同义：逐字符移动）
+                    app.cursor_left();
+                }
+                KeyCode::Right => {
+                    // → 光标右移
+                    app.cursor_right();
+                }
+                KeyCode::Home => {
+                    // Home：光标到输入开头
+                    app.cursor_home();
+                }
+                KeyCode::End => {
+                    // End：输入非空 → 光标到末尾；空输入 → 回到底部（最新消息）
+                    if app.input.is_empty() {
+                        app.scroll_offset = 0;
+                    } else {
+                        app.cursor_end();
+                    }
+                }
+                KeyCode::Char('a') | KeyCode::Char('A')
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    // Ctrl+A：光标到输入开头
+                    app.cursor_home();
+                }
+                KeyCode::Char('e') | KeyCode::Char('E')
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    // Ctrl+E：光标到输入末尾
+                    app.cursor_end();
+                }
+                KeyCode::Char('w') | KeyCode::Char('W')
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    // Ctrl+W：删除光标前一个词
+                    app.input_delete_word_before();
+                }
+                KeyCode::Char('u') | KeyCode::Char('U')
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    // Ctrl+U：删除光标前全部内容
+                    app.input_delete_to_start();
                 }
                 KeyCode::Char(c) => {
-                    app.input.push(c);
+                    // 普通字符插入到光标位置
+                    app.input_insert_char(c);
                 }
                 KeyCode::Up => {
                     // Alt+↑ 浏览输入历史；普通 ↑ 滚动对话
@@ -433,10 +520,6 @@ async fn run_app<B: Backend>(
                 }
                 KeyCode::PageDown => {
                     app.scroll_page_down();
-                }
-                KeyCode::End => {
-                    // 一键回到底部（最新消息）
-                    app.scroll_offset = 0;
                 }
                 _ => {}
             }

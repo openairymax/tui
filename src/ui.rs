@@ -7,7 +7,7 @@
 
 // Layout structure（主内容区随终端大小弹性伸缩）:
 // ┌─ Brand Bar ─────────────────────────────────┐
-// │ ◈ AirymaxRT v0.1.1  ● ONLINE    技能 0  [对话]│
+// │ ◈ AirymaxRT v0.1.2  ● ONLINE    技能 0  [对话]│
 // ├─ Main Content（自适应填充）───────────────────┤
 // ├─ Input Bar ────────────────────────────────┤
 // │ ❯ 输入提示…                                 │
@@ -90,6 +90,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActivePanel::Logs => panels::logs::render(f, main_layout[1], app),
         ActivePanel::Memory => panels::memory::render(f, main_layout[1], app),
         ActivePanel::Plugins => panels::plugins::render(f, main_layout[1], app),
+        ActivePanel::Board => panels::board::render(f, main_layout[1], app),
+        ActivePanel::Events => panels::events::render(f, main_layout[1], app),
     }
     let mut idx = 2;
     if has_approval {
@@ -342,15 +344,12 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
         (app.flow_phase.input_hint(), theme::dim())
     };
 
-    // 呼吸灯光标仅在对话面板显示（其他面板输入栏保持安静克制）
+    // 呼吸灯光标仅在对话面板显示（其他面板输入栏保持安静克制）；
+    // 光标渲染在输入文本的实际位置（readline 风格：←→ 移动后光标可见）
     let focused = app.active_panel == ActivePanel::Chat;
     let mut spans = vec![
         Span::styled(" ❯ ", Style::default().fg(theme::PRIMARY)),
         Span::styled(hint, Style::default().fg(hint_color)),
-        Span::styled(
-            app.input.clone(),
-            Style::default().fg(theme::text()),
-        ),
     ];
     if focused {
         // 呼吸灯光标：相位按会话时间推进（100ms 一帧 → 20 帧/周期），颜色呼吸明暗
@@ -361,8 +360,38 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
             BREATH_PERIOD_MS - phase
         };
         let cursor_color = breathing_color(phase_val * 1000 / (BREATH_PERIOD_MS / 2));
-        // 呼吸灯光标：替代终端方块光标，提示输入焦点
-        spans.push(Span::styled(BREATH_CURSOR, Style::default().fg(cursor_color)));
+        // 光标处断开文本：前半 + 呼吸灯光标 + 后半
+        let cursor_byte = app.cursor.min(app.input.len());
+        if app.input.is_char_boundary(cursor_byte) {
+            let (before, after) = app.input.split_at(cursor_byte);
+            spans.push(Span::styled(
+                before.to_string(),
+                Style::default().fg(theme::text()),
+            ));
+            // 呼吸灯光标：替代终端方块光标，提示输入焦点
+            spans.push(Span::styled(
+                BREATH_CURSOR,
+                Style::default().fg(cursor_color),
+            ));
+            spans.push(Span::styled(
+                after.to_string(),
+                Style::default().fg(theme::text()),
+            ));
+        } else {
+            spans.push(Span::styled(
+                app.input.clone(),
+                Style::default().fg(theme::text()),
+            ));
+            spans.push(Span::styled(
+                BREATH_CURSOR,
+                Style::default().fg(cursor_color),
+            ));
+        }
+    } else {
+        spans.push(Span::styled(
+            app.input.clone(),
+            Style::default().fg(theme::text()),
+        ));
     }
 
     let line = Line::from(spans);
@@ -389,6 +418,8 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         ("F3", "日志", ActivePanel::Logs),
         ("F4", "记忆", ActivePanel::Memory),
         ("F5", "插件", ActivePanel::Plugins),
+        ("F6", "看板", ActivePanel::Board),
+        ("F7", "事件流", ActivePanel::Events),
     ];
 
     // 窄屏只显示键位胶囊，隐藏文字标签，避免溢出
