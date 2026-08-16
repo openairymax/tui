@@ -278,20 +278,24 @@ impl GatewayClient {
 
     /// SSE 流式对话：POST /api/v1/chat/stream，逐块回调 `on_chunk`。
     ///
-    /// gateway 端（http_gateway_routes.c）转发 llm_d complete_stream：
+    /// gateway 端（http_gateway_routes.c）实现完整工具循环：
     /// 响应为 `data: <增量块>\n\n` SSE 事件流，`data: [DONE]` 收尾。
-    /// 返回累积的完整回复文本。
+    /// 文本块回调 `on_chunk`；工具事件（__airy_evt: tool_call /
+    /// tool_result）回调 `on_event`（JSON 原文）。返回累积的完整回复文本
+    /// （不含工具事件 JSON）。
     ///
     /// `messages` 为完整 OpenAI messages 数组（多轮上下文），必须非空。
     /// `model` 为空时省略：gateway 回落 deepseek-v4-flash。
-    pub async fn stream_chat<F>(
+    pub async fn stream_chat<F, E>(
         &self,
         messages: serde_json::Value,
         model: Option<&str>,
         mut on_chunk: F,
+        mut on_event: E,
     ) -> Result<String>
     where
         F: FnMut(&str),
+        E: FnMut(&str),
     {
         let url = format!("{}/api/v1/chat/stream", self.base_url);
         let mut params = serde_json::json!({ "messages": messages });
@@ -321,6 +325,17 @@ impl GatewayClient {
                 if data == "[DONE]" {
                     return Ok(full);
                 }
+                // 工具事件：JSON 载荷含 __airy_evt 标记，转发给 on_event，
+                // 不污染正文累积
+                if data.starts_with('{') {
+                    let trimmed = data.trim();
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                        if v.get("__airy_evt").is_some() {
+                            on_event(trimmed);
+                            continue;
+                        }
+                    }
+                }
                 full.push_str(data);
                 on_chunk(data);
             }
@@ -348,6 +363,76 @@ impl GatewayClient {
         let url = format!("{}/api/v1/plugins", self.base_url);
         let resp = self.http.get(&url).send().await?;
         Ok(resp.text().await.unwrap_or_default())
+    }
+
+    /// 通用 JSON-RPC 调用（POST /），返回 result 节点（无 result 时返回 Null）。
+    ///
+    /// 公开给运维命令（/daemons /agents /tools /models /mem /rpc）复用；
+    /// 方法须在 gateway 转发白名单内（agent.* / tool.* / llm.* / mem.* / hall.* 等）。
+    pub async fn rpc_call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/", self.base_url);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": method,
+            "params": params,
+        });
+        let resp = self.http.post(&url).json(&request).send().await?;
+        let body = resp.text().await?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse JSON-RPC response")?;
+        if let Some(err) = json.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            anyhow::bail!("{}: {}", method, msg);
+        }
+        Ok(json.get("result").cloned().unwrap_or(serde_json::Value::Null))
+    }
+
+    /// 任务看板（hall.board）：work_hall 持久化执行实例 + agent_d 在线 agent 名单。
+    ///
+    /// gateway 直接读取 $AIRY_HOME/state/work_hall_state.json 并转发
+    /// agent_d.list 实时数据，任何前端都能拿到同一块看板。
+    pub async fn hall_board(&self) -> Result<HallBoard> {
+        let result = self.rpc_call("hall.board", serde_json::json!({})).await?;
+        serde_json::from_value(result).context("Failed to parse hall.board")
+    }
+
+    /// 任务列表（hall.tasks）：hall_store 任务文件枚举，最新在前。
+    pub async fn hall_tasks(&self) -> Result<Vec<HallTask>> {
+        let result = self.rpc_call("hall.tasks", serde_json::json!({})).await?;
+        Ok(result
+            .get("tasks")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default())
+    }
+
+    /// 单任务事件回放（hall.replay）：按 (ts_utc, seq) 全局因果序。
+    ///
+    /// `category` 为空时合并该任务全部类别（决策链语义）。
+    pub async fn hall_replay(&self, task_id: &str, category: Option<&str>) -> Result<Vec<HallEvent>> {
+        let params = match category {
+            Some(c) if !c.is_empty() => serde_json::json!({ "task_id": task_id, "category": c }),
+            _ => serde_json::json!({ "task_id": task_id }),
+        };
+        let result = self.rpc_call("hall.replay", params).await?;
+        Ok(result
+            .get("events")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default())
+    }
+
+    /// 全局事件流（hall.stream）：跨任务按 (ts_utc, seq) 合并，取最新 `limit` 条。
+    pub async fn hall_stream(&self, limit: u64) -> Result<Vec<HallEvent>> {
+        let result = self
+            .rpc_call("hall.stream", serde_json::json!({ "limit": limit }))
+            .await?;
+        Ok(result
+            .get("events")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default())
     }
 }
 
@@ -410,4 +495,74 @@ pub struct LogEntry {
     pub level: String,
     pub message: String,
     pub daemon: Option<String>,
+}
+
+/// 任务看板条目（work_hall 持久化执行实例快照）。
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct HallBoardEntry {
+    pub execution_id: String,
+    #[serde(default)]
+    pub workflow_id: String,
+    #[serde(default)]
+    pub workflow_name: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub progress: f64,
+    #[serde(default)]
+    pub task_id: u64,
+    #[serde(default)]
+    pub started_at: u64,
+    #[serde(default)]
+    pub completed_at: u64,
+}
+
+/// hall.board 聚合结果：执行实例 + 在线 agent。
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct HallBoard {
+    pub entries: Vec<HallBoardEntry>,
+    #[serde(default)]
+    pub agents: Vec<String>,
+    #[serde(default)]
+    pub agent_total: Option<u64>,
+    #[serde(default)]
+    pub source: String,
+}
+
+/// hall.tasks 条目：hall_store 磁盘任务枚举。
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct HallTask {
+    pub tenant_id: String,
+    pub task_id: String,
+    #[serde(default)]
+    pub latest_ts: String,
+    #[serde(default)]
+    pub event_count: u64,
+}
+
+/// hall.replay / hall.stream 单条事件。
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct HallEvent {
+    #[serde(default)]
+    pub file_id: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub task_id: String,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub ts_utc: String,
+    #[serde(default)]
+    pub seq: u64,
+    #[serde(default)]
+    pub gseq: u64,
+    #[serde(default)]
+    pub content: serde_json::Value,
 }

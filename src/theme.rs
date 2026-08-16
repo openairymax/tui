@@ -96,6 +96,10 @@ pub const WARNING: Color = Color::Rgb(238, 178, 70);
 pub const DANGER: Color = Color::Rgb(236, 92, 92);
 /// 品红（工具 / GRAD 阶段）
 pub const MAGENTA: Color = Color::Rgb(196, 124, 240);
+/// 工具状态行（SSE tool_call/tool_result，Claude Code 风格工具执行提示）
+pub const TOOL_FG: Color = Color::Rgb(196, 124, 240);
+/// 青（用户角色 [For Thee]，与 C 版 airy_cli CLR_CYAN 对齐）
+pub const CYAN: Color = Color::Rgb(70, 190, 220);
 /// 彩色徽章上的文字色（始终深色，保证彩色底对比度，不随主题切换）
 pub const ON_COLOR: Color = Color::Rgb(15, 18, 24);
 
