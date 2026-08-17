@@ -1250,26 +1250,32 @@ impl App {
                 // Agent 工具调用轨迹 → 展示为「工具调用/结果」消息（先于最终回答）
                 // 乔布斯式克制：大任务集一次可能 10+ 次工具调用，全部上屏会淹没对话，
                 // 仅展示前 MAX_VISIBLE_TOOL_TRACES 条，其余折叠为一行摘要（全量见 F3 日志）。
+                // 过程化（2026-08-17）：只展示动作名与成败，不暴露参数与结果内容。
                 if let Some(trace) = &response.tool_trace {
                     const MAX_VISIBLE_TOOL_TRACES: usize = 4;
                     let total = trace.len();
                     let show = total.min(MAX_VISIBLE_TOOL_TRACES);
                     for t in trace.iter().take(show) {
                         let ok = t.ok.unwrap_or(0) != 0;
-                        let args_short = format_tool_args(&t.arguments, 200);
+                        let action = Self::tool_action(&t.tool);
                         self.add_message(
                             MessageRole::ToolCall,
-                            format!(
-                                "{} {}{}",
-                                t.tool,
-                                args_short,
-                                if ok { "" } else { "（失败）" }
-                            ),
+                            format!("{} {}…{}", t.tool, action, if ok { "" } else { "（失败）" }),
                         );
-                        self.add_message(
-                            MessageRole::ToolResult,
-                            truncate_for_display(&t.result, 2000),
-                        );
+                        // 成功不回传结果内容（代码/文件全文/URL 等保留在日志）；失败附短错误
+                        if !ok {
+                            let err: String = t
+                                .result
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(120)
+                                .collect();
+                            if !err.is_empty() {
+                                self.add_message(MessageRole::ToolResult, err);
+                            }
+                        }
                     }
                     if total > show {
                         self.add_message(
@@ -1283,7 +1289,17 @@ impl App {
                     }
                 }
 
-                self.add_message(MessageRole::Agent, cleaned.clone());
+                // 空回复占位（2026-08-17）：模型未产生文本回复（thinking 模型
+                // 可能只输出 reasoning_content，或 provider 异常）时给出明确提示，
+                // 避免对话中出现"空返回"却无任何说明。
+                if cleaned.trim().is_empty() {
+                    self.add_message(
+                        MessageRole::Agent,
+                        "（未产生回复：模型可能仅生成了思考内容，请重试）".to_string(),
+                    );
+                } else {
+                    self.add_message(MessageRole::Agent, cleaned.clone());
+                }
                 // 记忆：持久化助手响应
                 if let Err(e) = self.memory.push("assistant", &cleaned, "chat") {
                     log::warn!("memory push(assistant) failed: {}", e);
@@ -1766,35 +1782,60 @@ impl App {
         });
     }
 
+    /// 动作短语映射（与 C 版 airy_cli cli_tool_action 对齐）：对话只展示
+    /// "正在做什么"，不暴露工具参数与返回内容；未知工具保留原名。
+    fn tool_action(tool: &str) -> String {
+        let action = match tool {
+            "web_search" => "搜索网络",
+            "web_fetch" => "抓取网页",
+            "fs_read" => "读取文件",
+            "fs_write" => "写入文件",
+            "fs_list" | "fs_ls" => "列出目录",
+            "fs_info" => "查看文件信息",
+            "fs_mkdir" => "创建目录",
+            "fs_rm" => "删除文件",
+            "agent.spawn" => "派生智能体",
+            "agent.invoke" => "调用智能体",
+            "think.depth" => "深度思考",
+            "memory.get" => "读取记忆",
+            "memory.put" => "写入记忆",
+            _ => return tool.to_string(),
+        };
+        action.to_string()
+    }
+
     /// 将 SSE 工具事件（__airy_evt JSON）渲染为对话内的工具状态行。
-    /// tool_call  → `[Sub <tool> Agent] 调用工具 <args>`
-    /// tool_result→ `[Sub <tool> Agent] 完成（ok/失败）<summary>`
+    /// 过程化（2026-08-17）：只展示"正在做什么"（动作名），不暴露工具
+    /// 参数与返回内容（代码/URL/文件内容等操作细节保留在日志与模型上下文）。
+    /// tool_call  → `[Sub <tool> Agent] <动作>…`
+    /// tool_result→ `[Sub <tool> Agent] <动作> 完成` / `<动作>（失败）[: 短错误]`
     fn render_tool_event(evt_json: &str) -> Option<String> {
         let v: serde_json::Value = serde_json::from_str(evt_json).ok()?;
         let kind = v.get("__airy_evt")?.as_str()?;
         let tool = v.get("tool").and_then(|t| t.as_str()).unwrap_or("tool");
+        let action = Self::tool_action(tool);
         match kind {
-            "tool_call" => {
-                let args = v
-                    .get("args")
-                    .and_then(|a| {
-                        if a.is_object() || a.is_array() {
-                            Some(serde_json::to_string(a).unwrap_or_default())
-                        } else {
-                            a.as_str().map(|s| s.to_string())
-                        }
-                    })
-                    .unwrap_or_default();
-                Some(format!("[Sub {} Agent] 调用工具 {}", tool, args))
-            }
+            "tool_call" => Some(format!("{} {}…", tool, action)),
             "tool_result" => {
                 let ok = v.get("ok").and_then(|o| o.as_i64()).unwrap_or(0) != 0;
                 let summary = v
                     .get("summary")
                     .and_then(|s| s.as_str())
                     .unwrap_or("");
-                let status = if ok { "完成" } else { "失败" };
-                Some(format!("[Sub {} Agent] {} · {}", tool, status, summary))
+                if ok {
+                    Some(format!("{} {} 完成", tool, action))
+                } else {
+                    // 失败附首行短错误（≤80 字符），便于诊断；成功不回传内容
+                    let err: String = summary
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .take(80)
+                        .collect();
+                    Some(format!("{} {}（失败）{}", tool, action,
+                                 if err.is_empty() { String::new() } else { format!(" · {err}") }))
+                }
             }
             _ => None,
         }
@@ -2482,26 +2523,6 @@ fn truncate_for_display(s: &str, max_chars: usize) -> String {
     format!("{}…", cut)
 }
 
-/// 工具参数摘要：JSON 对象 → "key=value key=value"（每个值截断，易读且紧凑）
-fn format_tool_args(args: &str, max: usize) -> String {
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(args) {
-        let parts: Vec<String> = map
-            .iter()
-            .map(|(k, v)| {
-                let vs = match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                format!("{k}={}", truncate_for_display(&vs, 60))
-            })
-            .collect();
-        if !parts.is_empty() {
-            return truncate_for_display(&parts.join(" "), max);
-        }
-    }
-    truncate_for_display(args, max)
-}
-
 /// 双思考（GCCP+GRAD）轨迹 → 一行计划摘要。
 /// 输入 gateway 回传的 thinking 对象 {plan:{task_plan_id,node_count,nodes[]},feedback,stats}，
 /// 输出如「双思考计划 5 节点：S_01 使用 web_fetch 抓取…（GRAD 2 轮收敛）」。
@@ -2549,26 +2570,29 @@ mod tests {
     /// 环境变量测试互斥锁（并行测试共享进程内 AIRY_HOME，必须串行）。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// SSE 工具事件渲染：tool_call / tool_result JSON → 状态行文本。
+    /// SSE 工具事件渲染：tool_call / tool_result JSON → 过程化状态行。
+    /// 只展示动作名与成败，不暴露参数与返回内容（2026-08-17）。
     #[test]
     fn render_tool_event_parses_sse_json() {
         let call = r#"{"__airy_evt":"tool_call","tool":"web_search","args":{"query":"hello"}}"#;
         let line = App::render_tool_event(call).expect("tool_call renders");
         assert!(line.contains("web_search"), "line={}", line);
-        assert!(line.contains("调用工具"), "line={}", line);
-        assert!(line.contains("hello"), "line={}", line);
+        assert!(line.contains("搜索网络"), "line={}", line);
+        assert!(!line.contains("hello"), "参数不得暴露: line={}", line);
+        assert!(!line.contains("调用工具"), "过程化后无旧文案: line={}", line);
 
         let result =
             r#"{"__airy_evt":"tool_result","tool":"web_search","call_id":"c1","ok":1,"summary":"3 results"}"#;
         let line = App::render_tool_event(result).expect("tool_result renders");
         assert!(line.contains("web_search"), "line={}", line);
         assert!(line.contains("完成"), "line={}", line);
-        assert!(line.contains("3 results"), "line={}", line);
+        assert!(!line.contains("3 results"), "成功结果内容不得暴露: line={}", line);
 
         let fail =
             r#"{"__airy_evt":"tool_result","tool":"shell_run","call_id":"c2","ok":0,"summary":"boom"}"#;
         let line = App::render_tool_event(fail).expect("failed tool_result renders");
         assert!(line.contains("失败"), "line={}", line);
+        assert!(line.contains("boom"), "失败应附短错误: line={}", line);
 
         // 非工具事件 / 非法 JSON → None（不污染对话）
         assert!(App::render_tool_event(r#"{"type":"ping"}"#).is_none());
