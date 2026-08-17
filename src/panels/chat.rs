@@ -28,26 +28,28 @@ const THINKING: [&str; 11] = [
 /// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：最新 Agent 回复渲染
 /// 行数超过 FOLD_MAX_LINES 时，live 视口只显示前 FOLD_KEEP_LINES 行 +
 /// 折叠尾；向上滚动（↑）浏览时显示全量。
-const FOLD_MAX_LINES: usize = 8;
+/// 阈值与 C 版 CLI_REPLY_FOLD_MAX=6 保持一致（节省屏幕空间，适配端侧小屏）。
+const FOLD_MAX_LINES: usize = 6;
 const FOLD_KEEP_LINES: usize = 3;
 
 /// 构建折叠视图（纯函数，可测）：把 [start, end) 行区间折叠为前
-/// FOLD_KEEP_LINES 行 + 折叠尾。以下情况返回 None（不折叠）：
+/// `keep` 行 + 折叠尾。以下情况返回 None（不折叠）：
 ///   - 正在浏览（scroll_offset > 0）：滚动时显示全量，可看完整回复
 ///   - 区间为空或行数未超阈值（短回复无折叠开销）
 fn build_fold_view<'a>(
-    lines: &'a [Line<'a>],
+    lines: &[Line<'a>],
     start: usize,
     end: usize,
     scroll_offset: u16,
+    keep: usize,
 ) -> Option<Vec<Line<'a>>> {
     if scroll_offset > 0 || end <= start || end - start <= FOLD_MAX_LINES {
         return None;
     }
-    let more = end - start - FOLD_KEEP_LINES;
+    let more = end - start - keep;
     let mut v = Vec::with_capacity(lines.len());
     v.extend(lines.iter().take(start).cloned());
-    v.extend(lines.iter().skip(start).take(FOLD_KEEP_LINES).cloned());
+    v.extend(lines.iter().skip(start).take(keep).cloned());
     v.push(Line::from(Span::styled(
         format!("  └ … {more} more lines · ↑ 浏览展开"),
         Style::default().fg(theme::faint()),
@@ -70,7 +72,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     render_flow_header(&mut lines, app, width);
 
     // 消息列表（全量拼行；每条用户消息前插入回合分隔线，Claude Code 惯例）
-    // 同时记录最后一条 Agent 消息的行区间（折叠区；若其后无更多消息）
+    // 同时记录最后一条 System 思考链消息的行区间（折叠区；思考链长文本
+    // 折叠为前几行 + 浏览展开，最终答复完整展示——用户诉求「折叠流式
+    // 输出的思考链，完整展示结果」）
     let mut fold_span: Option<(usize, usize)> = None;
     if app.messages.is_empty() && app.flow_phase == FlowPhase::Chat {
         append_welcome(&mut lines, width, viewport);
@@ -81,11 +85,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 push_turn_separator(&mut lines, app);
             }
             is_first = false;
-            if msg.role == MessageRole::Agent {
+            if msg.role == MessageRole::System {
                 fold_span = Some((lines.len(), lines.len()));
             }
             append_message(&mut lines, msg, width);
-            if msg.role == MessageRole::Agent {
+            if msg.role == MessageRole::System {
                 if let Some(span) = fold_span.as_mut() {
                     span.1 = lines.len();
                 }
@@ -102,12 +106,43 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
+    // 流式思考链状态行（SSE __airy_evt:reasoning 事件 → stream_reasoning）：
+    // thinking 模型先思考后回答。思考内容为模型内部推理碎片，逐块上屏
+    // 无展示价值（用户反馈"看不懂、没有价值"）——流式期间仅显示一行
+    // 状态（字数进度），完整思考链落定后折叠为摘要行，浏览（↑）时展开全量。
+    if app.loading && !app.stream_reasoning.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "[Dual Think]".to_string(),
+                Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "  思考中… {} 字（↑ 浏览查看思考链）",
+                    app.stream_reasoning.chars().count()
+                ),
+                Style::default().fg(theme::faint()),
+            ),
+        ]));
+    }
+
     // 流式输出：SSE 增量块已累计在 streaming_text，实时渲染为「Airymax」气泡
     // （Claude 风格逐字上屏；完成后由 apply_stream_result 落为正式消息）
     if app.loading && !app.streaming_text.is_empty() {
+        // 打字机上屏：只显示前 reveal 个字符（伪流式下制造逐字动效，
+        // F5 修复：此前网关一次性返回整段文本，无任何输出动效）
+        let mut revealed: String = app
+            .streaming_text
+            .chars()
+            .take(app.streaming_reveal)
+            .collect();
+        if revealed.len() < app.streaming_text.len() {
+            // 上屏未完成：光标块表示"正在生成"
+            revealed.push('▍');
+        }
         let streaming_msg = crate::app::ChatMessage {
             role: crate::app::MessageRole::Agent,
-            content: app.streaming_text.clone(),
+            content: revealed,
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
         };
         append_message(&mut lines, &streaming_msg, width);
@@ -126,11 +161,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    // 长回复折叠（live 视口）：最后 Agent 消息渲染行数超阈值 → 折叠视图
-    // 只保留前 FOLD_KEEP_LINES 行 + 折叠尾；浏览（scroll_offset > 0）时
-    // 回退全量，滚动可看完整回复（与 C 版 airy_cli 折叠区语义一致）。
+    // 思考链折叠（live 视口）：最后 System（[Dual Think]）消息渲染行数
+    // 超阈值 → 折叠视图只保留头部行（角色名 + 时间戳）+ 折叠尾，思考链
+    // 碎片正文不上屏（用户反馈"看不懂、没有价值"）；浏览（scroll_offset
+    // > 0）时回退全量，滚动可看完整思考链。最终答复（Agent）不折叠，
+    // 完整展示（用户诉求「折叠思考链，完整展示结果」）。
     let folded: Option<Vec<Line>> = fold_span.and_then(|(s, e)| {
-        build_fold_view(&lines, s, e, app.scroll_offset)
+        build_fold_view(&lines, s, e, app.scroll_offset, 1)
     });
     let src: &[Line] = folded.as_deref().unwrap_or(&lines);
 
@@ -246,10 +283,12 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
             ]));
 
             // DAG 节点状态持续渲染（P2-C 过程可视化）：
-            // 执行期间 ◐ 运行中，完成 ●，失败 ✕，未达 ○
+            // 执行期间 ◐ 运行中，完成 ●，失败 ✕，未达 ○；
+            // 分支符号（├/└/│）标注节点层级与先后，与 C 版 airy_cli 一致。
             if let Some(dag) = &app.gccp.dag {
                 if !dag.is_empty() {
                     lines.push(Line::raw(""));
+                    let n = dag.nodes.len();
                     for (i, node) in dag.nodes.iter().enumerate() {
                         let state = app
                             .gccp
@@ -263,8 +302,18 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                             crate::gccp::NodeState::Done => ("●", theme::SUCCESS),
                             crate::gccp::NodeState::Failed => ("✕", theme::DANGER),
                         };
+                        // 分支符号：首节点 ├，末节点 └，中间 │（层级先导）
+                        let branch = if i == 0 {
+                            "├─"
+                        } else if i == n - 1 {
+                            "└─"
+                        } else {
+                            "├─"
+                        };
                         lines.push(Line::from(vec![
                             Span::styled("    ", Style::default()),
+                            Span::styled(branch, Style::default().fg(theme::faint())),
+                            Span::styled(" ", Style::default()),
                             Span::styled(mark, Style::default().fg(color)),
                             Span::styled(" ", Style::default()),
                             Span::styled(node.label.clone(), Style::default().fg(theme::text())),
@@ -305,7 +354,7 @@ fn push_turn_separator(lines: &mut Vec<Line>, app: &App) {
 /// 角色命名规范（与 C 版 airy_cli / 文档 03-cli-reference 对齐）：
 ///   [For Thee]       青   用户（操作者）输入
 ///   [Super Agent]    绿   agentrt 本体：最终答复与决策
-///   [Super Think]    黄   系统级思考：GCCP / 双思考 / 蓝图路由轨迹
+///   [Dual Think]     黄   系统级思考：GCCP / 双思考 / 蓝图路由轨迹
 ///   [Sub xxx Agent]  品红 子代理与执行体（xxx = 代理类型，取自工具名）
 /// 时间戳展示在头部行；内容固定缩进 4 列；用户消息以气泡背景色块区分，
 /// 其余角色左对齐流式。
@@ -313,7 +362,7 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
     let (name, color) = match msg.role {
         MessageRole::User => ("[For Thee]".to_string(), theme::CYAN),
         MessageRole::Agent => ("[Super Agent]".to_string(), theme::SUCCESS),
-        MessageRole::System => ("[Super Think]".to_string(), theme::WARNING),
+        MessageRole::System => ("[Dual Think]".to_string(), theme::WARNING),
         MessageRole::ToolCall | MessageRole::ToolResult => {
             // [Sub <tag> Agent]：tag 取工具名（ToolCall 首 token）；ToolResult
             // 是工具结果（JSON 等），无工具名可识别时回退 "exec"
@@ -448,12 +497,16 @@ mod tests {
         for i in 0..20 {
             lines.push(Line::raw(format!("line {i}")));
         }
-        let folded = build_fold_view(&lines, 2, 20, 0).expect("long reply folds");
+        let folded = build_fold_view(&lines, 2, 20, 0, FOLD_KEEP_LINES).expect("long reply folds");
         // 保留：前 2 行 + KEEP 行 + 折叠尾 1 行 = 2 + 3 + 1 = 6 行
         assert_eq!(folded.len(), 2 + FOLD_KEEP_LINES + 1, "折叠后行数");
         assert!(folded.iter().any(|l| l.to_string().contains("浏览展开")), "折叠尾存在");
         let tail = folded.last().unwrap().to_string();
         assert!(tail.contains("more lines"), "折叠尾含行数提示: {tail}");
+        // 思考链折叠（keep=1）：只保留头部行 + 折叠尾
+        let think_folded = build_fold_view(&lines, 2, 20, 0, 1).expect("think fold");
+        assert_eq!(think_folded.len(), 2 + 1 + 1, "思考链折叠后行数（头部+折叠尾）");
+        assert!(think_folded.iter().any(|l| l.to_string().contains("more lines")), "思考链折叠尾");
     }
 
     #[test]
@@ -463,16 +516,16 @@ mod tests {
             lines.push(Line::raw(format!("line {i}")));
         }
         // 未超阈值：不折叠
-        assert!(build_fold_view(&lines, 0, 6, 0).is_none(), "短回复不折叠");
+        assert!(build_fold_view(&lines, 0, 6, 0, 3).is_none(), "短回复不折叠");
         // 超阈值但正在浏览：展开全量（滚动可看完整回复）
         let mut long: Vec<Line> = Vec::new();
         for i in 0..20 {
             long.push(Line::raw(format!("line {i}")));
         }
-        assert!(build_fold_view(&long, 0, 20, 5).is_none(), "浏览时不折叠");
+        assert!(build_fold_view(&long, 0, 20, 5, 3).is_none(), "浏览时不折叠");
         // 空区间 / 非法区间：不折叠
-        assert!(build_fold_view(&long, 5, 5, 0).is_none(), "空区间不折叠");
-        assert!(build_fold_view(&long, 8, 5, 0).is_none(), "非法区间不折叠");
+        assert!(build_fold_view(&long, 5, 5, 0, 3).is_none(), "空区间不折叠");
+        assert!(build_fold_view(&long, 8, 5, 0, 3).is_none(), "非法区间不折叠");
     }
 
     #[test]
@@ -502,7 +555,7 @@ mod tests {
         assert_eq!(wrap_line("a你好b", 4), vec!["a你", "好b"]);
     }
 
-    /// 角色命名规范：头部行必须为 [For Thee]/[Super Agent]/[Super Think]/[Sub xxx Agent]。
+    /// 角色命名规范：头部行必须为 [For Thee]/[Super Agent]/[Dual Think]/[Sub xxx Agent]。
     #[test]
     fn role_headers_follow_naming_scheme() {
         use crate::app::{ChatMessage, MessageRole};
@@ -510,7 +563,7 @@ mod tests {
         let cases = [
             (MessageRole::User, "[For Thee]", "hi"),
             (MessageRole::Agent, "[Super Agent]", "hello!"),
-            (MessageRole::System, "[Super Think]", "GCCP 提示"),
+            (MessageRole::System, "[Dual Think]", "GCCP 提示"),
             (MessageRole::ToolCall, "[Sub web_fetch Agent]", "web_fetch {\"url\":\"x\"}"),
             (MessageRole::ToolResult, "[Sub exec Agent]", "{\"ok\":1}"),
         ];

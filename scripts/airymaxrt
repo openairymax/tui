@@ -246,8 +246,12 @@ _sock_alive() { # <socket路径>
     elif command -v nc >/dev/null 2>&1; then
         nc -zU "$path" 2>/dev/null
     elif command -v ss >/dev/null 2>&1; then
-        ss -lntu 2>/dev/null | grep -qF "$path" 2>/dev/null
+        # ss -lx 列出 Unix domain socket（-lntu 是 TCP/UDP，不匹配）
+        ss -lx 2>/dev/null | grep -qF "$path" 2>/dev/null
     else
+        # 最终回退：bash 内置 /dev/unix 路径不可用，用 curl 探测
+        # gateway JSON-RPC（仅适用于 gateway.sock）。通用场景返回 1
+        # 由调用方按 stale socket 处理。
         return 1
     fi
 }
@@ -336,7 +340,7 @@ launch_frontend() {
     # 前端子进程必须显式继承脚本 stdin（<&0）：非交互 bash 会把后台命令的
     # stdin 重定向为 /dev/null（POSIX 行为），导致 TUI 收不到按键、CLI
     # 的 fgets 立即 EOF（表现为「airymaxrt 无输出即退出」）。
-    if [ -t 0 ] && [ -t 1 ] && [ -n "$TUI_BIN" ]; then
+    if [ -t 0 ] && [ -t 1 ] && [ -n "$TUI_BIN" ] && [ "$GATEWAY_DOWN" != "1" ]; then
         log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
         log info "进入交互界面（Rust TUI，Ctrl+C 退出）"
         "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" <&0 &
@@ -360,6 +364,8 @@ launch_frontend() {
 }
 
 # ── 状态判断 1：gateway 已在线？直接进入 ───────────────────────────────────
+# GATEWAY_DOWN=1：gateway 不可用但 daemon 群在线，降级 CLI 直连（见下）。
+GATEWAY_DOWN=0
 if wait_for_health "$GATEWAY_URL" 1; then
     log info "gateway 在线（$GATEWAY_URL），直接进入交互界面"
     launch_frontend
@@ -609,9 +615,18 @@ else
     if wait_for_health "$GATEWAY_URL" 15; then
         log info "gateway 就绪（$GATEWAY_URL）"
     else
-        log error "gateway 未能就绪（$GATEWAY_URL），查看日志: $AIRY_HOME/logs/gateway_d.out"
-        log error "可执行 'airymaxrt doctor' 检查组件，或删除 $RUNTIME_DIR 下残留 socket 后重试"
-        exit 1
+        log warn "gateway 未能就绪（$GATEWAY_URL），查看日志: $AIRY_HOME/logs/gateway_d.out"
+        if [ -n "$CLI_BIN" ]; then
+            # CLI 直连 daemon 群（Unix socket），不依赖 gateway HTTP：
+            # gateway 起不来时降级到 CLI，而不是整站退出（用户痛点：多数
+            # 场景仅对话/工具/任务，无需 gateway HTTP 协议入口）。
+            GATEWAY_DOWN=1
+            log warn "降级：使用 airy_cli 直连 daemon 群（不依赖 gateway）"
+        else
+            log error "TUI 依赖 gateway，但当前无 airy_cli 可降级"
+            log error "可执行 'airymaxrt doctor' 检查组件，或删除 $RUNTIME_DIR 下残留 socket 后重试"
+            exit 1
+        fi
     fi
 fi
 

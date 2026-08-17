@@ -125,16 +125,22 @@ pub fn event_line(e: &HallEvent, max: usize) -> String {
     truncate(total, max)
 }
 
-fn event_row(e: &HallEvent) -> Line<'static> {
+fn event_row(e: &HallEvent, selected: bool) -> Line<'static> {
     let label = category_label(&e.category);
     let task: String = e.task_id.chars().take(20).collect();
+    let base = if selected {
+        Style::default().bg(theme::surface_active())
+    } else {
+        Style::default()
+    };
+    let marker = if selected { "▸" } else { " " };
     Line::from(vec![
         Span::styled(
-            format!("  [{}:{}]", label, e.gseq),
-            Style::default().fg(category_color(&e.category)).add_modifier(Modifier::BOLD),
+            format!(" {} [{}:{}]", marker, label, e.gseq),
+            base.fg(category_color(&e.category)).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {} ", task), Style::default().fg(theme::ACCENT)),
-        Span::styled(content_summary(e), Style::default().fg(theme::text())),
+        Span::styled(format!(" {} ", task), base.fg(theme::ACCENT)),
+        Span::styled(content_summary(e), base.fg(theme::text())),
     ])
 }
 
@@ -149,10 +155,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ));
 
     let total = app.hall_events.len();
+    // 过滤提示：0=全部 · 1-7=类别；当前过滤突出显示
+    let filter_tip = if app.events_filter.is_empty() {
+        "全部".to_string()
+    } else {
+        format!("{} ({} 条)", category_label(&app.events_filter), app.events_visible_count())
+    };
     let mut lines: Vec<Line> = vec![Line::from(vec![
         Span::styled(
-            format!("  全局 gseq 因果序 · 最新 {} 条", total),
+            format!("  全局 gseq 因果序 · 最新 {} 条  ", total),
             Style::default().fg(theme::dim()),
+        ),
+        Span::styled("过滤: ", Style::default().fg(theme::faint())),
+        Span::styled(
+            filter_tip,
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             if app.connected { "  ● ONLINE" } else { "  ● OFFLINE" },
@@ -170,10 +187,29 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         )));
     } else {
         // hall.stream 已返回最新 N 条（升序），此处倒序展示（最新在前）
-        for e in app.hall_events.iter().rev().take(256) {
-            lines.push(event_row(e));
+        let events: Vec<&HallEvent> = if app.events_filter.is_empty() {
+            app.hall_events.iter().rev().collect()
+        } else {
+            app.hall_events
+                .iter()
+                .rev()
+                .filter(|e| e.category == app.events_filter)
+                .collect()
+        };
+        let sel = app.events_cursor % events.len().max(1);
+        for (i, e) in events.iter().take(256).enumerate() {
+            lines.push(event_row(e, i == sel));
         }
     }
+
+    // 操作提示条（简约：↑↓ 选择 · 数字过滤 · Enter 详情 · Esc 返回）
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ↑↓ 选择", Style::default().fg(theme::faint())),
+        Span::styled("  0-7 过滤", Style::default().fg(theme::faint())),
+        Span::styled("  Enter 详情", Style::default().fg(theme::faint())),
+        Span::styled("  Esc 返回", Style::default().fg(theme::faint())),
+    ]));
 
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
