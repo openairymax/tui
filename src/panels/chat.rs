@@ -25,6 +25,37 @@ const THINKING: [&str; 11] = [
     "thinking...",
 ];
 
+/// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：最新 Agent 回复渲染
+/// 行数超过 FOLD_MAX_LINES 时，live 视口只显示前 FOLD_KEEP_LINES 行 +
+/// 折叠尾；向上滚动（↑）浏览时显示全量。
+const FOLD_MAX_LINES: usize = 8;
+const FOLD_KEEP_LINES: usize = 3;
+
+/// 构建折叠视图（纯函数，可测）：把 [start, end) 行区间折叠为前
+/// FOLD_KEEP_LINES 行 + 折叠尾。以下情况返回 None（不折叠）：
+///   - 正在浏览（scroll_offset > 0）：滚动时显示全量，可看完整回复
+///   - 区间为空或行数未超阈值（短回复无折叠开销）
+fn build_fold_view<'a>(
+    lines: &'a [Line<'a>],
+    start: usize,
+    end: usize,
+    scroll_offset: u16,
+) -> Option<Vec<Line<'a>>> {
+    if scroll_offset > 0 || end <= start || end - start <= FOLD_MAX_LINES {
+        return None;
+    }
+    let more = end - start - FOLD_KEEP_LINES;
+    let mut v = Vec::with_capacity(lines.len());
+    v.extend(lines.iter().take(start).cloned());
+    v.extend(lines.iter().skip(start).take(FOLD_KEEP_LINES).cloned());
+    v.push(Line::from(Span::styled(
+        format!("  └ … {more} more lines · ↑ 浏览展开"),
+        Style::default().fg(theme::faint()),
+    )));
+    v.extend(lines.iter().skip(end).cloned());
+    Some(v)
+}
+
 /// 渲染对话主面板。
 ///
 /// 参考 Claude Code 的简洁：无边框、内容直接铺开（靠留白分层），
@@ -39,6 +70,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     render_flow_header(&mut lines, app, width);
 
     // 消息列表（全量拼行；每条用户消息前插入回合分隔线，Claude Code 惯例）
+    // 同时记录最后一条 Agent 消息的行区间（折叠区；若其后无更多消息）
+    let mut fold_span: Option<(usize, usize)> = None;
     if app.messages.is_empty() && app.flow_phase == FlowPhase::Chat {
         append_welcome(&mut lines, width, viewport);
     } else {
@@ -48,7 +81,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 push_turn_separator(&mut lines, app);
             }
             is_first = false;
+            if msg.role == MessageRole::Agent {
+                fold_span = Some((lines.len(), lines.len()));
+            }
             append_message(&mut lines, msg, width);
+            if msg.role == MessageRole::Agent {
+                if let Some(span) = fold_span.as_mut() {
+                    span.1 = lines.len();
+                }
+            }
         }
     }
 
@@ -85,17 +126,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
+    // 长回复折叠（live 视口）：最后 Agent 消息渲染行数超阈值 → 折叠视图
+    // 只保留前 FOLD_KEEP_LINES 行 + 折叠尾；浏览（scroll_offset > 0）时
+    // 回退全量，滚动可看完整回复（与 C 版 airy_cli 折叠区语义一致）。
+    let folded: Option<Vec<Line>> = fold_span.and_then(|(s, e)| {
+        build_fold_view(&lines, s, e, app.scroll_offset)
+    });
+    let src: &[Line] = folded.as_deref().unwrap_or(&lines);
+
     // 行级滚动：scroll_offset 语义为「距底部（最新）向上滚的行数」。
     // Paragraph::scroll 的 offset 语义是「距顶部滚过的行数」，需反转：
     //   scroll_offset=0 → offset=max_offset → 视口落在底部（跟随最新消息）
     //   scroll_offset=max_offset → offset=0 → 视口落在顶部（最早消息）
-    let total = lines.len();
+    let total = src.len();
     let max_offset = total.saturating_sub(viewport);
     let from_top = max_offset
         .saturating_sub((app.scroll_offset as usize).min(max_offset));
 
     // 视口裁剪后渲染（行已手动裁剪到宽度内，无需 wrap）
-    let visible: Vec<Line> = lines.iter().skip(from_top).take(viewport).cloned().collect();
+    let visible: Vec<Line> = src.iter().skip(from_top).take(viewport).cloned().collect();
     f.render_widget(Paragraph::new(Text::from(visible)), area);
 
     // 滚动条：内容超出视口且有对话时显示；窄屏（<44 列）隐藏避免挤占
@@ -278,11 +327,12 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
     };
 
     // 工具调用/结果状态图标（头部行右侧，语义色）：
-    //   工具调用  ✓ 成功 / ✗ 失败（content 以「（失败）」结尾判定）
+    //   工具调用  ✓ 成功 / ✗ 失败（content 含「（失败）」标记判定，2026-08-17
+    //   适配过程化格式：失败行可能附短错误，不再依赖行尾判定）
     //   工具结果  ▸ 结果回传
     let (icon, icon_color) = match msg.role {
         MessageRole::ToolCall => {
-            if msg.content.trim_end().ends_with("（失败）") {
+            if msg.content.contains("（失败）") {
                 (" ✗", theme::DANGER)
             } else {
                 (" ✓", theme::SUCCESS)
@@ -386,7 +436,44 @@ fn append_welcome(lines: &mut Vec<Line>, width: usize, height: usize) {
 mod tests {
     // wrap_line 实现已迁至 markdown 模块（P2-A 渲染器共用）
     use super::append_message;
+    use super::build_fold_view;
+    use super::FOLD_KEEP_LINES;
     use crate::markdown::wrap_line;
+    use ratatui::text::Line;
+
+    /// 长回复折叠：超阈值折叠为 KEEP 行 + 折叠尾；浏览（↑）时展开全量。
+    #[test]
+    fn fold_view_collapses_long_reply() {
+        let mut lines: Vec<Line> = Vec::new();
+        for i in 0..20 {
+            lines.push(Line::raw(format!("line {i}")));
+        }
+        let folded = build_fold_view(&lines, 2, 20, 0).expect("long reply folds");
+        // 保留：前 2 行 + KEEP 行 + 折叠尾 1 行 = 2 + 3 + 1 = 6 行
+        assert_eq!(folded.len(), 2 + FOLD_KEEP_LINES + 1, "折叠后行数");
+        assert!(folded.iter().any(|l| l.to_string().contains("浏览展开")), "折叠尾存在");
+        let tail = folded.last().unwrap().to_string();
+        assert!(tail.contains("more lines"), "折叠尾含行数提示: {tail}");
+    }
+
+    #[test]
+    fn fold_view_keeps_short_reply_and_browse_mode() {
+        let mut lines: Vec<Line> = Vec::new();
+        for i in 0..6 {
+            lines.push(Line::raw(format!("line {i}")));
+        }
+        // 未超阈值：不折叠
+        assert!(build_fold_view(&lines, 0, 6, 0).is_none(), "短回复不折叠");
+        // 超阈值但正在浏览：展开全量（滚动可看完整回复）
+        let mut long: Vec<Line> = Vec::new();
+        for i in 0..20 {
+            long.push(Line::raw(format!("line {i}")));
+        }
+        assert!(build_fold_view(&long, 0, 20, 5).is_none(), "浏览时不折叠");
+        // 空区间 / 非法区间：不折叠
+        assert!(build_fold_view(&long, 5, 5, 0).is_none(), "空区间不折叠");
+        assert!(build_fold_view(&long, 8, 5, 0).is_none(), "非法区间不折叠");
+    }
 
     #[test]
     fn wrap_line_short_text_single_line() {
