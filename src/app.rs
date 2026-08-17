@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::client::{GatewayClient, HallBoard, HallEvent, HallTask, PendingApproval, RunResponse};
+use crate::client::{GatewayClient, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval, RunResponse};
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
 use crate::memory::{self, ConversationMemory};
 use crate::skills::{self, SkillStore};
@@ -135,8 +135,17 @@ pub struct App {
     history_pos: Option<usize>,
     /// 流式输出：当前正在流式追加的 Agent 回复文本（chat.rs 增量渲染）
     pub streaming_text: String,
+    /// 打字机上屏进度：streaming_text 已"显示"的字符数（伪流式时制造
+    /// 逐字动效；< len 表示仍在逐字上屏中）。2026-08-17 F5 新增。
+    pub streaming_reveal: usize,
+    /// 打字机推进节拍（距上次 reveal 推进的时长；50ms tick 一字符）
+    last_reveal_tick: Instant,
     /// 流式工具循环事件（SSE __airy_evt 渲染行，如 `[Sub web_search Agent] …`）
     pub stream_tool_events: Vec<String>,
+    /// 流式思考链（SSE `__airy_evt:reasoning` 事件携带的 reasoning_content，
+    /// thinking 模型的思考过程）。默认折叠为一行，浏览时展开全量。
+    /// 2026-08-17 F6 新增（gateway 透传 reasoning_content）。
+    pub stream_reasoning: String,
     /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
@@ -145,6 +154,9 @@ pub struct App {
     last_approval_poll: Instant,
     /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
     approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Vec<PendingApproval>>>,
+    /// 2026-08-17：F8 请求切换到 CLI（airy_cli）——主循环收到标志后
+    /// 恢复终端并以 exec 语义替换当前进程（见 main.rs run_tui）。
+    pub switch_to_cli: bool,
     /// 任务看板缓存（hall.board 最近一次成功拉取；Board 面板 1s 节流刷新）
     pub hall_board: Option<HallBoard>,
     /// 事件流缓存（hall.stream 最近一次拉取，最新在前）
@@ -161,6 +173,17 @@ pub struct App {
     ops_pending: Option<tokio::sync::oneshot::Receiver<OpsOutcome>>,
     /// 运维命令的展示标签（方法名，错误渲染用）
     ops_label: String,
+    /// 2026-08-17：F6 看板选中行索引（↑↓ 移动，Enter 查看决策链）
+    pub board_cursor: usize,
+    /// 2026-08-17：F6 看板状态过滤（空 = 全部；running/completed/failed/...）
+    pub board_filter: String,
+    /// 2026-08-17：F7 事件流选中行索引（↑↓ 移动，Enter 展开完整内容）
+    pub events_cursor: usize,
+    /// 2026-08-17：F7 事件流类别过滤（空 = 全部；blueprint/command/progress/...）
+    pub events_filter: String,
+    /// 2026-08-17：任务执行期间（busy）插入对话队列——Enter 提交后先入队，
+    /// 任务完成后主循环自动逐条处理（submit_input），对话不被打断、体验连续。
+    pub insert_queue: VecDeque<String>,
 }
 
 /// hall 面板轮询结果（看板/事件流二选一）。
@@ -227,6 +250,9 @@ struct PendingTurn {
     stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     /// 流式工具事件接收端（tool_call/tool_result JSON，option：非流式请求为 None）
     tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// 流式最终结果暂存（打字机上屏完成前收到结果时先存这里，
+    /// 等 reveal 追平文本长度后再 apply——保证逐字动效完整走完）。
+    finish: Option<PendingOutcome>,
 }
 
 /// 后台请求的结果载荷（LLM 调用结果 / 连接检查结果）。
@@ -282,11 +308,15 @@ impl App {
             input_history: Vec::with_capacity(16),
             history_pos: None,
             streaming_text: String::new(),
+            streaming_reveal: 0,
+            last_reveal_tick: Instant::now(),
             stream_tool_events: Vec::new(),
+            stream_reasoning: String::new(),
             approvals: Vec::new(),
             project_context: String::new(),
             last_approval_poll: Instant::now(),
             approval_poll_rx: None,
+            switch_to_cli: false,
             hall_board: None,
             hall_events: Vec::new(),
             last_hall_poll: Instant::now(),
@@ -295,6 +325,11 @@ impl App {
             chain_task: String::new(),
             ops_pending: None,
             ops_label: String::new(),
+            board_cursor: 0,
+            board_filter: String::new(),
+            events_cursor: 0,
+            events_filter: String::new(),
+            insert_queue: VecDeque::new(),
         }
     }
 
@@ -1026,6 +1061,148 @@ impl App {
         self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
     }
 
+    /* ---- 2026-08-17：F6/F7 面板交互（光标 + 过滤）---- */
+
+    /// F6 看板光标下移（循环）。
+    pub fn board_cursor_down(&mut self) {
+        let n = self.board_visible_count();
+        if n == 0 {
+            self.board_cursor = 0;
+            return;
+        }
+        self.board_cursor = (self.board_cursor + 1) % n;
+    }
+
+    /// F6 看板光标上移（循环）。
+    pub fn board_cursor_up(&mut self) {
+        let n = self.board_visible_count();
+        if n == 0 {
+            self.board_cursor = 0;
+            return;
+        }
+        self.board_cursor = (self.board_cursor + n - 1) % n;
+    }
+
+    /// F6 看板状态过滤：空 = 全部；点按过滤后光标回零。
+    pub fn board_set_filter(&mut self, filter: &str) {
+        self.board_filter = filter.to_string();
+        self.board_cursor = 0;
+    }
+
+    /// F6 看板当前可见条目数（应用过滤后；与面板渲染同序：最新在前）。
+    pub fn board_visible_count(&self) -> usize {
+        let Some(board) = &self.hall_board else {
+            return 0;
+        };
+        let n = if self.board_filter.is_empty() {
+            board.entries.len()
+        } else {
+            board
+                .entries
+                .iter()
+                .filter(|e| e.state == self.board_filter)
+                .count()
+        };
+        n
+    }
+
+    /// F6 看板当前选中条目的 execution_id（无则返回空；与渲染同序）。
+    pub fn board_selected_exec(&self) -> String {
+        let Some(board) = &self.hall_board else {
+            return String::new();
+        };
+        let mut visible: Vec<&HallBoardEntry> = if self.board_filter.is_empty() {
+            board.entries.iter().collect()
+        } else {
+            board
+                .entries
+                .iter()
+                .filter(|e| e.state == self.board_filter)
+                .collect()
+        };
+        visible.reverse(); // 与面板渲染一致：最新在前
+        visible
+            .get(self.board_cursor % visible.len().max(1))
+            .map(|e| e.execution_id.clone())
+            .unwrap_or_default()
+    }
+
+    /// F6 看板选中行 → 切回对话并回放该任务决策链（复用 /chain 逻辑）。
+    pub fn board_view_selected(&mut self) {
+        let exec = self.board_selected_exec();
+        if exec.is_empty() {
+            return;
+        }
+        self.active_panel = ActivePanel::Chat;
+        self.cmd_chain(&format!("/chain {}", exec));
+    }
+
+    /// F7 事件流光标下移（循环）。
+    pub fn events_cursor_down(&mut self) {
+        let n = self.events_visible_count();
+        if n == 0 {
+            self.events_cursor = 0;
+            return;
+        }
+        self.events_cursor = (self.events_cursor + 1) % n;
+    }
+
+    /// F7 事件流光标上移（循环）。
+    pub fn events_cursor_up(&mut self) {
+        let n = self.events_visible_count();
+        if n == 0 {
+            self.events_cursor = 0;
+            return;
+        }
+        self.events_cursor = (self.events_cursor + n - 1) % n;
+    }
+
+    /// F7 事件流类别过滤：空 = 全部；点按过滤后光标回零。
+    pub fn events_set_filter(&mut self, filter: &str) {
+        self.events_filter = filter.to_string();
+        self.events_cursor = 0;
+    }
+
+    /// F7 事件流当前可见条数（应用过滤后）。
+    pub fn events_visible_count(&self) -> usize {
+        if self.events_filter.is_empty() {
+            return self.hall_events.len();
+        }
+        self.hall_events
+            .iter()
+            .filter(|e| e.category == self.events_filter)
+            .count()
+    }
+
+    /// F7 事件流选中行 → 对话区展示完整事件 JSON（方便深读）。
+    pub fn events_view_selected(&mut self) {
+        let Some(e) = self.events_selected() else {
+            return;
+        };
+        self.active_panel = ActivePanel::Chat;
+        let pretty = serde_json::to_string_pretty(&e.content).unwrap_or_else(|_| e.content.to_string());
+        self.add_message(
+            MessageRole::System,
+            format!("[{}:{}] 事件详情（task={}）\n{}", events_category_cn(&e.category), e.gseq, e.task_id, pretty),
+        );
+    }
+
+    /// F7 事件流当前选中事件（与面板渲染同序：最新在前）。
+    pub fn events_selected(&self) -> Option<HallEvent> {
+        let mut visible: Vec<&HallEvent> = if self.events_filter.is_empty() {
+            self.hall_events.iter().collect()
+        } else {
+            self.hall_events
+                .iter()
+                .filter(|e| e.category == self.events_filter)
+                .collect()
+        };
+        visible.reverse(); // 与面板渲染一致：最新在前
+        visible
+            .get(self.events_cursor % visible.len().max(1))
+            .map(|e| (*e).clone())
+    }
+
     /// Toggle a panel. If already active, go back to Chat.
     pub fn toggle_panel(&mut self, panel: ActivePanel) {
         if self.active_panel == panel {
@@ -1072,6 +1249,8 @@ impl App {
         if lower == "/clear" {
             self.messages.clear();
             self.streaming_text.clear();
+            self.streaming_reveal = 0;
+            self.stream_reasoning.clear();
             self.add_message(
                 MessageRole::System,
                 "对话已清空。输入 /help 查看可用命令。".to_string(),
@@ -1175,6 +1354,25 @@ impl App {
         Ok(())
     }
 
+    /// 2026-08-17：任务执行期间插入对话（2.3.7）。
+    ///
+    /// busy 循环中用户输入 Enter 提交 → 先入队（任务不打断），任务完成后
+    /// 主循环逐条 pop 并以 submit_input 处理（每条等其完成，单 pending 槽
+    /// 不覆盖）。用户消息与回复由 submit_input 统一回显，此处仅记录占位
+    /// 提示——体验连续，不割裂。
+    pub fn queue_insert_chat(&mut self, input: &str) {
+        let input = input.trim().to_string();
+        if input.is_empty() {
+            return;
+        }
+        let n = self.insert_queue.len() + 1;
+        self.insert_queue.push_back(input);
+        self.add_message(
+            MessageRole::System,
+            format!("（任务执行中，已插入第 {} 条对话，任务完成后自动回复）", n),
+        );
+    }
+
     /// 普通对话轮次：发送增强 prompt，并按 LLM 判定的模式切换任务流。
     ///
     /// 普通对话（未连接时先检查；已连接走流式 SSE 增量渲染，Claude 风格）。
@@ -1216,11 +1414,17 @@ impl App {
         for line in std::mem::take(&mut self.stream_tool_events) {
             self.add_message(MessageRole::ToolCall, line);
         }
+        // 思考链（reasoning_content）→ 落为 [Dual Think] 正式消息（折叠展示）
+        if !self.stream_reasoning.is_empty() {
+            let reasoning = std::mem::take(&mut self.stream_reasoning);
+            self.add_message(MessageRole::System, reasoning);
+        }
         // 流式结束：把已渲染的 streaming_text 落为正式消息（防止与 result 双写）
         if !self.streaming_text.is_empty() {
             // 内容已实时渲染在占位消息上；此处仅清理占位，避免重复上屏
             self.streaming_text.clear();
         }
+        self.streaming_reveal = 0;
         // 复用普通对话的结果应用逻辑（模式判定/技能/记忆/GCCP 入口）
         self.apply_chat_result(input, res);
     }
@@ -1690,6 +1894,7 @@ impl App {
             session_id,
             stream_rx: None,
             tool_rx: None,
+            finish: None,
         });
     }
 
@@ -1740,9 +1945,13 @@ impl App {
             session_id,
             stream_rx: Some(stream_rx),
             tool_rx: Some(tool_rx),
+            finish: None,
         });
         // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
         self.streaming_text.clear();
+        self.streaming_reveal = 0;
+        self.stream_reasoning.clear();
+        self.last_reveal_tick = Instant::now();
         self.stream_tool_events.clear();
     }
 
@@ -1779,6 +1988,7 @@ impl App {
             session_id: String::new(),
             stream_rx: None,
             tool_rx: None,
+            finish: None,
         });
     }
 
@@ -1879,13 +2089,57 @@ impl App {
                 log::trace!("stream chunk: total={} chars", self.streaming_text.len());
             }
         }
+        // ── 打字机上屏：伪流式下制造逐字动效（每 tick 推进若干字符）──
+        // reveal 只增不减；消费完一轮后再推进，避免与渲染竞争。
+        // 字段级操作（非方法调用）：p 已借用 self.pending，避免整体借用冲突。
+        {
+            let total = self.streaming_text.chars().count();
+            if self.streaming_reveal < total {
+                let since = self.last_reveal_tick.elapsed().as_millis();
+                if since >= 24 {
+                    self.last_reveal_tick = Instant::now();
+                    // 长文本提速：目标 8s 内上屏完，至少 1 字符/步
+                    let speed =
+                        (total as f64 / 8000.0 * 24.0).ceil().max(1.0) as usize;
+                    self.streaming_reveal = (self.streaming_reveal + speed).min(total);
+                }
+            }
+        }
         // ── 流式工具事件消费：tool_call/tool_result → 工具状态行 ──
         if let Some(tool_rx) = &mut p.tool_rx {
             while let Ok(evt) = tool_rx.try_recv() {
+                // 思考链事件（__airy_evt:reasoning）→ 追加到 stream_reasoning
+                // （增量块；gateway 逐块透传，实时上屏 + 落定折叠）
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&evt) {
+                    if v.get("__airy_evt").and_then(|k| k.as_str()) == Some("reasoning") {
+                        if let Some(c) = v.get("content").and_then(|c| c.as_str()) {
+                            self.stream_reasoning.push_str(c);
+                        }
+                        continue;
+                    }
+                }
                 if let Some(line) = App::render_tool_event(&evt) {
                     self.stream_tool_events.push(line);
                 }
             }
+        }
+        // 先检查暂存结果：打字机上屏完成（reveal 追平）才落定
+        if let Some(finish) = p.finish.take() {
+            if self.streaming_reveal >= self.streaming_text.chars().count() {
+                // reveal 追平：取走 kind，清 pending/loading，应用结果
+                let kind =
+                    std::mem::replace(&mut p.kind, PendingKind::ChatRound { input: String::new() });
+                self.pending = None;
+                self.loading = false;
+                self.set_task_control(TaskControl::Running);
+                log::info!("poll_pending: 打字机上屏完成，消费流式结果（kind={:?}）", kind);
+                self.last_turn_elapsed = Some(self.turn_started);
+                self.apply_result(kind, finish);
+                return self.pending.is_some();
+            }
+            // 尚未追平：放回，下一 tick 继续推进 reveal
+            p.finish = Some(finish);
+            return true;
         }
         let outcome = match p.rx.try_recv() {
             Ok(o) => o,
@@ -1894,6 +2148,19 @@ impl App {
                 PendingOutcome::Run(Err(anyhow!("LLM 后台任务异常终止")))
             }
         };
+        // 流式请求：结果已到达但打字机尚未上屏完 → 暂存 finish，
+        // 等 reveal 追平（下一 tick）再落定，保证逐字动效完整走完
+        let is_stream = matches!(p.kind, PendingKind::StreamRound { .. });
+        let reveal_pending = self.streaming_reveal < self.streaming_text.chars().count();
+        if is_stream && reveal_pending {
+            log::debug!(
+                "poll_pending: 流式结果已到，打字机尚未上屏完（{}/{}），暂存",
+                self.streaming_reveal,
+                self.streaming_text.chars().count()
+            );
+            p.finish = Some(outcome);
+            return true;
+        }
         // 取走 kind（避免 move 出借用），先清 pending/loading，再应用结果
         let kind = std::mem::replace(&mut p.kind, PendingKind::ChatRound { input: String::new() });
         self.pending = None;
@@ -2052,6 +2319,8 @@ impl App {
             }
             PendingKind::StreamRound { .. } => {
                 self.streaming_text.clear();
+                self.streaming_reveal = 0;
+                self.stream_reasoning.clear();
                 self.add_message(MessageRole::System, "已中止流式回复。".to_string());
             }
             PendingKind::AskGccp { .. } => {
@@ -2171,13 +2440,18 @@ impl App {
     /// 对话历史已改由 messages 数组承载（build_history_messages），不再挤进
     /// prompt 文本（M1/M2/M3 修复：网络层透传真实多轮上下文，上限 40 条）。
     fn build_context_prompt(&self, input: &str) -> String {
-        let mut ctx = String::from(
-            "你是 AirymaxRT 智能体运行底座（AgentRT Runtime）的助手。\n\
+        // 2.3.4 宿主机时间注入：上下文感知当前时刻（日期/星期/时间），
+        // 用户问时间类问题可直接作答，无需调用工具。每次拼接时取实时时间。
+        let now = chrono::Local::now();
+        let mut ctx = format!(
+            "当前宿主机时间：{}（本地时区）。\n\
+             你是 AirymaxRT 智能体运行底座（AgentRT Runtime）的助手。\n\
              请先判断本次请求意图，然后正常回答：\n\
              - 若属于普通对话（闲聊、问答、寒暄），回复以 [MODE:CHAT] 开头；\n\
              - 若属于需要多步执行、工具调用或复杂编排的任务集，回复以 [MODE:TASK] 开头；\n\
              - 若属于大型/高复杂度任务集（需先确认任务事实再执行），回复以 [MODE:TASK:GCCP] 开头；\n\
              - 任务集执行完成时，可在回复末尾追加 [TASK:DONE]。\n\n",
+            now.format("%Y-%m-%d %H:%M:%S %:z")
         );
 
         // 项目上下文（AGENTS.md / CLAUDE.md 等价物）：工作目录约定最先注入，
@@ -2217,41 +2491,50 @@ impl App {
 
     /// 构造完整对话历史（OpenAI messages 数组）随请求透传 gateway。
     ///
-    /// 来源：本地记忆库最近 40 条记录（倒序 → 正序），过滤 system 角色，
-    /// 连续同角色消息合并（OpenAI 要求 user/assistant 交替）。跳过最新一条
-    /// user 记录——它正是 submit_input 刚写入的当前输入，由 `final_content`
+    /// 2026-08-17 F4 修复：改为基于**当前会话**消息（self.messages 的
+    /// User/Agent 轮次）构建历史，不再注入跨会话 memory.recent(40)——后者
+    /// 会把历史会话的旧记忆塞进上下文（msgs_len 高达 20+），污染当前问题，
+    /// 导致「agentrt 不能理解我发送的信息」。
+    ///
+    /// 结构：[历史 User/Agent 交替轮次…, 增强 prompt（末条 user）]。
+    /// 历史轮次来自当前会话；系统/工具消息不进入 LLM 上下文（工具过程
+    /// 结果由 gateway 工具循环自行维护，前端消息仅作展示）。
+    ///
+    /// 连续同角色消息合并（OpenAI 要求 user/assistant 交替）。末条 user
+    /// 记录——即 submit_input 刚写入的当前输入——由 `final_content`
     /// （增强 prompt）作为末条 user 消息承载，避免输入双注入。
     ///
     /// 仅剩当前输入时返回 None（退化为单条 prompt，走 gateway 旧路径）。
     fn build_history_messages(&self, final_content: &str) -> Option<serde_json::Value> {
-        let recent = self.memory.recent(40);
-        if recent.is_empty() {
-            return None;
-        }
-        let mut msgs: Vec<serde_json::Value> = Vec::with_capacity(recent.len() + 1);
+        // 当前会话的对话轮次（User/Agent），正序；跳过系统/工具展示消息
+        let mut msgs: Vec<serde_json::Value> = Vec::with_capacity(16);
         let mut last_role: Option<&str> = None;
-        // 倒序 → 正序（时间从早到晚），同时跳过最新一条 user 记录
-        // （recent.first() = 最新 = submit_input 刚写入的当前输入）
-        let newest_is_user =
-            recent.first().map(|r| r.role == "user").unwrap_or(false);
-        for rec in recent.iter().rev() {
-            if rec.role == "system" {
+        // 末条 user 消息是 submit_input 刚写入的当前输入（增强 prompt 的
+        // 原始版），构建历史时跳过它，避免与 final_content 双写。
+        let skip_last_user = self
+            .messages
+            .back()
+            .map(|m| m.role == MessageRole::User)
+            .unwrap_or(false);
+        let total = self.messages.len();
+        for (i, msg) in self.messages.iter().enumerate() {
+            let role = match msg.role {
+                MessageRole::User => "user",
+                MessageRole::Agent => "assistant",
+                _ => continue,
+            };
+            if skip_last_user && i == total - 1 {
                 continue;
             }
-            if rec.role == "user" && newest_is_user && std::ptr::eq(rec, recent.first().unwrap()) {
-                continue;
-            }
-            let role = if rec.role == "assistant" { "assistant" } else { "user" };
             if last_role == Some(role) {
                 // 连续同角色（如用户连发多条）：合并进上一条，保持交替约束
                 if let Some(last) = msgs.last_mut() {
                     let prev = last["content"].as_str().unwrap_or("").to_string();
-                    last["content"] =
-                        serde_json::json!(format!("{}\n{}", prev, rec.content));
+                    last["content"] = serde_json::json!(format!("{}\n{}", prev, msg.content));
                 }
                 continue;
             }
-            msgs.push(serde_json::json!({ "role": role, "content": rec.content }));
+            msgs.push(serde_json::json!({ "role": role, "content": msg.content }));
             last_role = Some(role);
         }
         msgs.push(serde_json::json!({ "role": "user", "content": final_content }));
@@ -2367,6 +2650,20 @@ fn airy_home() -> String {
     ".airymaxrt".to_string()
 }
 
+/// 事件类别中文化（F7 详情展示用，与 panels/events.rs category_label 对齐）。
+fn events_category_cn(cat: &str) -> &'static str {
+    match cat {
+        "blueprint" => "蓝图",
+        "command" => "命令",
+        "progress" => "进度",
+        "result" => "结果",
+        "issue" => "问题",
+        "verify" => "复核",
+        "chain" => "决策",
+        _ => "事件",
+    }
+}
+
 /// TUI 本地配置（config.toml）：目前持久化当前模型名。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TuiConfig {
@@ -2425,6 +2722,7 @@ fn build_help_text() -> Vec<String> {
         "  F5          - 显示插件列表".to_string(),
         "  F6          - 任务看板（work_hall 执行实例 + 在线 agent，实时刷新）".to_string(),
         "  F7          - 事件流（全局 gseq 因果序回放）".to_string(),
+        "  F8          - 切换到 CLI（airy_cli；CLI 中 /tui 切回）".to_string(),
         "  Enter       - 发送消息".to_string(),
         "  Alt+Enter   - 换行（多行输入）".to_string(),
         "  Ctrl+C      - 退出 TUI".to_string(),

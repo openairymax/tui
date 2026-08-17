@@ -240,6 +240,41 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     terminal.show_cursor()?;
     info!("Terminal restored.");
 
+    // 2026-08-17：F8 切换到 CLI——终端已恢复，用 airy_cli 替换当前进程
+    // （exec 语义，同一终端由 CLI 接管；与 CLI 的 /tui 命令构成双向互切，
+    // 无进程嵌套）。exec 失败（CLI 缺失等）时保留错误提示正常退出。
+    if app.switch_to_cli {
+        let home = std::env::var("AIRY_HOME").or_else(|_| {
+            std::env::var("HOME").map(|h| format!("{}/.airymaxrt", h))
+        });
+        let cli_bin = match &home {
+            Ok(h) => format!("{}/bin/airy_cli", h),
+            Err(_) => "airy_cli".to_string(),
+        };
+        info!("Switching to CLI: {}", cli_bin);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let err = std::process::Command::new(&cli_bin).exec();
+            error!("exec airy_cli failed: {}", err);
+            eprintln!("\n⚠ 无法切换到 CLI（{}）\n", err);
+        }
+        #[cfg(windows)]
+        {
+            let err = std::process::Command::new(&cli_bin).spawn();
+            match err {
+                Ok(mut child) => {
+                    let _ = child.wait();
+                }
+                Err(e) => {
+                    error!("spawn airy_cli failed: {}", e);
+                    eprintln!("\n⚠ 无法切换到 CLI（{}）\n", e);
+                }
+            }
+        }
+        return Ok(());
+    }
+
     result?;
     Ok(())
 }
@@ -374,7 +409,24 @@ async fn run_app<B: Backend>(
                     app.active_panel = ActivePanel::Events;
                     app.force_hall_refresh();
                 }
+                // F8：切换到 CLI（airy_cli）——恢复终端后 exec 替换进程
+                KeyCode::F(8) => {
+                    debug!("F8: switching to CLI (airy_cli)");
+                    app.switch_to_cli = true;
+                    return Ok(());
+                }
                 KeyCode::Enter => {
+                    // 面板激活（Board/Events）：Enter = 查看选中条目详情
+                    if app.active_panel == ActivePanel::Board {
+                        debug!("Board: Enter → view selected decision chain");
+                        app.board_view_selected();
+                        continue;
+                    }
+                    if app.active_panel == ActivePanel::Events {
+                        debug!("Events: Enter → view selected event detail");
+                        app.events_view_selected();
+                        continue;
+                    }
                     // Alt+Enter 换行（多行输入，光标处插入），Enter 发送
                     if key.modifiers.contains(event::KeyModifiers::ALT) {
                         app.input_insert_text("\n");
@@ -396,46 +448,95 @@ async fn run_app<B: Backend>(
                     //   - 回复到达后自动上屏（add_message 自动回到底部）
                     //   - Ctrl+X 中止 / Ctrl+Z 暂停（等待期间可人工控制）
                     //   - 工具权限审批：a=允许本次 · A=始终允许 · n=拒绝（Claude Code 风格）
-                    while app.is_busy() {
-                        terminal.draw(|f| ui::render(f, app))?;
-                        // 等待期间轮询按键：Ctrl+X 中止、Ctrl+Z 暂停/恢复、审批决议
-                        if event::poll(Duration::ZERO)? {
-                            if let Event::Key(key) = event::read()? {
-                                if key.kind == KeyEventKind::Press {
-                                    match key.code {
-                                        KeyCode::Char('x') | KeyCode::Char('X')
-                                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            app.abort_task();
-                                        }
-                                        KeyCode::Char('z') | KeyCode::Char('Z')
-                                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            if app.task_control == TaskControl::Paused {
-                                                app.resume_task();
-                                            } else {
-                                                app.pause_task();
+                    // 后台请求进行中 → 每 50ms 渲染 + 轮询（等待期间可插入对话）。
+                    // 任务完成后若有插入对话队列，逐条 pop 处理（单 pending 槽，
+                    // 每条等其完成再处理下一条，逻辑链连续不割裂）。
+                    loop {
+                        // ── 等待当前请求完成（期间可输入插入对话）──
+                        while app.is_busy() {
+                            terminal.draw(|f| ui::render(f, app))?;
+                            // 等待期间轮询按键：Ctrl+X 中止、Ctrl+Z 暂停/恢复、审批决议、
+                            // 任务执行中输入文本（Enter 提交 → 插入对话队列，任务不打断）
+                            if event::poll(Duration::ZERO)? {
+                                if let Event::Key(key) = event::read()? {
+                                    if key.kind == KeyEventKind::Press {
+                                        match key.code {
+                                            KeyCode::Char('x') | KeyCode::Char('X')
+                                                if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                            {
+                                                app.abort_task();
                                             }
+                                            KeyCode::Char('z') | KeyCode::Char('Z')
+                                                if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                            {
+                                                if app.task_control == TaskControl::Paused {
+                                                    app.resume_task();
+                                                } else {
+                                                    app.pause_task();
+                                                }
+                                            }
+                                            // 工具级权限审批（Claude Code 风格 permission prompt）
+                                            KeyCode::Char('a') | KeyCode::Char('y') => {
+                                                app.approve_request("allow");
+                                            }
+                                            KeyCode::Char('A') => {
+                                                app.approve_request("always");
+                                            }
+                                            KeyCode::Char('n') | KeyCode::Char('N')
+                                                | KeyCode::Char('d') | KeyCode::Char('D') => {
+                                                app.approve_request("deny");
+                                            }
+                                            // ── 插入对话（2.3.7）：任务执行中输入文本 ──
+                                            KeyCode::Enter => {
+                                                let input =
+                                                    std::mem::take(&mut app.input);
+                                                app.cursor = 0;
+                                                if !input.trim().is_empty() {
+                                                    app.queue_insert_chat(&input);
+                                                }
+                                            }
+                                            KeyCode::Backspace => {
+                                                app.input_backspace();
+                                            }
+                                            KeyCode::Delete => {
+                                                app.input_delete_after();
+                                            }
+                                            KeyCode::Left => {
+                                                app.cursor_left();
+                                            }
+                                            KeyCode::Right => {
+                                                app.cursor_right();
+                                            }
+                                            KeyCode::Home => {
+                                                app.cursor_home();
+                                            }
+                                            KeyCode::End => {
+                                                app.cursor_end();
+                                            }
+                                            KeyCode::Char(c) => {
+                                                // 普通字符插入输入框（光标感知）
+                                                app.input_insert_char(c);
+                                            }
+                                            _ => {}
                                         }
-                                        // 工具级权限审批（Claude Code 风格 permission prompt）
-                                        KeyCode::Char('a') | KeyCode::Char('y') => {
-                                            app.approve_request("allow");
-                                        }
-                                        KeyCode::Char('A') => {
-                                            app.approve_request("always");
-                                        }
-                                        KeyCode::Char('n') | KeyCode::Char('N')
-                                            | KeyCode::Char('d') | KeyCode::Char('D') => {
-                                            app.approve_request("deny");
-                                        }
-                                        _ => {}
                                     }
                                 }
                             }
+                            app.poll_pending();
+                            if app.is_busy() {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                            }
                         }
-                        app.poll_pending();
-                        if app.is_busy() {
-                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        // 队列空：结束处理；否则取一条提交（submit_input 会置 busy）
+                        let Some(msg) = app.insert_queue.pop_front() else {
+                            break;
+                        };
+                        if let Err(e) = app.submit_input(&msg) {
+                            log::warn!("insert queue submit failed: {}", e);
+                            app.add_message(
+                                app::MessageRole::System,
+                                format!("插入对话处理失败：{}", e),
+                            );
                         }
                     }
                     terminal.draw(|f| ui::render(f, app))?;
@@ -495,21 +596,55 @@ async fn run_app<B: Backend>(
                     // Ctrl+U：删除光标前全部内容
                     app.input_delete_to_start();
                 }
+                KeyCode::Char(c) if app.active_panel == ActivePanel::Board => {
+                    // F6 看板：0=全部 · 1-6=状态过滤（completed/running/pending/scheduled/failed/canceled）
+                    match c {
+                        '0' => app.board_set_filter(""),
+                        '1' => app.board_set_filter("completed"),
+                        '2' => app.board_set_filter("running"),
+                        '3' => app.board_set_filter("pending"),
+                        '4' => app.board_set_filter("scheduled"),
+                        '5' => app.board_set_filter("failed"),
+                        '6' => app.board_set_filter("canceled"),
+                        _ => {}
+                    }
+                }
+                KeyCode::Char(c) if app.active_panel == ActivePanel::Events => {
+                    // F7 事件流：0=全部 · 1-7=类别过滤（blueprint/command/progress/result/issue/verify/chain）
+                    match c {
+                        '0' => app.events_set_filter(""),
+                        '1' => app.events_set_filter("blueprint"),
+                        '2' => app.events_set_filter("command"),
+                        '3' => app.events_set_filter("progress"),
+                        '4' => app.events_set_filter("result"),
+                        '5' => app.events_set_filter("issue"),
+                        '6' => app.events_set_filter("verify"),
+                        '7' => app.events_set_filter("chain"),
+                        _ => {}
+                    }
+                }
                 KeyCode::Char(c) => {
                     // 普通字符插入到光标位置
                     app.input_insert_char(c);
                 }
                 KeyCode::Up => {
-                    // Alt+↑ 浏览输入历史；普通 ↑ 滚动对话
-                    if key.modifiers.contains(event::KeyModifiers::ALT) {
+                    // F6/F7 面板：↑ 移动选中光标（循环）；其余场景滚对话/浏览历史
+                    if app.active_panel == ActivePanel::Board {
+                        app.board_cursor_up();
+                    } else if app.active_panel == ActivePanel::Events {
+                        app.events_cursor_up();
+                    } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                         app.history_prev();
                     } else {
                         app.scroll_up();
                     }
                 }
                 KeyCode::Down => {
-                    // Alt+↓ 浏览输入历史（下一条）；普通 ↓ 滚动对话
-                    if key.modifiers.contains(event::KeyModifiers::ALT) {
+                    if app.active_panel == ActivePanel::Board {
+                        app.board_cursor_down();
+                    } else if app.active_panel == ActivePanel::Events {
+                        app.events_cursor_down();
+                    } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                         app.history_next();
                     } else {
                         app.scroll_down();

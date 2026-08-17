@@ -420,6 +420,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         ("F5", "插件", ActivePanel::Plugins),
         ("F6", "看板", ActivePanel::Board),
         ("F7", "事件流", ActivePanel::Events),
+        ("F8", "CLI", ActivePanel::Chat),
     ];
 
     // 窄屏只显示键位胶囊，隐藏文字标签，避免溢出
