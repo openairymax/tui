@@ -33,7 +33,8 @@ pub enum TaskControl {
     Running,
     /// 用户暂停（Ctrl+Z）：轮询挂起，可恢复
     Paused,
-    /// 用户中止（Ctrl+X）：后台请求已取消
+    /// 用户中止（Ctrl+X）：后台请求已取消，状态徽章展示中止态；
+    /// 下次发起新交互（start_pending 等）时自动复位为 Running
     Aborted,
 }
 
@@ -103,7 +104,8 @@ pub enum NodeState {
     Running,
     /// 已完成
     Done,
-    /// 执行失败/跳过
+    /// 执行失败/跳过（预留：逐节点失败反馈接线后构造）
+    #[allow(dead_code)]
     Failed,
 }
 

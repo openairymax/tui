@@ -35,7 +35,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
     // 表格块缓冲：连续以 | 开头的行（表头+分隔+数据）收集后统一对齐渲染
     let mut table: Vec<String> = Vec::new();
 
-    let mut push_table = |out: &mut Vec<Line<'static>>, table: &mut Vec<String>| {
+    let push_table = |out: &mut Vec<Line<'static>>, table: &mut Vec<String>| {
         if !table.is_empty() {
             let rendered = render_table(table, indent, width, base);
             out.extend(rendered);

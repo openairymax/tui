@@ -33,8 +33,6 @@ struct TestApp {
     pub tokens: u64,
     pub cost: f64,
     pub session_start: Instant,
-    pub mcp_enabled: bool,
-    pub a2a_enabled: bool,
     pub logs: VecDeque<TestLogEntry>,
     pub help_text: Vec<String>,
     pub config_content: String,
@@ -94,8 +92,6 @@ impl TestApp {
             tokens: 0,
             cost: 0.0,
             session_start: Instant::now(),
-            mcp_enabled: false,
-            a2a_enabled: false,
             logs: VecDeque::with_capacity(MAX_LOGS),
             help_text: Vec::new(),
             config_content: String::new(),
@@ -455,23 +451,6 @@ fn test_loading_state() {
     assert!(!app.loading);
     assert_eq!(app.status_message, "Ready");
 }
-
-#[test]
-fn test_mcp_a2a_flags() {
-    let mut app = TestApp::new();
-
-    assert!(!app.mcp_enabled);
-    assert!(!app.a2a_enabled);
-
-    app.mcp_enabled = true;
-    app.a2a_enabled = true;
-    assert!(app.mcp_enabled);
-    assert!(app.a2a_enabled);
-}
-
-// ============================================================================
-// Test 6: Log Entry Management
-// ============================================================================
 
 #[test]
 fn test_add_log_entry() {

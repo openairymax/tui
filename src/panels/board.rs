@@ -18,13 +18,15 @@ use crate::app::App;
 use crate::client::HallBoardEntry;
 use crate::theme;
 
-/// 状态图标（与 C 版 airy_cli cli_panel_state_icon 对齐）
+/// 状态图标（2.3.10 细化：执行/等待/调度/完成/失败/取消各自独立图示）
 fn state_icon(state: &str) -> &'static str {
     match state {
         "completed" => "✓",
-        "running" | "pending" | "scheduled" => "◇",
+        "running" => "▶",
+        "pending" => "○",
+        "scheduled" => "◷",
         "failed" => "✗",
-        "canceled" => "■",
+        "canceled" => "⊘",
         _ => "•",
     }
 }
@@ -39,16 +41,27 @@ fn state_color(state: &str) -> Color {
     }
 }
 
-/// 8 格迷你进度条（单行面板，保持紧凑）
+/// 8 格块状进度条（▰ 已填充 / ▱ 未填充；单行面板保持紧凑，视觉更清晰）
 fn mini_bar(prog: f64) -> String {
     let p = prog.clamp(0.0, 1.0);
     let filled = (p * 8.0).round() as usize;
-    let mut s = String::from("[");
+    let mut s = String::new();
     for i in 0..8 {
-        s.push(if i < filled { '#' } else { '-' });
+        s.push(if i < filled { '▰' } else { '▱' });
     }
-    s.push(']');
     s
+}
+
+/// 状态分组优先级（2.3.10 排序编排：执行中 → 等待/调度 → 完成 → 失败/取消，
+/// 组内保持最新在前，视觉上"进行中的事最醒目"）
+fn state_rank(state: &str) -> u8 {
+    match state {
+        "running" => 0,
+        "pending" | "scheduled" => 1,
+        "completed" => 2,
+        "failed" | "canceled" => 3,
+        _ => 4,
+    }
 }
 
 fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
@@ -143,12 +156,43 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+    // 2.3.12 状态概览：一眼看清项目运行状态（执行中/待处理/完成/失败计数）
+    if let Some(board) = &app.hall_board {
+        let mut n_run = 0usize;
+        let mut n_wait = 0usize;
+        let mut n_done = 0usize;
+        let mut n_bad = 0usize;
+        for e in &board.entries {
+            let st = if e.state.is_empty() { "unknown" } else { e.state.as_str() };
+            match st {
+                "running" => n_run += 1,
+                "pending" | "scheduled" => n_wait += 1,
+                "completed" => n_done += 1,
+                "failed" | "canceled" => n_bad += 1,
+                _ => {}
+            }
+        }
+        lines.push(Line::from(vec![
+            Span::styled("  概览 ", Style::default().fg(theme::faint())),
+            Span::styled(format!("▶ 执行中 {}", n_run), Style::default().fg(theme::WARNING)),
+            Span::styled("   ", Style::default().fg(theme::faint())),
+            Span::styled(format!("○ 待处理 {}", n_wait), Style::default().fg(theme::CYAN)),
+            Span::styled("   ", Style::default().fg(theme::faint())),
+            Span::styled(format!("✓ 完成 {}", n_done), Style::default().fg(theme::SUCCESS)),
+            Span::styled("   ", Style::default().fg(theme::faint())),
+            Span::styled(format!("✗ 失败/取消 {}", n_bad), Style::default().fg(theme::DANGER)),
+        ]));
+    }
     lines.push(Line::raw(""));
 
     if let Some(board) = &app.hall_board {
-        // 最新在前（work_hall board 按提交序排列，倒序展示）
+        // 状态分组排序（2.3.10）：进行中 → 等待/调度 → 完成 → 失败/取消，
+        // 组内最新在前（先倒序输入序，再按 rank 升序稳定排序）
         let mut entries: Vec<&HallBoardEntry> = board.entries.iter().collect();
         entries.reverse();
+        entries.sort_by_key(|e| {
+            state_rank(if e.state.is_empty() { "unknown" } else { &e.state })
+        });
         if !app.board_filter.is_empty() {
             entries.retain(|e| e.state == app.board_filter);
         }

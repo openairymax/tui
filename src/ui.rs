@@ -134,6 +134,17 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
             format!("  ·  工具: {}", a.tool),
             Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
         ),
+        Span::styled(
+            format!(
+                "  ·  时间: {}",
+                a.created_at
+                    .map(|ts| chrono::DateTime::from_timestamp(ts as i64, 0)
+                        .map(|dt| dt.format("%H:%M:%S").to_string())
+                        .unwrap_or_else(|| "—".to_string()))
+                    .unwrap_or_else(|| "—".to_string())
+            ),
+            Style::default().fg(theme::faint()),
+        ),
     ]);
     let line2 = Line::from(vec![
         Span::raw(format!("   {params_preview}")),

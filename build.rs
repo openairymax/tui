@@ -39,8 +39,15 @@ fn main() {
                 return;
             }
             let dir = lib.parent().expect("lib path has parent dir");
+            // 库名从文件名推导（支持 libagentrt_memoryrovol.a / *_oss.a 两种
+            // 命名）：file_stem 去扩展名 → 去 lib 前缀 → rustc-link-lib 名。
+            let stem = lib
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("agentrt_memoryrovol");
+            let libname = stem.strip_prefix("lib").unwrap_or(stem);
             println!("cargo:rustc-link-search=native={}", dir.display());
-            println!("cargo:rustc-link-lib=static=agentrt_memoryrovol");
+            println!("cargo:rustc-link-lib=static={}", libname);
             // OSS 库（L1+L2）的外部依赖：cJSON/curl/yaml/sqlite3/zlib/OpenSSL/pthread
             // （PRO 模式需要的 agentrt 运行时符号不在此列，OSS 无此依赖）。
             // 平台差异：macOS 的 pthread/dl 已并入 libSystem（-lpthread/-ldl
@@ -64,12 +71,23 @@ fn main() {
 }
 
 /// 按优先级定位 libagentrt_memoryrovol.a：
-///   1. MEMORYROVOL_LIB 环境变量（显式指定，兼容旧用法）
-///   2. $AIRY_HOME/lib/libagentrt_memoryrovol.a（安装前缀）
-///   3. 伞仓 OSS 构建产物 products/memoryrovol/build_oss/src/libagentrt_memoryrovol.a
+///   1. MEMORYROVOL_OSS_LIB env（显式指定 OSS 独立可链库，TUI 首选）
+///   2. $AIRY_HOME/lib/libagentrt_memoryrovol_oss.a（OSS 部署位置，2.6）
+///   3. MEMORYROVOL_LIB env（兼容旧用法）
+///   4. $AIRY_HOME/lib/libagentrt_memoryrovol.a（安装前缀）
+///   5. 伞仓 OSS 构建产物 products/memoryrovol/build_oss/src/libagentrt_memoryrovol.a
+/// 注意：PRO 全功能库（4）依赖 agentrt 运行时符号，TUI 独立二进制无法
+/// 链接；build.sh/install.sh 会先构建 OSS 库部署为 *_oss.a（2），保证
+/// TUI memoryrovol 全功能可用（L1+L2），PRO 留给 agentrt C 侧。
 #[cfg(feature = "memoryrovol")]
 fn locate_lib() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = env::var("MEMORYROVOL_OSS_LIB") {
+        candidates.push(PathBuf::from(p));
+    }
+    if let Ok(home) = env::var("AIRY_HOME") {
+        candidates.push(PathBuf::from(home).join("lib").join("libagentrt_memoryrovol_oss.a"));
+    }
     if let Ok(p) = env::var("MEMORYROVOL_LIB") {
         candidates.push(PathBuf::from(p));
     }

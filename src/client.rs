@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use log::{debug, error, info};
 use reqwest::Client as HttpClient;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::time::{Duration, Instant};
 
 /// Gateway API client for the TUI application.
@@ -444,17 +444,11 @@ pub struct HealthResponse {
     pub uptime_seconds: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct RunRequest {
-    pub prompt: Option<String>,
-    pub agent_file: String,
-    pub model: Option<String>,
-    pub interactive: bool,
-}
-
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct RunResponse {
+    /// 网关侧会话 ID（客户端预分配的 sid_for_task 已用于 Ctrl+X 取消，
+    /// 此处保留字段保证反序列化数据完整性，UI 刻意不展示）
+    #[allow(dead_code)]
     pub session_id: String,
     pub response: String,
     pub tokens_used: Option<u64>,
@@ -469,6 +463,8 @@ pub struct RunResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolTrace {
     pub tool: String,
+    /// 工具调用参数（UI 克制设计不展示；保留字段保证反序列化数据完整性）
+    #[allow(dead_code)]
     pub arguments: String,
     pub result: String,
     pub ok: Option<i64>,

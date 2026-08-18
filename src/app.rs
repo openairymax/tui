@@ -97,10 +97,6 @@ pub struct App {
     turn_started: Instant,
     /// 上一回合耗时（对话区回合分隔线展示：Worked for Ns）
     pub last_turn_elapsed: Option<Instant>,
-    /// Whether MCP is enabled
-    pub mcp_enabled: bool,
-    /// Whether A2A is enabled
-    pub a2a_enabled: bool,
     /// Log entries
     pub logs: VecDeque<LogEntry>,
     /// Help text cached
@@ -146,6 +142,9 @@ pub struct App {
     /// thinking 模型的思考过程）。默认折叠为一行，浏览时展开全量。
     /// 2026-08-17 F6 新增（gateway 透传 reasoning_content）。
     pub stream_reasoning: String,
+    /// 流式思考链的模型轨（SSE reasoning 事件 model 字段，2.3.14）：
+    /// 匹配 AIRY_MODEL_T2/T1F/T1P 显示 [Dual Slow/Fast/Prof Think]。
+    pub stream_reasoning_model: String,
     /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
@@ -281,8 +280,6 @@ impl App {
             session_start: Instant::now(),
             turn_started: Instant::now(),
             last_turn_elapsed: None,
-            mcp_enabled: false,
-            a2a_enabled: false,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             help_text: build_help_text(),
             model: load_saved_model().unwrap_or_default(),
@@ -312,6 +309,7 @@ impl App {
             last_reveal_tick: Instant::now(),
             stream_tool_events: Vec::new(),
             stream_reasoning: String::new(),
+            stream_reasoning_model: String::new(),
             approvals: Vec::new(),
             project_context: String::new(),
             last_approval_poll: Instant::now(),
@@ -1251,6 +1249,7 @@ impl App {
             self.streaming_text.clear();
             self.streaming_reveal = 0;
             self.stream_reasoning.clear();
+            self.stream_reasoning_model.clear();
             self.add_message(
                 MessageRole::System,
                 "对话已清空。输入 /help 查看可用命令。".to_string(),
@@ -1419,6 +1418,7 @@ impl App {
             let reasoning = std::mem::take(&mut self.stream_reasoning);
             self.add_message(MessageRole::System, reasoning);
         }
+        self.stream_reasoning_model.clear();
         // 流式结束：把已渲染的 streaming_text 落为正式消息（防止与 result 双写）
         if !self.streaming_text.is_empty() {
             // 内容已实时渲染在占位消息上；此处仅清理占位，避免重复上屏
@@ -1643,6 +1643,9 @@ impl App {
                 } else {
                     self.gccp.dag = None;
                 }
+                // 节点状态数组随 DAG 就绪（mark_all_running/done 才有载体，
+                // 2.3.9 层级可视化：Executing 阶段逐节点着色）
+                self.gccp.init_node_states();
                 self.add_message(MessageRole::Agent, r.response.clone());
                 if let Err(e) = self.memory.push("assistant", &r.response, "task") {
                     log::warn!("memory push(assistant) failed: {}", e);
@@ -1951,6 +1954,7 @@ impl App {
         self.streaming_text.clear();
         self.streaming_reveal = 0;
         self.stream_reasoning.clear();
+        self.stream_reasoning_model.clear();
         self.last_reveal_tick = Instant::now();
         self.stream_tool_events.clear();
     }
@@ -2115,6 +2119,10 @@ impl App {
                         if let Some(c) = v.get("content").and_then(|c| c.as_str()) {
                             self.stream_reasoning.push_str(c);
                         }
+                        // 2.3.14：思考链模型轨（t2/t1-f/t1-p → Dual Slow/Fast/Prof Think）
+                        if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+                            self.stream_reasoning_model = m.to_string();
+                        }
                         continue;
                     }
                 }
@@ -2278,7 +2286,8 @@ impl App {
             .map(|p| p.kind)
             .unwrap_or(PendingKind::ChatRound { input: String::new() });
         self.loading = false;
-        self.set_task_control(TaskControl::Running);
+        // 中止后保持中止态（状态徽章显示「已中止」）；新交互发起时复位 Running
+        self.set_task_control(TaskControl::Aborted);
         log::info!("abort_task: 人工中止（session={}）", session_id);
 
         // 服务端取消：凭预分配 session_id 中止 gateway 运行中请求（尽力而为）
@@ -2769,7 +2778,6 @@ fn build_help_text() -> Vec<String> {
         String::new(),
         "状态栏:".to_string(),
         "  显示阶段、技能数、回合数、Token、成本与耗时。".to_string(),
-        "  MCP/A2A 指示器显示协议可用性。".to_string(),
     ]
 }
 
