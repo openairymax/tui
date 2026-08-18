@@ -42,8 +42,14 @@ fn main() {
             println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=static=agentrt_memoryrovol");
             // OSS 库（L1+L2）的外部依赖：cJSON/curl/yaml/sqlite3/zlib/OpenSSL/pthread
-            // （PRO 模式需要的 agentrt 运行时符号不在此列，OSS 无此依赖）
-            for sys in ["cjson", "curl", "yaml", "sqlite3", "z", "ssl", "crypto", "pthread", "dl", "m"] {
+            // （PRO 模式需要的 agentrt 运行时符号不在此列，OSS 无此依赖）。
+            // 平台差异：macOS 的 pthread/dl 已并入 libSystem（-lpthread/-ldl
+            // 会触发 "library not found"），仅 Linux 显式链接。
+            let mut sys_libs: Vec<&str> =
+                vec!["cjson", "curl", "yaml", "sqlite3", "z", "ssl", "crypto", "m"];
+            #[cfg(target_os = "linux")]
+            sys_libs.extend(["pthread", "dl"]);
+            for sys in sys_libs {
                 println!("cargo:rustc-link-lib={}", sys);
             }
             println!("cargo:rustc-cfg=mr_linked");
