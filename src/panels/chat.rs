@@ -19,11 +19,42 @@ use crate::app::{App, MessageRole};
 use crate::gccp::FlowPhase;
 use crate::theme;
 
-/// thinking... 动效帧（11 个字符逐一循环：t → th → … → thinking...，0.1s 一帧）。
-const THINKING: [&str; 11] = [
-    "t", "th", "thi", "thin", "think", "thinki", "thinkin", "thinking", "thinking.", "thinking..",
-    "thinking...",
-];
+/// 思考动效帧（Braille spinner，Claude 风格轻量旋转；0.1s 一帧）。
+/// 相较文字循环（t→th→…）更克制优雅：仅一个字符宽度，不跳动文本。
+const THINKING: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// 任务节点运行动效（◐◓◑◒ 顺时针旋转，0.5s 一帧）。
+/// 执行期间多个节点并行 Running 时同步旋转，传达"进行中"的层次动态
+/// （2.3.9：层级动态细致处理；2.3.15 Claude 美学——状态可见且不喧宾夺主）。
+const NODE_SPIN: [&str; 4] = ["◐", "◓", "◑", "◒"];
+
+/// 2.3.14：根据思考链模型轨映射双思考标签（区分实时思考状态）。
+///   t2 模型思考 → [Dual Slow Think]（慢思考）
+///   t1-f 模型思考 → [Dual Fast Think]（快思考）
+///   t1-p 模型思考 → [Dual Prof Think]（专业思考）
+/// 未识别（通用对话/llm_d 默认模型）→ 通用 [Dual Think]。
+/// 模型轨来自 gateway reasoning 事件 model 字段，与 env 配置
+/// AIRY_MODEL_T2 / AIRY_MODEL_T1F / AIRY_MODEL_T1P 双向模糊匹配
+/// （env 值可为模型名或端点 URL，model 为 llm_d 实际请求模型名）。
+fn dual_think_label(model: &str) -> &'static str {
+    if model.is_empty() {
+        return "[Dual Think]";
+    }
+    const TRACKS: [(&str, &str); 3] = [
+        ("AIRY_MODEL_T2", "[Dual Slow Think]"),
+        ("AIRY_MODEL_T1F", "[Dual Fast Think]"),
+        ("AIRY_MODEL_T1P", "[Dual Prof Think]"),
+    ];
+    for (env, label) in TRACKS {
+        if let Ok(cfg) = std::env::var(env) {
+            let cfg = cfg.trim();
+            if !cfg.is_empty() && (model.contains(cfg) || cfg.contains(model)) {
+                return label;
+            }
+        }
+    }
+    "[Dual Think]"
+}
 
 /// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：最新 Agent 回复渲染
 /// 行数超过 FOLD_MAX_LINES 时，live 视口只显示前 FOLD_KEEP_LINES 行 +
@@ -110,10 +141,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // thinking 模型先思考后回答。思考内容为模型内部推理碎片，逐块上屏
     // 无展示价值（用户反馈"看不懂、没有价值"）——流式期间仅显示一行
     // 状态（字数进度），完整思考链落定后折叠为摘要行，浏览（↑）时展开全量。
+    // 标签按模型轨区分（2.3.14）：t2/t1-f/t1-p → [Dual Slow/Fast/Prof Think]。
     if app.loading && !app.stream_reasoning.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(
-                "[Dual Think]".to_string(),
+                dual_think_label(&app.stream_reasoning_model).to_string(),
                 Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -149,9 +181,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     }
 
     if app.loading {
-        // 思考动效：thinking... 11 字符逐一循环（与 ui.rs 同一时钟，0.05s 一帧；
-        // 苹果轻量字重风格：无粗体无斜体，极浅色，优雅低调）
-        let frame = (app.session_start.elapsed().as_millis() / 50) as usize % THINKING.len();
+        // 思考动效：Braille spinner 旋转（0.1s 一帧，与 ui.rs 同一时钟；
+        // Claude 风格轻量旋转——单字符宽度，不跳动文本，克制优雅）
+        let frame = (app.session_start.elapsed().as_millis() / 100) as usize % THINKING.len();
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(
@@ -167,7 +199,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // > 0）时回退全量，滚动可看完整思考链。最终答复（Agent）不折叠，
     // 完整展示（用户诉求「折叠思考链，完整展示结果」）。
     let folded: Option<Vec<Line>> = fold_span.and_then(|(s, e)| {
-        build_fold_view(&lines, s, e, app.scroll_offset, 1)
+        build_fold_view(&lines, s, e, app.scroll_offset, FOLD_KEEP_LINES)
     });
     let src: &[Line] = folded.as_deref().unwrap_or(&lines);
 
@@ -296,9 +328,16 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                             .get(i)
                             .copied()
                             .unwrap_or(crate::gccp::NodeState::Pending);
+                        // 运行动效：Running 节点 ◐◓◑◒ 随时间旋转（0.5s 一帧），
+                        // 并行节点同步转动，层级状态"活"起来（2.3.9）
+                        let spin = if state == crate::gccp::NodeState::Running {
+                            NODE_SPIN[(app.session_start.elapsed().as_millis() / 500) as usize % 4]
+                        } else {
+                            "◐"
+                        };
                         let (mark, color) = match state {
                             crate::gccp::NodeState::Pending => ("○", theme::faint()),
-                            crate::gccp::NodeState::Running => ("◐", theme::WARNING),
+                            crate::gccp::NodeState::Running => (spin, theme::WARNING),
                             crate::gccp::NodeState::Done => ("●", theme::SUCCESS),
                             crate::gccp::NodeState::Failed => ("✕", theme::DANGER),
                         };
@@ -409,7 +448,6 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
 
     // 内容统一固定缩进 4 列（Claude 式克制排版；此前随角色名长度参差）
     const INDENT: usize = 4;
-    let content_width = width.saturating_sub(INDENT).max(8);
 
     // 工具调用/结果为次要信息：轻量 dim 色
     let base = match msg.role {

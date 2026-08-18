@@ -237,10 +237,10 @@ pub mod memoryrovol {
         pub updated_at: i64,
     }
 
-    #[link(name = "agentrt_memoryrovol")]
+    // 库链接由 build.rs 全权决定（OSS 优先：libagentrt_memoryrovol_oss.a）。
+    // 不用 #[link(name=...)] 硬编码：会固定拉入 PRO 库（libagentrt_memoryrovol.a，
+    // 依赖 agentrt 运行时符号），与 build.rs 动态库名冲突。
     extern "C" {
-        fn airy_mr_create() -> *mut airy_mr_handle;
-        fn airy_mr_destroy(handle: *mut airy_mr_handle);
         fn airy_mr_init(manager: *const c_void, out_handle: *mut *mut airy_mr_handle) -> c_int;
         fn airy_mr_cleanup(handle: *mut airy_mr_handle);
         fn airy_mr_add_memory(handle: *mut airy_mr_handle, content: *const c_char, len: usize) -> c_int;

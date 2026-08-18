@@ -363,15 +363,21 @@ launch_frontend() {
     return 0
 }
 
-# ── 状态判断 1：gateway 已在线？直接进入 ───────────────────────────────────
-# GATEWAY_DOWN=1：gateway 不可用但 daemon 群在线，降级 CLI 直连（见下）。
+# ── 状态判断：gateway 是否在线 ───────────────────────────────────────────
+# 重要：gateway 在线 ≠ daemon 群在线。常驻 gateway 在前次会话后可能仍存活，
+# 而 llm/agent/tool 等 daemon 已退出——此前逻辑在 gateway 在线时直接进入
+# 界面、不拉起 daemon，表现为"界面能进、对话全挂（服务不可达）"。
+# 统一改为：无论 gateway 状态如何，先确保 daemon 群就绪（缺失即拉起），
+# 再决定前端（TUI 依赖 gateway；CLI 直连 daemon 群）。
 GATEWAY_DOWN=0
+GATEWAY_ALIVE=0
 if wait_for_health "$GATEWAY_URL" 1; then
-    log info "gateway 在线（$GATEWAY_URL），直接进入交互界面"
-    launch_frontend
-    exit $?
+    GATEWAY_ALIVE=1
+    log info "gateway 在线（$GATEWAY_URL），本次复用（不重复拉起）"
+else
+    log info "gateway 离线（$GATEWAY_URL），将一并拉起"
 fi
-log info "gateway 离线（$GATEWAY_URL），尝试拉起守护进程"
+log info "确保守护进程群就绪…"
 
 # ── 拉起守护进程（仅本次会话，退出后清理） ─────────────────────────────────
 DAEMONS_STARTED=0
@@ -435,6 +441,17 @@ cleanup() {
     stop_pids+=("${ALL_DAEMON_PIDS[@]}")
     _stop_all "${stop_pids[@]}"
     wait 2>/dev/null || true
+    # 清理本次拉起的 daemon socket 文件（2.2 启动优化）：优雅退出后
+    # unlink 本次登记的 socket，避免 stale socket 残留污染 run 目录——
+    # 残留 socket 会让后续 status 误报"未就绪"、甚至被复用判定误用。
+    # DAEMON_SOCKS 只登记本次拉起（复用实例不在其中，不受影响），且
+    # 不随 wait_all_socks 缩减，保证退出时完整清理。
+    for sock in "${DAEMON_SOCKS[@]:-}"; do
+        if [ -n "$sock" ] && [ -S "$sock" ]; then
+            rm -f "$sock" 2>/dev/null
+            log debug "清理 stale socket: $sock"
+        fi
+    done
     log debug "清理完成"
 }
 trap cleanup EXIT
@@ -444,8 +461,8 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
-if [ -z "$GATEWAY_BIN" ] || [ -z "$LLM_BIN" ]; then
-    log warn "gateway_d/llm_d 未找到，将以 OFFLINE 模式进入（对话功能不可用）。"
+if [ -z "$GATEWAY_BIN" ] && [ -z "$LLM_BIN" ]; then
+    log warn "gateway_d 与 llm_d 均未找到，将以 OFFLINE 模式进入（对话功能不可用）。"
     log warn "构建 daemons：cd \"$AIRYRT_HOME/agentrt\" && cmake -B build && cmake --build build -j"
 else
     # ---- 并行拉起全部守护进程（0.1.2 启动优化） ----
@@ -456,6 +473,10 @@ else
     ALL_DAEMON_PIDS=()   # 本次拉起的 daemon PID（cleanup 统一回收）
     DAEMONS_STARTED=1
     declare -a WAIT_SOCKS=()   # 待等待 socket 规格：`名称|socket路径`
+    declare -a DAEMON_SOCKS=() # 本次拉起的 socket 路径（cleanup 清理用）
+    # 本次拉起的 socket 路径（只增不减，独立于 WAIT_SOCKS）：wait_all_socks
+    # 会随就绪把条目移出 WAIT_SOCKS，cleanup 若用 WAIT_SOCKS 清理会因数组已
+    # 空而漏删残留 socket（2.2 启动优化）。
 
     # _launch_daemon <bin> <socket路径>：后台拉起并登记等待（不等待就绪）。
     # 去重与 stale socket 处理沿用顺序版逻辑；返回 0=已复用/已拉起。
@@ -484,6 +505,7 @@ else
         "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
         ALL_DAEMON_PIDS+=("$!")
         WAIT_SOCKS+=("$bname|$sock")
+        DAEMON_SOCKS+=("$sock")
         log info "$bname 已拉起（PID=$!），日志: $AIRY_HOME/logs/${bname}.out"
     }
 
@@ -506,6 +528,7 @@ else
             fi
             ALL_DAEMON_PIDS+=("$!")
             WAIT_SOCKS+=("llm_d|$RUNTIME_DIR/llm.sock")
+            DAEMON_SOCKS+=("$RUNTIME_DIR/llm.sock")
             log info "llm_d 已拉起（PID=$!），日志: $AIRY_HOME/logs/llm_d.out"
         fi
     fi
@@ -552,28 +575,33 @@ else
             return 0
         fi
     }
-    GW_START="yes"   # 默认启动；探测到已有在线 gateway 时置 no 复用
-    for _p in "$GATEWAY_PORT" $(seq 8083 8090); do
-        if _gw_port_available "$_p"; then
-            if [ "$_p" != "$GATEWAY_PORT" ]; then
-                log warn "端口 $GATEWAY_PORT 被占用（残留连接），gateway 改用端口 $_p"
-                GATEWAY_PORT="$_p"
-                GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+    GW_START="yes"   # 默认启动；gateway 已在线或探测到在线实例时置 no 复用
+    if [ "$GATEWAY_ALIVE" = "1" ]; then
+        GW_START="no"
+        log info "gateway 已在线（$GATEWAY_URL），复用（生命周期不受本次会话管理）"
+    else
+        for _p in "$GATEWAY_PORT" $(seq 8083 8090); do
+            if _gw_port_available "$_p"; then
+                if [ "$_p" != "$GATEWAY_PORT" ]; then
+                    log warn "端口 $GATEWAY_PORT 被占用（残留连接），gateway 改用端口 $_p"
+                    GATEWAY_PORT="$_p"
+                    GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+                fi
+                break
             fi
-            break
-        fi
-        # 端口不可 bind 但已有健康 gateway 在线 → 直接复用（避免重复拉起，
-        # 此前缺陷：复用后仍无条件启动新实例，产生双 gateway 与进程泄漏）
-        if wait_for_health "http://127.0.0.1:$_p" 1; then
-            if [ "$_p" != "$GATEWAY_PORT" ]; then
-                log info "端口 $_p 已有在线 gateway，直接复用"
-                GATEWAY_PORT="$_p"
-                GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+            # 端口不可 bind 但已有健康 gateway 在线 → 直接复用（避免重复拉起，
+            # 此前缺陷：复用后仍无条件启动新实例，产生双 gateway 与进程泄漏）
+            if wait_for_health "http://127.0.0.1:$_p" 1; then
+                if [ "$_p" != "$GATEWAY_PORT" ]; then
+                    log info "端口 $_p 已有在线 gateway，直接复用"
+                    GATEWAY_PORT="$_p"
+                    GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+                fi
+                GW_START="no"
+                break
             fi
-            GW_START="no"
-            break
-        fi
-    done
+        done
+    fi
     if [ "$GW_START" = "yes" ]; then
         log debug "执行: \"$GATEWAY_BIN\" -h 127.0.0.1 -p \"$GATEWAY_PORT\" > \"$AIRY_HOME/logs/gateway_d.out\" 2>&1 &"
         "$GATEWAY_BIN" -h 127.0.0.1 -p "$GATEWAY_PORT" >"$AIRY_HOME/logs/gateway_d.out" 2>&1 &
