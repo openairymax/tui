@@ -192,7 +192,7 @@ fn render_brand_bar(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" v{}", app.gateway_version.as_deref().unwrap_or("unknown")),
+            format!(" v{}", app.gateway_version.as_deref().unwrap_or(env!("CARGO_PKG_VERSION"))),
             Style::default().fg(theme::faint()),
         ),
         Span::styled("    ", Style::default()),

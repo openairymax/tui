@@ -2559,8 +2559,9 @@ impl App {
             Ok(health) => {
                 self.connected = true;
                 self.gateway_version = health.version.clone();
-                self.status_message = format!("Connected to AgentRT v{}", health.version.as_deref().unwrap_or("unknown"));
-                self.add_log("INFO", format!("已连接网关 v{}", health.version.as_deref().unwrap_or("unknown")));
+                let ver = health.version.as_deref().unwrap_or(env!("CARGO_PKG_VERSION"));
+                self.status_message = format!("Connected to AgentRT v{ver}");
+                self.add_log("INFO", format!("已连接网关 v{ver}"));
             }
             Err(e) => {
                 self.connected = false;
