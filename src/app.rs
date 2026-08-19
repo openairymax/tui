@@ -145,6 +145,9 @@ pub struct App {
     /// 流式思考链的模型轨（SSE reasoning 事件 model 字段，2.3.14）：
     /// 匹配 AIRY_MODEL_T2/T1F/T1P 显示 [Dual Slow/Fast/Prof Think]。
     pub stream_reasoning_model: String,
+    /// 思考阶段开始时刻（首个 reasoning 增量到达时记录；chat.rs 状态行
+    /// 显示耗时，2026-08-19 与 C 版 CLI 的 "N 字 · T.Ts" 进度对齐）。
+    pub stream_reasoning_start: Option<Instant>,
     /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
@@ -310,6 +313,7 @@ impl App {
             stream_tool_events: Vec::new(),
             stream_reasoning: String::new(),
             stream_reasoning_model: String::new(),
+            stream_reasoning_start: None,
             approvals: Vec::new(),
             project_context: String::new(),
             last_approval_poll: Instant::now(),
@@ -1250,6 +1254,7 @@ impl App {
             self.streaming_reveal = 0;
             self.stream_reasoning.clear();
             self.stream_reasoning_model.clear();
+            self.stream_reasoning_start = None;
             self.add_message(
                 MessageRole::System,
                 "对话已清空。输入 /help 查看可用命令。".to_string(),
@@ -1419,6 +1424,7 @@ impl App {
             self.add_message(MessageRole::System, reasoning);
         }
         self.stream_reasoning_model.clear();
+        self.stream_reasoning_start = None;
         // 流式结束：把已渲染的 streaming_text 落为正式消息（防止与 result 双写）
         if !self.streaming_text.is_empty() {
             // 内容已实时渲染在占位消息上；此处仅清理占位，避免重复上屏
@@ -1955,6 +1961,7 @@ impl App {
         self.streaming_reveal = 0;
         self.stream_reasoning.clear();
         self.stream_reasoning_model.clear();
+        self.stream_reasoning_start = None;
         self.last_reveal_tick = Instant::now();
         self.stream_tool_events.clear();
     }
@@ -2117,6 +2124,9 @@ impl App {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&evt) {
                     if v.get("__airy_evt").and_then(|k| k.as_str()) == Some("reasoning") {
                         if let Some(c) = v.get("content").and_then(|c| c.as_str()) {
+                            if self.stream_reasoning.is_empty() {
+                                self.stream_reasoning_start = Some(Instant::now());
+                            }
                             self.stream_reasoning.push_str(c);
                         }
                         // 2.3.14：思考链模型轨（t2/t1-f/t1-p → Dual Slow/Fast/Prof Think）
