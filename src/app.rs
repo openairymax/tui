@@ -2648,15 +2648,15 @@ impl App {
 
 // ─────────────────────────── 模型配置持久化 ───────────────────────────
 
-/// 用户配置目录：$AIRY_HOME/tui → ~/.airymaxrt/tui（与 wizard.toml 同目录约定）
+/// 用户配置目录：$AIRY_HOME/data/agentrt/tui（AIRY_HOME 路径体系收敛，2026-08-19）
 fn tui_config_dir() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("AIRY_HOME") {
-        return std::path::PathBuf::from(home).join("tui");
+        return std::path::PathBuf::from(home).join("data").join("agentrt").join("tui");
     }
     if let Ok(home) = std::env::var("HOME") {
-        return std::path::PathBuf::from(home).join(".airymaxrt").join("tui");
+        return std::path::PathBuf::from(home).join(".airymaxrt").join("data").join("agentrt").join("tui");
     }
-    std::path::PathBuf::from(".airymaxrt").join("tui")
+    std::path::PathBuf::from(".airymaxrt").join("data").join("agentrt").join("tui")
 }
 
 /// AIRY_HOME（用于展示 model.yaml 用户覆盖配置路径）
