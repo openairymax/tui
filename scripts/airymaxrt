@@ -310,15 +310,13 @@ case "$CMD" in
         ;;
 esac
 # 正常启动：透传剩余参数给 TUI
-# 进入全屏 TUI 页面后终端由 TUI 管理；启动期的 INFO 日志只写文件、
-# 不打印终端，避免与 TUI 界面混排（Terminal 反馈）。
-# 非全屏前端（airy_cli 行渲染/流式）保留终端 INFO：用户需要看到
-# daemon 拉起与 socket 就绪进度，否则会误以为"启动无输出=未启用"
-# （2.2 启动体验优化）。
-if [ -t 0 ] && [ -t 1 ] && [ -n "$TUI_BIN" ]; then
+# 终端日志统一默认 quiet：INFO 只写日志文件、不打印终端。全屏 TUI 下
+# 避免与界面混排；CLI 流式（-p）下 stdout 承载对话结果，启动 INFO 混入
+# 会污染输出（用户反馈"对话结果和日志混在一起"）。warn/error 仍打印
+# 终端（启动失败的可见性不牺牲）。显式 AIRYRT_TERM_LOG=verbose 可恢复
+# 终端 INFO（排查 daemon 拉起时序用）。
+if [ -z "${AIRYRT_TERM_LOG:-}" ]; then
     AIRYRT_TERM_LOG=quiet
-else
-    AIRYRT_TERM_LOG="${AIRYRT_TERM_LOG:-}"
 fi
 
 # ── 前置检查 ─────────────────────────────────────────────────────────────────
