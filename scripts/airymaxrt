@@ -234,19 +234,25 @@ wait_for_health() { # <url> <秒数>
     return 1
 }
 
-# _sock_alive <socket路径>：真实连接探测（0=有进程监听，可复用）。
+# _sock_alive <socket路径>：真实服务探测（0=daemon 在监听并响应，可复用）。
 # 仅查文件存在（-S）不可靠：崩溃/重复拉起后可能残留无监听者的
 # 死 socket（stale），此时 connect 返回 ECONNREFUSED。
-# 探测工具优先级：python3 > nc（Unix socket）> ss -l（Linux）。
+# 更隐蔽的场景（2026-08-19）：daemon 被强杀后，其 agent runner 子进程
+# 仍持有继承的监听 fd，connect 可以成功但无人 accept/响应——仅做
+# connect 探测会误判在线而复用死 daemon，表现为界面能进、任务挂起
+# （health_check recv 超时）。因此连接成功后追加一次 health_check
+# JSON-RPC 往返：1.5s 内收到响应才算在线。
+# 探测工具优先级：python3 > nc（Unix socket）> ss -l（Linux，仅连通）。
 _sock_alive() { # <socket路径>
     local path="$1"
     [ -S "$path" ] || return 1
     if command -v python3 >/dev/null 2>&1; then
-        python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect(sys.argv[1])" "$path" 2>/dev/null
+        python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(1.5); s.connect(sys.argv[1]); s.sendall(b'{\"jsonrpc\":\"2.0\",\"method\":\"health_check\",\"params\":{},\"id\":1}\n'); s.recv(1)" "$path" 2>/dev/null
     elif command -v nc >/dev/null 2>&1; then
         nc -zU "$path" 2>/dev/null
     elif command -v ss >/dev/null 2>&1; then
-        # ss -lx 列出 Unix domain socket（-lntu 是 TCP/UDP，不匹配）
+        # ss -lx 列出 Unix domain socket（-lntu 是 TCP/UDP，不匹配）。
+        # 无 python3/nc 的回退仅验证「有监听者」，无法区分孤儿 socket。
         ss -lx 2>/dev/null | grep -qF "$path" 2>/dev/null
     else
         # 最终回退：bash 内置 /dev/unix 路径不可用，用 curl 探测
