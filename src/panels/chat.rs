@@ -140,9 +140,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // 流式思考链状态行（SSE __airy_evt:reasoning 事件 → stream_reasoning）：
     // thinking 模型先思考后回答。思考内容为模型内部推理碎片，逐块上屏
     // 无展示价值（用户反馈"看不懂、没有价值"）——流式期间仅显示一行
-    // 状态（字数进度），完整思考链落定后折叠为摘要行，浏览（↑）时展开全量。
-    // 标签按模型轨区分（2.3.14）：t2/t1-f/t1-p → [Dual Slow/Fast/Prof Think]。
-    if app.loading && !app.stream_reasoning.is_empty() {
+    // 状态（字数 + 耗时进度），完整思考链落定后折叠为摘要行，浏览（↑）
+    // 时展开全量。标签按模型轨区分（2.3.14）：t2/t1-f/t1-p → [Dual
+    // Slow/Fast/Prof Think]。正文首片到达（streaming_text 非空）即隐藏，
+    // 与 C 版 CLI 的思考进度行竞态门控对齐（2026-08-19）。
+    if app.loading
+        && !app.stream_reasoning.is_empty()
+        && app.streaming_text.is_empty()
+    {
+        let secs = app
+            .stream_reasoning_start
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
         lines.push(Line::from(vec![
             Span::styled(
                 dual_think_label(&app.stream_reasoning_model).to_string(),
@@ -150,8 +159,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(
                 format!(
-                    "  思考中… {} 字（↑ 浏览查看思考链）",
-                    app.stream_reasoning.chars().count()
+                    "  思考中… {} 字 · {:.1}s（↑ 浏览查看思考链）",
+                    app.stream_reasoning.chars().count(),
+                    secs
                 ),
                 Style::default().fg(theme::faint()),
             ),
