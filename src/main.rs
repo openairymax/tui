@@ -486,6 +486,18 @@ async fn run_app<B: Backend>(
                                                 | KeyCode::Char('d') | KeyCode::Char('D') => {
                                                 app.approve_request("deny");
                                             }
+                                            // ── 2.3.13：等待回复（busy）期间 F6/F7 可切换看板/事件流 ──
+                                            // 此前 F 键仅在非 busy 主循环处理，LLM 请求进行中（可能
+                                            // 数十秒）按键落入 _ => {} 被吞，用户感知"看板不可操作"。
+                                            // busy 中切换面板只改视图，不打断正在进行的请求。
+                                            KeyCode::F(6) => {
+                                                app.active_panel = ActivePanel::Board;
+                                                app.force_hall_refresh();
+                                            }
+                                            KeyCode::F(7) => {
+                                                app.active_panel = ActivePanel::Events;
+                                                app.force_hall_refresh();
+                                            }
                                             // ── 插入对话（2.3.7）：任务执行中输入文本 ──
                                             KeyCode::Enter => {
                                                 let input =

@@ -1123,6 +1123,11 @@ impl App {
                 .collect()
         };
         visible.reverse(); // 与面板渲染一致：最新在前
+        // 与渲染同序（board.rs 状态分组稳定排序）：此前仅 reverse 取索引，
+        // 混合状态时高亮行与 Enter 详情错位（2.3.13 F6 看板选中错位）。
+        visible.sort_by_key(|e| {
+            crate::panels::board::state_rank(if e.state.is_empty() { "unknown" } else { &e.state })
+        });
         visible
             .get(self.board_cursor % visible.len().max(1))
             .map(|e| e.execution_id.clone())
@@ -1541,7 +1546,12 @@ impl App {
             }
             Err(e) => {
                 self.add_log("ERROR", format!("LLM 调用失败：{}", e));
-                self.add_message(MessageRole::System, format!("Error: {}", e));
+                // 2.3.4：错误详情只进日志（F3 查看）；界面仅显示一句话摘要，
+                // 避免错误链（含 HTTP body 原文/内部路径）污染对话区。
+                let brief = e.to_string();
+                let brief = brief.lines().next().unwrap_or("请求失败");
+                let brief: String = brief.chars().take(120).collect();
+                self.add_message(MessageRole::System, format!("请求失败：{}", brief));
             }
         }
     }
