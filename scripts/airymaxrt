@@ -117,6 +117,47 @@ log() { # log <debug|info|warn|error> <消息...>
     printf '%s\n' "$line" >>"$LOG_FILE"
 }
 
+# ── 启动进度行（2.1/2.2 启动体验优化） ─────────────────────────────────────
+# quiet 模式（AIRYRT_TERM_LOG=quiet）下 INFO 不进终端，用户执行 airymaxrt
+# 后等待 daemon 群拉起期间看到的是"黑屏无反馈"，感知为"系统不能正常启用"
+# （2.1 用户反馈）。boot_line 在 quiet 下仍打印精简进度到 stderr：
+#   - TUI 路径：进入全屏（alt-screen）后这些行被清屏覆盖，不残留
+#   - CLI 流式路径：stdout 承载对话结果，stderr 进度不影响结果解析
+# 每行以 `›` 引导、无时间戳（非日志，是进度），warn/error 走 log 通道。
+boot_line() { # <消息...>
+    printf '\033[2m›\033[0m %s\n' "$*" >&2
+}
+
+# ── 关键 daemon 就绪诊断（2.2 启动可靠性优化） ─────────────────────────────
+# daemon 群 socket 未全部就绪时逐项诊断：对话/工具/认知关键链路（llm/think/
+# agent/tool）未就绪必须明确报错并附日志尾部（此前 `wait_all_socks || true`
+# 静默容忍，用户进入界面后对话挂起——"界面能进、对话全挂"）；非关键链路
+# 降级为 WARN 提示（界面可用但该能力受限）。
+diag_daemons() { # 遍历剩余 WAIT_SOCKS（未就绪项）
+    local spec name sock critical=0 _lines _l
+    for spec in "${WAIT_SOCKS[@]}"; do
+        name="${spec%%|*}"; sock="${spec#*|}"
+        case "$name" in
+            llm_d|think_d|agent_d|tool_d)
+                log error "关键服务未就绪: $name（对话/认知/执行链路必需）"
+                log error "  日志: $AIRY_HOME/logs/${name}.out（尾部）:"
+                _lines="$(tail -n 8 "$AIRY_HOME/logs/${name}.out" 2>/dev/null | sed 's/^/  /')" || true
+                while IFS= read -r _l; do
+                    [ -n "$_l" ] && log error "$_l"
+                done <<<"$_lines"
+                critical=1
+                ;;
+            *)
+                log warn "$name 未就绪（非关键链路，界面可用但该能力受限），日志: $AIRY_HOME/logs/${name}.out"
+                ;;
+        esac
+    done
+    if [ "$critical" = "1" ]; then
+        log error "关键 daemon 未就绪，可执行 'airymaxrt doctor' 检查组件，"
+        log error "或删除 $RUNTIME_DIR 下残留 socket 后重试（详见上方日志尾部）"
+    fi
+}
+
 # ── 密钥加载：secrets.env（先到先得，set -a 自动 export 给子进程）───────────
 # 候选位置：$AIRY_HOME/config → $AIRYRT_HOME/.airymaxrt/config → $PWD/.airymaxrt/config
 _SECRET_SOURCES=(
@@ -397,6 +438,7 @@ else
     log info "gateway 离线（$GATEWAY_URL），将一并拉起"
 fi
 log info "确保守护进程群就绪…"
+boot_line "正在启动守护进程群…"
 
 # ── 拉起守护进程（仅本次会话，退出后清理） ─────────────────────────────────
 DAEMONS_STARTED=0
@@ -657,12 +699,23 @@ else
         done
         return 1
     }
-    wait_all_socks || true
+    WAIT_TOTAL="${#WAIT_SOCKS[@]}"   # 本次新拉起的 daemon 数（复用实例不在其中）
+    # wait_all_socks 置于 if 条件：set -e 下直接调用返回非 0 会中止脚本，
+    # 必须让调用方接管返回值才能走到诊断/降级分支。
+    if wait_all_socks; then
+        boot_line "守护进程群就绪（${WAIT_TOTAL} 个）"
+    else
+        # 未就绪项逐项诊断（关键链路明确报错 + 日志尾部，非关键链路 WARN）
+        diag_daemons
+        boot_line "守护进程群部分未就绪（未就绪 ${#WAIT_SOCKS[@]} 个，详见上方诊断）"
+    fi
 
     if wait_for_health "$GATEWAY_URL" 15; then
         log info "gateway 就绪（$GATEWAY_URL）"
+        boot_line "gateway 就绪（$GATEWAY_URL）"
     else
         log warn "gateway 未能就绪（$GATEWAY_URL），查看日志: $AIRY_HOME/logs/gateway_d.out"
+        boot_line "gateway 未就绪（$GATEWAY_URL），降级模式…"
         if [ -n "$CLI_BIN" ]; then
             # CLI 直连 daemon 群（Unix socket），不依赖 gateway HTTP：
             # gateway 起不来时降级到 CLI，而不是整站退出（用户痛点：多数
