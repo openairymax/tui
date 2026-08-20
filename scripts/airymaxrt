@@ -143,12 +143,20 @@ log debug "配置: GATEWAY_URL=$GATEWAY_URL MODEL_CONFIG=$MODEL_CONFIG AGENT_FIL
 # daemon 群与前端统一继承该环境；不 source 时 daemon 以 fail-closed 运行，
 # agent 工具全部被 ACL 拒绝（历史故障：airymaxrt 拉起的 agent_d 无 ACL，
 # 任务执行阶段 shell_run/fs_* 全部 Permission denied）。
-# 仅注入缺失变量，不覆盖用户显式设置（agentrt-env.sh 内 export 的
-# AIRY_HOME 等与脚本已解析值一致，重复赋值无害）。
+# 注意：历史版本 agentrt-env.sh 以 `export AIRY_HOME=安装值` 硬编码覆盖
+# 调用方显式设置（隔离测试/多实例/--prefix 自定义安装），导致 daemon 群
+# 与脚本等待探测的 socket 目录分叉——socket 永远"未就绪"、第二实例 unlink
+# 生产 socket 造成服务假死（2026-08-20 冷启动复现）。AIRY_HOME 权威值以
+# 脚本解析为准（install.env 固化），source 后强制恢复，RUNTIME_DIR 同源重算。
 if [ -f "$AIRY_HOME/bin/agentrt-env.sh" ]; then
     log debug "注入运行环境: $AIRY_HOME/bin/agentrt-env.sh"
+    _AIRY_HOME_RESOLVED="$AIRY_HOME"
     # shellcheck disable=SC1090
     . "$AIRY_HOME/bin/agentrt-env.sh"
+    AIRY_HOME="$_AIRY_HOME_RESOLVED"
+    export AIRY_HOME
+    RUNTIME_DIR="${AIRY_RUNTIME_DIR:-$AIRY_HOME/run}"
+    log debug "agentrt-env.sh 注入后恢复 AIRY_HOME=$AIRY_HOME RUNTIME_DIR=$RUNTIME_DIR"
 fi
 
 # ── 组件定位 ─────────────────────────────────────────────────────────────────
