@@ -125,7 +125,9 @@ impl GatewayClient {
         if !status.is_success() {
             error!("← agent/run FAILED: HTTP {} ({}ms) → {}", status.as_u16(),
                    elapsed.as_millis(), body);
-            anyhow::bail!("Gateway error (HTTP {}): {}", status.as_u16(), body);
+            // 2.3.4：完整 body 可能含 daemon 内部细节（路径/panic/响应原文），
+            // 已写入日志（上方 error!）。界面错误链只保留状态码，body 不上屏。
+            anyhow::bail!("Gateway error (HTTP {})", status.as_u16());
         }
 
         // 解析 JSON-RPC：优先 result，出错时透出 error.message

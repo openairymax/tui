@@ -53,8 +53,11 @@ fn mini_bar(prog: f64) -> String {
 }
 
 /// 状态分组优先级（2.3.10 排序编排：执行中 → 等待/调度 → 完成 → 失败/取消，
-/// 组内保持最新在前，视觉上"进行中的事最醒目"）
-fn state_rank(state: &str) -> u8 {
+/// 组内保持最新在前，视觉上"进行中的事最醒目"）。
+/// pub(crate)：app.rs 的 board_selected_exec 必须与渲染用同一排序，
+/// 否则高亮行与 Enter 详情错位（混合状态时渲染按 rank 分组、详情按
+/// 时间倒序取索引 → 选中/回放的不是同一条任务）。
+pub(crate) fn state_rank(state: &str) -> u8 {
     match state {
         "running" => 0,
         "pending" | "scheduled" => 1,

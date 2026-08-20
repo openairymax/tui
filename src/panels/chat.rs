@@ -103,10 +103,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     render_flow_header(&mut lines, app, width);
 
     // 消息列表（全量拼行；每条用户消息前插入回合分隔线，Claude Code 惯例）
-    // 同时记录最后一条 System 思考链消息的行区间（折叠区；思考链长文本
+    // 同时记录全部 System 思考链消息的行区间（折叠区；2.3.9：多轮对话
+    // 中每一轮 [Dual Think] 思考链都折叠——此前仅折叠最后一条，历史
+    // 思考链碎片全文展开占屏，用户反馈"看不懂、没有价值"。思考链长文本
     // 折叠为前几行 + 浏览展开，最终答复完整展示——用户诉求「折叠流式
     // 输出的思考链，完整展示结果」）
-    let mut fold_span: Option<(usize, usize)> = None;
+    let mut fold_spans: Vec<(usize, usize)> = Vec::new();
     if app.messages.is_empty() && app.flow_phase == FlowPhase::Chat {
         append_welcome(&mut lines, width, viewport);
     } else {
@@ -117,11 +119,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             }
             is_first = false;
             if msg.role == MessageRole::System {
-                fold_span = Some((lines.len(), lines.len()));
+                fold_spans.push((lines.len(), lines.len()));
             }
             append_message(&mut lines, msg, width);
             if msg.role == MessageRole::System {
-                if let Some(span) = fold_span.as_mut() {
+                if let Some(span) = fold_spans.last_mut() {
                     span.1 = lines.len();
                 }
             }
@@ -203,15 +205,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    // 思考链折叠（live 视口）：最后 System（[Dual Think]）消息渲染行数
+    // 思考链折叠（live 视口）：全部 System（[Dual Think]）消息渲染行数
     // 超阈值 → 折叠视图只保留头部行（角色名 + 时间戳）+ 折叠尾，思考链
     // 碎片正文不上屏（用户反馈"看不懂、没有价值"）；浏览（scroll_offset
     // > 0）时回退全量，滚动可看完整思考链。最终答复（Agent）不折叠，
     // 完整展示（用户诉求「折叠思考链，完整展示结果」）。
-    let folded: Option<Vec<Line>> = fold_span.and_then(|(s, e)| {
-        build_fold_view(&lines, s, e, app.scroll_offset, FOLD_KEEP_LINES)
-    });
-    let src: &[Line] = folded.as_deref().unwrap_or(&lines);
+    // 从后往前逐个折叠（行号由后向前替换保持稳定），任一区间成功折叠
+    // 即用折叠视图渲染。
+    let mut folded_lines: Vec<Line> = lines.clone();
+    let mut any_fold = false;
+    for &(s, e) in fold_spans.iter().rev() {
+        if let Some(sub) = build_fold_view(&folded_lines, s, e, app.scroll_offset, FOLD_KEEP_LINES) {
+            folded_lines = sub;
+            any_fold = true;
+        }
+    }
+    let src: &[Line] = if any_fold { &folded_lines } else { &lines };
 
     // 行级滚动：scroll_offset 语义为「距底部（最新）向上滚的行数」。
     // Paragraph::scroll 的 offset 语义是「距顶部滚过的行数」，需反转：
