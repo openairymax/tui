@@ -32,6 +32,8 @@
 #                     （最小 daemon 集，仅 llm/think/agent/tool + gateway）。
 #                     低资源设备（如树莓派 4B 2GB）建议 minimal，可显著降低
 #                     内存占用；非核心 daemon 未拉起时 gateway 自动降级。
+#   AIRYRT_FORCE_TUI 强制 TUI 模式（跳过终端能力评估，默认自动评估：
+#                     TERM=dumb/unknown 或屏幕 <20 行/<60 列时自动降级 CLI）。
 #
 # 组件缺失时：TUI 缺失报错退出；gateway_d/llm_d 缺失则以 OFFLINE 模式进入 TUI。
 
@@ -622,6 +624,29 @@ clear_front_screen() {
     fi
 }
 
+# ── 终端全屏能力评估（2026-08-21）────────────────────────────────────────
+# TUI 除需要 TTY 外，还要求终端具备全屏渲染能力：
+#   - TERM=dumb/unknown/空（cron、脚本化环境、部分 CI）→ 不支持 ANSI 全屏
+#   - 屏幕过小（<20 行或 <60 列）→ 三区布局/侧边栏无法完整渲染
+# 满足条件才启用 Rust TUI；否则自动降级 airy_cli（TTY 交互 / 非 TTY 流式），
+# 实现"显示能力实时适配、自动切换最优前端"。AIRYRT_FORCE_TUI=1 强制 TUI。
+terminal_capable_tui() {
+    [ -n "${AIRYRT_FORCE_TUI:-}" ] && return 0
+    local term rows cols
+    term="${TERM:-dumb}"
+    case "$term" in
+        dumb|unknown|"") return 1 ;;
+    esac
+    if command -v stty >/dev/null 2>&1; then
+        read -r rows cols < <(stty size 2>/dev/null || printf "24 80")
+        if [ "${rows:-0}" -lt 20 ] || [ "${cols:-0}" -lt 60 ]; then
+            log debug "终端尺寸过小（${rows}x${cols}），TUI 降级 CLI"
+            return 1
+        fi
+    fi
+    return 0
+}
+
 launch_frontend() {
     log debug "TTY 检测: stdin=$([ -t 0 ] && echo tty || echo pipe) stdout=$([ -t 1 ] && echo tty || echo pipe)"
     # 86：显式 CLI 模式（airymaxrt cli [airy_cli 参数]）。带参数时透传
@@ -648,11 +673,26 @@ launch_frontend() {
     # 前端子进程必须显式继承脚本 stdin（<&0）：非交互 bash 会把后台命令的
     # stdin 重定向为 /dev/null（POSIX 行为），导致 TUI 收不到按键、CLI
     # 的 fgets 立即 EOF（表现为「airymaxrt 无输出即退出」）。
-    if [ -t 0 ] && [ -t 1 ] && [ -n "$TUI_BIN" ] && [ "$GATEWAY_DOWN" != "1" ]; then
+    if [ -t 0 ] && [ -t 1 ] && [ -n "$TUI_BIN" ] && [ "$GATEWAY_DOWN" != "1" ] && terminal_capable_tui; then
         clear_front_screen
         log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
         log info "进入交互界面（Rust TUI，Ctrl+C 退出）"
         "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" <&0 &
+        TUI_PID=$!
+        wait "$TUI_PID"
+        local rc=$?
+        # TUI 异常退出（崩溃/被信号打断，code≠0）且终端仍交互 → 无缝续接
+        # CLI 交互模式，保证会话不中断（2.2.2 CLI/TUI 随时转换）。正常
+        # 退出（用户 Q，code=0）则按用户意愿结束。
+        if [ "$rc" -ne 0 ] && [ -n "$CLI_BIN" ] && [ -t 0 ] && [ -t 1 ]; then
+            log warn "TUI 异常退出（code=$rc），自动续接 CLI 交互模式"
+            clear_front_screen
+            log info "进入交互界面（airy_cli，/quit 退出）"
+            "$CLI_BIN" <&0 &
+            TUI_PID=$!
+            wait "$TUI_PID"
+        fi
+        return 0
     elif [ -n "$CLI_BIN" ]; then
         if [ -t 0 ] && [ -t 1 ]; then
             clear_front_screen
