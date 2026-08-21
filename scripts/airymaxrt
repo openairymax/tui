@@ -549,14 +549,22 @@ case "$CMD" in
         else
             log warn "gateway: 离线"
         fi
-        if _sock_alive "$RUNTIME_DIR/llm.sock"; then log info "llm.sock: 就绪"; else log warn "llm.sock: 未就绪"; fi
-        # 精确进程名匹配（pgrep -x + 单 pattern 正则）：procps-ng 的 pgrep
-        # 仅接受一个 pattern，多个 -x 会报错（rc=2）；用交替正则同时避免
-        # pgrep -f 匹配到 status 命令自身 cmdline 中的路径而误报「运行中」。
-        if pgrep -x 'llm_d|think_d|gateway_d|agent_d|tool_d|hook_d|plugin_d|monit_d|sched_d|channel_d|market_d|cupolas_d|mem_d|a2a_d|info_d|notify_d|observe_d' >/dev/null 2>&1; then
-            log info "daemon 进程: 运行中"
+        # daemon 群状态以关键 socket 可连接为权威判据（_sock_alive 含
+        # health_check 往返）。不用 pgrep：进程名匹配会把容器/其他实例的
+        # 同名进程算作本实例运行中，出现「status 显示运行中但 gateway 离线、
+        # llm.sock 未就绪」的矛盾（2026-08-22）。llm/think/agent/tool 是
+        # 对话与执行的核心链路，任一未就绪即提示不完整。
+        _core_ok=1
+        for _c in llm think agent tool; do
+            if ! _sock_alive "$RUNTIME_DIR/$_c.sock"; then
+                log warn "$_c.sock: 未就绪"
+                _core_ok=0
+            fi
+        done
+        if [ "$_core_ok" = "1" ]; then
+            log info "daemon 群: 核心链路（llm/think/agent/tool）全部就绪"
         else
-            log info "daemon 进程: 无"
+            log warn "daemon 群: 核心链路未全部就绪（运行 airymaxrt 拉起，或查看 logs/ 诊断）"
         fi
         exit 0
         ;;
@@ -817,6 +825,18 @@ if [ -z "$GATEWAY_BIN" ] && [ -z "$LLM_BIN" ]; then
     log warn "gateway_d 与 llm_d 均未找到，将以 OFFLINE 模式进入（对话功能不可用）。"
     log warn "构建 daemons：cd \"$AIRYRT_HOME/agentrt\" && cmake -B build && cmake --build build -j"
 else
+    # ---- 清理 run/ 下的 stale pid 文件（2026-08-22）----
+    # bootstrap 时代的 daemon 退出后残留 *.pid（airymaxrt 自身不写 pid 文件），
+    # 干扰 run 目录观感且误导诊断。启动前统一清理：pid 无对应存活进程即删。
+    # 存活进程的 pid 文件保留（避免误删正在运行实例的标记）。
+    for _pf in "$RUNTIME_DIR"/*.pid; do
+        [ -f "$_pf" ] || continue
+        _p="$(cat "$_pf" 2>/dev/null)"
+        if [ -z "$_p" ] || ! kill -0 "$_p" 2>/dev/null; then
+            rm -f "$_pf"
+            log debug "清理 stale pid 文件: $_pf"
+        fi
+    done
     # ---- 并行拉起全部守护进程（0.1.2 启动优化） ----
     # 16 个 Unix socket daemon + gateway_d 一次性后台拉起：daemon 启动即 bind
     # 自身 socket，对等连接在请求时建立，启动互不阻塞；随后统一轮询等待全部
