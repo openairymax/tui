@@ -62,3 +62,8 @@ libc = { version = "0.2", optional = true }
 [dev-dependencies]
 # 记忆模块单测：临时目录
 tempfile = "3"
+
+# 制品体积控制（2.11.3）：release 二进制 strip 符号表，
+# agentrt-tui 由 ~11MB 降至 ~4MB；保持 panic=unwind 以便错误可观测。
+[profile.release]
+strip = true

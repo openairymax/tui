@@ -400,14 +400,16 @@ async fn run_app<B: Backend>(
                 }
                 KeyCode::F(6) => {
                     debug!("Panel: toggle Board");
-                    // 进入看板：强制下次拉取立即刷新
+                    // 进入看板：强制立即刷新 + 订阅 hall.watch SSE 推送
                     app.active_panel = ActivePanel::Board;
                     app.force_hall_refresh();
+                    app.start_hall_watch();
                 }
                 KeyCode::F(7) => {
                     debug!("Panel: toggle Events");
                     app.active_panel = ActivePanel::Events;
                     app.force_hall_refresh();
+                    app.start_hall_watch();
                 }
                 // F8：切换到 CLI（airy_cli）——恢复终端后 exec 替换进程
                 KeyCode::F(8) => {
@@ -493,10 +495,12 @@ async fn run_app<B: Backend>(
                                             KeyCode::F(6) => {
                                                 app.active_panel = ActivePanel::Board;
                                                 app.force_hall_refresh();
+                                                app.start_hall_watch();
                                             }
                                             KeyCode::F(7) => {
                                                 app.active_panel = ActivePanel::Events;
                                                 app.force_hall_refresh();
+                                                app.start_hall_watch();
                                             }
                                             // ── 插入对话（2.3.7）：任务执行中输入文本 ──
                                             KeyCode::Enter => {
@@ -607,6 +611,19 @@ async fn run_app<B: Backend>(
                     if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                     // Ctrl+U：删除光标前全部内容
                     app.input_delete_to_start();
+                }
+                // Ctrl+T：新建会话 tab（多会话；请求进行中不可用，见 app 守卫）
+                KeyCode::Char('t') | KeyCode::Char('T')
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    app.new_session_tab();
+                }
+                // Alt+1..9：切换会话 tab（Alt+1 = 主会话；优先于面板数字过滤）
+                KeyCode::Char(c)
+                    if key.modifiers.contains(event::KeyModifiers::ALT)
+                        && c.is_ascii_digit()
+                        && c != '0' =>
+                {
+                    app.switch_tab((c as u8 - b'0') as usize);
                 }
                 KeyCode::Char(c) if app.active_panel == ActivePanel::Board => {
                     // F6 看板：0=全部 · 1-6=状态过滤（completed/running/pending/scheduled/failed/canceled）

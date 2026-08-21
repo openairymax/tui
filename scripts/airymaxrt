@@ -27,6 +27,11 @@
 #   AIRY_AGENT_FILE   Agent 定义文件（默认 agents/main.agent.yaml，相对当前目录）
 #   AIRY_TUI_BIN / AIRY_GATEWAY_BIN / AIRY_LLM_BIN  组件路径覆盖
 #   AIRYRT_LOG_LEVEL 日志级别（默认 info；debug 可看到完整排查信息）
+#   AIRYRT_PROFILE   运行画像：auto（按可用内存自动裁剪，默认；<2.5GiB 时
+#                     自动降为 minimal）| full（全量 16 daemon）| minimal
+#                     （最小 daemon 集，仅 llm/think/agent/tool + gateway）。
+#                     低资源设备（如树莓派 4B 2GB）建议 minimal，可显著降低
+#                     内存占用；非核心 daemon 未拉起时 gateway 自动降级。
 #
 # 组件缺失时：TUI 缺失报错退出；gateway_d/llm_d 缺失则以 OFFLINE 模式进入 TUI。
 
@@ -73,6 +78,7 @@ export AIRY_HOME
 RUNTIME_DIR="${AIRY_RUNTIME_DIR:-$AIRY_HOME/run}"
 GATEWAY_PORT="${AIRY_GATEWAY_PORT:-8080}"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
+
 # 模型配置优先取安装目录 $AIRY_HOME/config/model.yaml（install.sh/build.sh 已固化），
 # 兼容旧源码树路径 $AIRYRT_HOME/ecosystem/manager/model/model.yaml。
 if [ -f "${AIRY_MODEL_CONFIG:-$AIRY_HOME/config/model.yaml}" ]; then
@@ -116,6 +122,29 @@ log() { # log <debug|info|warn|error> <消息...>
     fi
     printf '%s\n' "$line" >>"$LOG_FILE"
 }
+
+# ── 运行画像：full | minimal | auto（低资源设备自动裁剪 daemon 集）────────
+# auto 模式按可用内存判定：< 2.5GiB（如树莓派 4B 2GB）自动降为 minimal，
+# 仅拉起 llm/think/agent/tool 四个核心 daemon + gateway，其余 daemon 缺位
+# 时 gateway 自动降级，避免 2GB 设备因全量 daemon 群 OOM。
+AIRYRT_PROFILE="${AIRYRT_PROFILE:-auto}"
+case "$AIRYRT_PROFILE" in
+    full|minimal|auto) ;;
+    *) log error "无效的 AIRYRT_PROFILE='$AIRYRT_PROFILE'（支持 full|minimal|auto）"
+       exit 2 ;;
+esac
+if [ "$AIRYRT_PROFILE" = "auto" ]; then
+    # MemTotal 单位 KiB；<2.5GiB（2560MiB）判为低内存 → minimal
+    if _MEM_KIB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null) && [ -n "$_MEM_KIB" ] \
+        && [ "$_MEM_KIB" -lt $((2560 * 1024)) ]; then
+        AIRYRT_PROFILE="minimal"
+        log info "检测到低内存设备（MemTotal ${_MEM_KIB}KiB < 2560MiB），自动启用 minimal 画像"
+    else
+        AIRYRT_PROFILE="full"
+    fi
+fi
+log debug "AIRYRT_PROFILE=$AIRYRT_PROFILE"
+
 
 # ── 启动进度行（2.1/2.2 启动体验优化） ─────────────────────────────────────
 # quiet 模式（AIRYRT_TERM_LOG=quiet）下 INFO 不进终端，用户执行 airymaxrt
@@ -312,14 +341,32 @@ _sock_alive() { # <socket路径>
 }
 
 # ── 子命令：help / status / doctor / uninstall ──────────────────────────────
+# 86：CLI/TUI 随时转换——`cli` 子命令不直接 exec（否则跳过 daemon 群启动，
+# CLI 直连 socket 时群未拉起会报"目标不存在"），而是置 FORCE_CLI 标记后
+# 走统一默认流程：先确保守护进程群就绪，再由 launch_frontend 选择前端。
+AIRYRT_FORCE_CLI=0
+CLI_ARGS=()
 CMD="${1:-}"
 case "$CMD" in
     --help|-h|help)
         echo "用法: airymaxrt [--gateway-url URL] [--agent-file FILE]"
+        echo "      airymaxrt cli [airy_cli 参数]  强制 CLI 模式（默认 TUI；随时可切换）"
         echo "      airymaxrt status      查看运行时状态"
         echo "      airymaxrt doctor      组件健康检查"
         echo "      airymaxrt uninstall   一键卸载（--keep-data 保留记忆数据）"
         exit 0
+        ;;
+    cli)
+        # 86: CLI/TUI 随时转换——显式请求 CLI 前端（默认走 TUI）。
+        # 透传剩余参数给 airy_cli；未传参数时以 TTY 交互模式运行。
+        # 退出后重新执行 airymaxrt（无参数）即回到 TUI。
+        if [ -z "$CLI_BIN" ]; then
+            log error "airy_cli 未找到（CLI_BIN 为空）"
+            exit 1
+        fi
+        AIRYRT_FORCE_CLI=1
+        shift
+        CLI_ARGS=("$@")
         ;;
     status)
         log info "AIRY_HOME=$AIRY_HOME"
@@ -393,19 +440,51 @@ fi
 #   无 TTY（管道/CI/脚本重定向）→ C 版 airy_cli 流式（-p 单轮，stdin 读指令）
 # 前端以子进程运行：bash 保持信号处理能力，外部强杀经 trap 转 exit，
 # cleanup 可回收前端与本次拉起的 daemons。
+# 交互前端独占屏幕：清屏后 hero/banner 从屏幕第 1 行开始渲染。
+# 不清屏时 boot 输出（"正在启动守护进程群…"等）占据顶部数行，hero 从
+# boot 之后打印，而 cli_term_header_pin 固定从第 7 行设滚动区——对话
+# 输出从第 7 行起覆盖 hero 下半部（2026-08-20 实测复现：英雄区只剩
+# 一行框线）。boot 进度已完整记录于 airymaxrt.log，此处仅清当前屏。
+clear_front_screen() {
+    if [ -t 1 ]; then
+        printf '\033[2J\033[H' >&1
+    fi
+}
+
 launch_frontend() {
     log debug "TTY 检测: stdin=$([ -t 0 ] && echo tty || echo pipe) stdout=$([ -t 1 ] && echo tty || echo pipe)"
+    # 86：显式 CLI 模式（airymaxrt cli [airy_cli 参数]）。带参数时透传
+    # （如 -p "指令" 单轮流式）；无参数且为 TTY 时进入 CLI 交互模式。
+    if [ "$AIRYRT_FORCE_CLI" = "1" ]; then
+        if [ -n "$CLI_BIN" ]; then
+            if [ -t 0 ] && [ -t 1 ] && [ "${#CLI_ARGS[@]}" -eq 0 ]; then
+                clear_front_screen
+                log debug "执行: \"$CLI_BIN\"（CLI 交互模式，TUI 让位）"
+                log info "进入交互界面（airy_cli，Ctrl+C 退出）"
+                "$CLI_BIN" <&0 &
+            else
+                log debug "执行: \"$CLI_BIN\" ${CLI_ARGS[*]:-}"
+                "$CLI_BIN" "${CLI_ARGS[@]}" <&0 &
+            fi
+            TUI_PID=$!
+            wait "$TUI_PID" || return $?
+            return 0
+        fi
+        log warn "airy_cli 不可用，回退默认前端"
+    fi
     # 前端选择：有 TTY 且 TUI 可用 → Rust TUI；否则 → airy_cli。
     # airy_cli 在 TTY 下以交互模式运行（无 -p），支持完整对话。
     # 前端子进程必须显式继承脚本 stdin（<&0）：非交互 bash 会把后台命令的
     # stdin 重定向为 /dev/null（POSIX 行为），导致 TUI 收不到按键、CLI
     # 的 fgets 立即 EOF（表现为「airymaxrt 无输出即退出」）。
     if [ -t 0 ] && [ -t 1 ] && [ -n "$TUI_BIN" ] && [ "$GATEWAY_DOWN" != "1" ]; then
+        clear_front_screen
         log debug "执行: \"$TUI_BIN\" --gateway-url \"$GATEWAY_URL\" --agent-file \"$AGENT_FILE\""
         log info "进入交互界面（Rust TUI，Ctrl+C 退出）"
         "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" <&0 &
     elif [ -n "$CLI_BIN" ]; then
         if [ -t 0 ] && [ -t 1 ]; then
+            clear_front_screen
             log debug "执行: \"$CLI_BIN\"（TTY 交互模式，TUI 不可用降级）"
             log info "进入交互界面（airy_cli，Ctrl+C 退出）"
             "$CLI_BIN" <&0 &
@@ -415,6 +494,7 @@ launch_frontend() {
             "$CLI_BIN" -p <&0 &
         fi
     else
+        clear_front_screen
         log warn "airy_cli 不可用，回退 Rust TUI（可能需要 TTY）"
         "$TUI_BIN" --gateway-url "$GATEWAY_URL" --agent-file "$AGENT_FILE" <&0 &
     fi
@@ -533,6 +613,7 @@ else
     # 并行版总耗时收敛为最慢单个 daemon 的启动时间（实测 ~2s）。
     ALL_DAEMON_PIDS=()   # 本次拉起的 daemon PID（cleanup 统一回收）
     DAEMONS_STARTED=1
+    REUSED_COUNT=0       # 复用已在线实例数（状态展示用，避免误导"0 个"）
     declare -a WAIT_SOCKS=()   # 待等待 socket 规格：`名称|socket路径`
     declare -a DAEMON_SOCKS=() # 本次拉起的 socket 路径（cleanup 清理用）
     # 本次拉起的 socket 路径（只增不减，独立于 WAIT_SOCKS）：wait_all_socks
@@ -554,6 +635,7 @@ else
         # pgrep 匹配不到，会误判离线而重复拉起（历史故障：多实例抢占
         # tool.sock/llm.sock，新实例 unlink 旧 socket 造成死链）。
         if _sock_alive "$sock"; then
+            REUSED_COUNT=$((REUSED_COUNT + 1))
             log info "$bname 已在运行（复用 $sock）"
             return 0
         fi
@@ -574,6 +656,7 @@ else
     # llm_d：核心依赖，--manager 指定模型配置（provider/endpoint 来源）
     if [ -x "$LLM_BIN" ]; then
         if _sock_alive "$RUNTIME_DIR/llm.sock"; then
+            REUSED_COUNT=$((REUSED_COUNT + 1))
             log info "llm_d 已在运行（复用 $RUNTIME_DIR/llm.sock）"
         else
             if [ -S "$RUNTIME_DIR/llm.sock" ]; then
@@ -601,22 +684,28 @@ else
         log warn "think_d 未找到，双思考（GCCP+GRAD）不可用，gateway 将降级直连"
     fi
 
-    # 其余 14 个 daemon：全功能接线（agent/tool/hook/plugin/monit/sched/
-    # channel/market/cupolas/mem/a2a/info/notify/observe）
+    # 其余 daemon：full 画像全量接线（agent/tool/hook/plugin/monit/sched/
+    # channel/market/cupolas/mem/a2a/info/notify/observe）；minimal 画像仅
+    # 保留核心执行链路（agent/tool），其余能力 daemon 不拉起（gateway 自动
+    # 降级），以控制低内存设备的内存占用（AIRYRT_PROFILE=minimal）。
     _launch_daemon "$(find_tool AIRY_AGENT_BIN agent_d "$AIRY_HOME/bin/agent_d" "$AIRYRT_HOME/agentrt/build/bin/agent_d" "$AIRYRT_HOME/build/bin/agent_d")" "$RUNTIME_DIR/agent.sock"
     _launch_daemon "$(find_tool AIRY_TOOL_BIN tool_d "$AIRY_HOME/bin/tool_d" "$AIRYRT_HOME/agentrt/build/bin/tool_d" "$AIRYRT_HOME/build/bin/tool_d")" "$RUNTIME_DIR/tool.sock"
-    _launch_daemon "$(find_tool AIRY_HOOK_BIN hook_d "$AIRY_HOME/bin/hook_d" "$AIRYRT_HOME/agentrt/build/bin/hook_d" "$AIRYRT_HOME/build/bin/hook_d")" "$RUNTIME_DIR/hook.sock"
-    _launch_daemon "$(find_tool AIRY_PLUGIN_BIN plugin_d "$AIRY_HOME/bin/plugin_d" "$AIRYRT_HOME/agentrt/build/bin/plugin_d" "$AIRYRT_HOME/build/bin/plugin_d")" "$RUNTIME_DIR/plugin.sock"
-    _launch_daemon "$(find_tool AIRY_MONIT_BIN monit_d "$AIRY_HOME/bin/monit_d" "$AIRYRT_HOME/agentrt/build/bin/monit_d" "$AIRYRT_HOME/build/bin/monit_d")" "$RUNTIME_DIR/monit.sock"
-    _launch_daemon "$(find_tool AIRY_SCHED_BIN sched_d "$AIRY_HOME/bin/sched_d" "$AIRYRT_HOME/agentrt/build/bin/sched_d" "$AIRYRT_HOME/build/bin/sched_d")" "$RUNTIME_DIR/sched.sock"
-    _launch_daemon "$(find_tool AIRY_CHANNEL_BIN channel_d "$AIRY_HOME/bin/channel_d" "$AIRYRT_HOME/agentrt/build/bin/channel_d" "$AIRYRT_HOME/build/bin/channel_d")" "$RUNTIME_DIR/channel.sock"
-    _launch_daemon "$(find_tool AIRY_MARKET_BIN market_d "$AIRY_HOME/bin/market_d" "$AIRYRT_HOME/agentrt/build/bin/market_d" "$AIRYRT_HOME/build/bin/market_d")" "$RUNTIME_DIR/market.sock"
-    _launch_daemon "$(find_tool AIRY_CUPOLAS_BIN cupolas_d "$AIRY_HOME/bin/cupolas_d" "$AIRYRT_HOME/agentrt/build/bin/cupolas_d" "$AIRYRT_HOME/build/bin/cupolas_d")" "$RUNTIME_DIR/cupolas.sock"
-    _launch_daemon "$(find_tool AIRY_MEM_BIN mem_d "$AIRY_HOME/bin/mem_d" "$AIRYRT_HOME/agentrt/build/bin/mem_d" "$AIRYRT_HOME/build/bin/mem_d")" "$RUNTIME_DIR/mem.sock"
-    _launch_daemon "$(find_tool AIRY_A2A_BIN a2a_d "$AIRY_HOME/bin/a2a_d" "$AIRYRT_HOME/agentrt/build/bin/a2a_d" "$AIRYRT_HOME/build/bin/a2a_d")" "$RUNTIME_DIR/a2a.sock"
-    _launch_daemon "$(find_tool AIRY_INFO_BIN info_d "$AIRY_HOME/bin/info_d" "$AIRYRT_HOME/agentrt/build/bin/info_d" "$AIRYRT_HOME/build/bin/info_d")" "$RUNTIME_DIR/info.sock"
-    _launch_daemon "$(find_tool AIRY_NOTIFY_BIN notify_d "$AIRY_HOME/bin/notify_d" "$AIRYRT_HOME/agentrt/build/bin/notify_d" "$AIRYRT_HOME/build/bin/notify_d")" "$RUNTIME_DIR/notify.sock"
-    _launch_daemon "$(find_tool AIRY_OBSERVE_BIN observe_d "$AIRY_HOME/bin/observe_d" "$AIRYRT_HOME/agentrt/build/bin/observe_d" "$AIRYRT_HOME/build/bin/observe_d")" "$RUNTIME_DIR/observe.sock"
+    if [ "$AIRYRT_PROFILE" != "minimal" ]; then
+        _launch_daemon "$(find_tool AIRY_HOOK_BIN hook_d "$AIRY_HOME/bin/hook_d" "$AIRYRT_HOME/agentrt/build/bin/hook_d" "$AIRYRT_HOME/build/bin/hook_d")" "$RUNTIME_DIR/hook.sock"
+        _launch_daemon "$(find_tool AIRY_PLUGIN_BIN plugin_d "$AIRY_HOME/bin/plugin_d" "$AIRYRT_HOME/agentrt/build/bin/plugin_d" "$AIRYRT_HOME/build/bin/plugin_d")" "$RUNTIME_DIR/plugin.sock"
+        _launch_daemon "$(find_tool AIRY_MONIT_BIN monit_d "$AIRY_HOME/bin/monit_d" "$AIRYRT_HOME/agentrt/build/bin/monit_d" "$AIRYRT_HOME/build/bin/monit_d")" "$RUNTIME_DIR/monit.sock"
+        _launch_daemon "$(find_tool AIRY_SCHED_BIN sched_d "$AIRY_HOME/bin/sched_d" "$AIRYRT_HOME/agentrt/build/bin/sched_d" "$AIRYRT_HOME/build/bin/sched_d")" "$RUNTIME_DIR/sched.sock"
+        _launch_daemon "$(find_tool AIRY_CHANNEL_BIN channel_d "$AIRY_HOME/bin/channel_d" "$AIRYRT_HOME/agentrt/build/bin/channel_d" "$AIRYRT_HOME/build/bin/channel_d")" "$RUNTIME_DIR/channel.sock"
+        _launch_daemon "$(find_tool AIRY_MARKET_BIN market_d "$AIRY_HOME/bin/market_d" "$AIRYRT_HOME/agentrt/build/bin/market_d" "$AIRYRT_HOME/build/bin/market_d")" "$RUNTIME_DIR/market.sock"
+        _launch_daemon "$(find_tool AIRY_CUPOLAS_BIN cupolas_d "$AIRY_HOME/bin/cupolas_d" "$AIRYRT_HOME/agentrt/build/bin/cupolas_d" "$AIRYRT_HOME/build/bin/cupolas_d")" "$RUNTIME_DIR/cupolas.sock"
+        _launch_daemon "$(find_tool AIRY_MEM_BIN mem_d "$AIRY_HOME/bin/mem_d" "$AIRYRT_HOME/agentrt/build/bin/mem_d" "$AIRYRT_HOME/build/bin/mem_d")" "$RUNTIME_DIR/mem.sock"
+        _launch_daemon "$(find_tool AIRY_A2A_BIN a2a_d "$AIRY_HOME/bin/a2a_d" "$AIRYRT_HOME/agentrt/build/bin/a2a_d" "$AIRYRT_HOME/build/bin/a2a_d")" "$RUNTIME_DIR/a2a.sock"
+        _launch_daemon "$(find_tool AIRY_INFO_BIN info_d "$AIRY_HOME/bin/info_d" "$AIRYRT_HOME/agentrt/build/bin/info_d" "$AIRYRT_HOME/build/bin/info_d")" "$RUNTIME_DIR/info.sock"
+        _launch_daemon "$(find_tool AIRY_NOTIFY_BIN notify_d "$AIRY_HOME/bin/notify_d" "$AIRYRT_HOME/agentrt/build/bin/notify_d" "$AIRYRT_HOME/build/bin/notify_d")" "$RUNTIME_DIR/notify.sock"
+        _launch_daemon "$(find_tool AIRY_OBSERVE_BIN observe_d "$AIRY_HOME/bin/observe_d" "$AIRYRT_HOME/agentrt/build/bin/observe_d" "$AIRYRT_HOME/build/bin/observe_d")" "$RUNTIME_DIR/observe.sock"
+    else
+        log info "minimal 画像：仅拉起核心 daemon（llm/think/agent/tool），其余能力 daemon 已裁剪"
+    fi
 
     # ---- gateway_d：统一协议入口（HTTP/WS/HTTP2），与 daemon 群并行拉起 ----
     # 端口自适应：默认端口不可 bind（如残留半开连接占位）时自动探测 8083+
@@ -703,7 +792,15 @@ else
     # wait_all_socks 置于 if 条件：set -e 下直接调用返回非 0 会中止脚本，
     # 必须让调用方接管返回值才能走到诊断/降级分支。
     if wait_all_socks; then
-        boot_line "守护进程群就绪（${WAIT_TOTAL} 个）"
+        # 状态展示区分「复用」与「新拉」：此前仅显示新拉数，daemon 全在线
+        # 复用时误显"就绪（0 个）"，用户误判系统未启动（2026-08-20 反馈）。
+        if [ "$REUSED_COUNT" -gt 0 ] && [ "$WAIT_TOTAL" -gt 0 ]; then
+            boot_line "守护进程群就绪（复用 ${REUSED_COUNT} 个 + 新拉 ${WAIT_TOTAL} 个）"
+        elif [ "$REUSED_COUNT" -gt 0 ]; then
+            boot_line "守护进程群就绪（在线 ${REUSED_COUNT} 个全部复用）"
+        else
+            boot_line "守护进程群就绪（${WAIT_TOTAL} 个）"
+        fi
     else
         # 未就绪项逐项诊断（关键链路明确报错 + 日志尾部，非关键链路 WARN）
         diag_daemons

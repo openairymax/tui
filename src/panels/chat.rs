@@ -333,13 +333,36 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                 Span::styled(control_hint, Style::default().fg(theme::dim())),
             ]));
 
-            // DAG 节点状态持续渲染（P2-C 过程可视化）：
-            // 执行期间 ◐ 运行中，完成 ●，失败 ✕，未达 ○；
-            // 分支符号（├/└/│）标注节点层级与先后，与 C 版 airy_cli 一致。
+            // DAG 节点状态持续渲染（P2-C 过程可视化；2026-08-21 增甘特式进度条）：
+            // 总体进度条（▰ 完成 / ▱ 未完成）+ 逐节点状态（◐ 运行中 · ● 完成
+            // · ✕ 失败 · ○ 未达）；分支符号（├/└/│）标注节点层级与先后，
+            // 与 C 版 airy_cli 一致。
             if let Some(dag) = &app.gccp.dag {
                 if !dag.is_empty() {
                     lines.push(Line::raw(""));
                     let n = dag.nodes.len();
+                    // 甘特式总体进度条：已完成节点 / 总数（进度可视化）
+                    let done = app
+                        .gccp
+                        .node_states
+                        .iter()
+                        .filter(|s| **s == crate::gccp::NodeState::Done)
+                        .count();
+                    let bar_w = width.saturating_sub(24).clamp(12, 40);
+                    let bar = gantt_bar(done, n, bar_w);
+                    lines.push(Line::from(vec![
+                        Span::styled("    ", Style::default()),
+                        Span::styled("进度", Style::default().fg(theme::PRIMARY)),
+                        Span::styled(" ", Style::default()),
+                        Span::styled(
+                            bar.clone(),
+                            Style::default().fg(if done == n { theme::SUCCESS } else { theme::WARNING }),
+                        ),
+                        Span::styled(
+                            format!("  {done}/{n}"),
+                            Style::default().fg(theme::faint()),
+                        ),
+                    ]));
                     for (i, node) in dag.nodes.iter().enumerate() {
                         let state = app
                             .gccp
@@ -361,26 +384,50 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                             crate::gccp::NodeState::Failed => ("✕", theme::DANGER),
                         };
                         // 分支符号：首节点 ├，末节点 └，中间 │（层级先导）
-                        let branch = if i == 0 {
-                            "├─"
-                        } else if i == n - 1 {
-                            "└─"
-                        } else {
-                            "├─"
-                        };
-                        lines.push(Line::from(vec![
+                        let branch = if i == n - 1 { "└─" } else { "├─" };
+                        // 节点行：状态标记 + 标签 + 甘特式状态短条（宽度足够时）
+                        let mut spans = vec![
                             Span::styled("    ", Style::default()),
                             Span::styled(branch, Style::default().fg(theme::faint())),
                             Span::styled(" ", Style::default()),
                             Span::styled(mark, Style::default().fg(color)),
                             Span::styled(" ", Style::default()),
                             Span::styled(node.label.clone(), Style::default().fg(theme::text())),
-                        ]));
+                        ];
+                        if width >= 56 {
+                            spans.push(Span::styled("  ", Style::default()));
+                            spans.push(Span::styled(
+                                node_state_bar(state),
+                                Style::default().fg(color),
+                            ));
+                        }
+                        lines.push(Line::from(spans));
                     }
                 }
             }
             lines.push(Line::raw(""));
         }
+    }
+}
+
+/// 甘特式总体进度条：▰ 完成 / ▱ 未完成（按完成比例填充，2026-08-21）。
+fn gantt_bar(done: usize, total: usize, width: usize) -> String {
+    if total == 0 || width == 0 {
+        return String::new();
+    }
+    let filled = done.saturating_mul(width) / total;
+    let empty = width.saturating_sub(filled);
+    format!("{}{}", "▰".repeat(filled), "▱".repeat(empty))
+}
+
+/// 节点状态短进度条（4 格，甘特式）：
+/// Done=▰▰▰▰ · Running=▰▱▱▱ · Pending=▱▱▱▱ · Failed=✕✕✕✕
+fn node_state_bar(state: crate::gccp::NodeState) -> &'static str {
+    match state {
+        crate::gccp::NodeState::Done => "▰▰▰▰",
+        crate::gccp::NodeState::Running => "▰▱▱▱",
+        crate::gccp::NodeState::Pending => "▱▱▱▱",
+        crate::gccp::NodeState::Failed => "✕✕✕✕",
     }
 }
 
@@ -543,6 +590,8 @@ mod tests {
     // wrap_line 实现已迁至 markdown 模块（P2-A 渲染器共用）
     use super::append_message;
     use super::build_fold_view;
+    use super::gantt_bar;
+    use super::node_state_bar;
     use super::FOLD_KEEP_LINES;
     use crate::markdown::wrap_line;
     use ratatui::text::Line;
@@ -674,5 +723,26 @@ mod tests {
         };
         append_message(&mut lines, &msg, 80);
         assert!(lines[0].to_string().starts_with("[Sub very_long_to Agent]"));
+    }
+
+    /// 甘特式进度条：按完成比例填充 ▰/▱，边界（0/满/除零）安全。
+    #[test]
+    fn gantt_bar_fills_by_ratio() {
+        assert_eq!(gantt_bar(0, 4, 8), "▱▱▱▱▱▱▱▱");
+        assert_eq!(gantt_bar(4, 4, 8), "▰▰▰▰▰▰▰▰");
+        assert_eq!(gantt_bar(2, 4, 8), "▰▰▰▰▱▱▱▱");
+        // 除零 / 零宽：安全返回空
+        assert_eq!(gantt_bar(1, 0, 8), "");
+        assert_eq!(gantt_bar(1, 4, 0), "");
+    }
+
+    /// 节点状态短条：四态映射与标记一致。
+    #[test]
+    fn node_state_bar_maps_states() {
+        use crate::gccp::NodeState;
+        assert_eq!(node_state_bar(NodeState::Done), "▰▰▰▰");
+        assert_eq!(node_state_bar(NodeState::Running), "▰▱▱▱");
+        assert_eq!(node_state_bar(NodeState::Pending), "▱▱▱▱");
+        assert_eq!(node_state_bar(NodeState::Failed), "✕✕✕✕");
     }
 }
