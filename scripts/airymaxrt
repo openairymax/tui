@@ -123,25 +123,72 @@ log() { # log <debug|info|warn|error> <消息...>
     printf '%s\n' "$line" >>"$LOG_FILE"
 }
 
-# ── 运行画像：full | minimal | auto（低资源设备自动裁剪 daemon 集）────────
-# auto 模式按可用内存判定：< 2.5GiB（如树莓派 4B 2GB）自动降为 minimal，
-# 仅拉起 llm/think/agent/tool 四个核心 daemon + gateway，其余 daemon 缺位
-# 时 gateway 自动降级，避免 2GB 设备因全量 daemon 群 OOM。
-AIRYRT_PROFILE="${AIRYRT_PROFILE:-auto}"
+# ── 硬件评估（2.3.2：内存/核数/加速器综合画像，支持运行中监控恢复）────────
+# assess_hardware 输出 `画像建议|MemTotal KiB|MemAvailable KiB|CPU 核数|加速器`
+#   - minimal：MemTotal < 2.5GiB 或 MemAvailable < 1.5GiB 或 CPU 核数 < 3
+#     （端侧/低配设备：树莓派 4B 2GB 等，避免全量 daemon 群 OOM）
+#   - full：资源充足（大型服务器/个人电脑）
+# 加速器探测（当前记录并随状态展示；为本地推理能力预留判定依据）：
+#   - nvidia：nvidia-smi 可用（显卡数量）
+#   - rocm：AMD ROCm 运行时可用
+#   - dri：/dev/dri 渲染节点（Intel/AMD iGPU 或亮机卡）
+#   - none：无可见加速器
+detect_accel() {
+    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+        echo "nvidia:$(nvidia-smi -L 2>/dev/null | wc -l)"
+    elif command -v rocm-smi >/dev/null 2>&1; then
+        echo "rocm"
+    elif [ -d /dev/dri ] && ls /dev/dri/renderD* >/dev/null 2>&1; then
+        echo "dri"
+    else
+        echo "none"
+    fi
+}
+
+assess_hardware() {
+    local mem_kib mem_avail_kib nproc_val accel profile
+    mem_kib="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    mem_avail_kib="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || echo "$mem_kib")"
+    nproc_val="$(nproc 2>/dev/null || echo 1)"
+    accel="$(detect_accel)"
+    if [ -n "$mem_kib" ] && [ "$mem_kib" -gt 0 ] && \
+       [ "$mem_kib" -ge $((2560 * 1024)) ] && \
+       [ "$mem_avail_kib" -ge $((1536 * 1024)) ] && \
+       [ "$nproc_val" -ge 3 ]; then
+        profile="full"
+    else
+        profile="minimal"
+    fi
+    printf '%s|%s|%s|%s|%s' "$profile" "${mem_kib:-0}" "${mem_avail_kib:-0}" "$nproc_val" "$accel"
+}
+
+# 画像持久化：install.sh 固化 AIRY_PROFILE=minimal，但硬件变化（内存扩容/
+# 外设接入）后 profile/profile 子命令的调整需跨会话生效——写入独立 profile.env
+# 而非改动 install.env（安装信息保持只读），启动时 profile.env 优先。
+PROFILE_ENV="$AIRY_HOME/config/profile.env"
+if [ -f "$PROFILE_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$PROFILE_ENV"
+fi
+
+# ── 运行画像：full | minimal | auto（按硬件自动裁剪 daemon 集）────────
+# auto 模式经 assess_hardware 综合判定（内存总量/可用内存/CPU 核数），
+# 低资源设备自动降为 minimal（仅 llm/think/agent/tool + gateway），
+# 其余能力 daemon 缺位时 gateway 自动降级，避免 2GB 设备 OOM。
+# AIRYRT_PROFILE_RAW 记录解析前设置：monitor 据其区分「auto（可自动调整）」
+# 与「显式 full/minimal（尊重用户选择，仅提示）」。
+AIRYRT_PROFILE_RAW="${AIRYRT_PROFILE:-${AIRY_PROFILE:-auto}}"
+AIRYRT_PROFILE="$AIRYRT_PROFILE_RAW"
 case "$AIRYRT_PROFILE" in
     full|minimal|auto) ;;
     *) log error "无效的 AIRYRT_PROFILE='$AIRYRT_PROFILE'（支持 full|minimal|auto）"
        exit 2 ;;
 esac
 if [ "$AIRYRT_PROFILE" = "auto" ]; then
-    # MemTotal 单位 KiB；<2.5GiB（2560MiB）判为低内存 → minimal
-    if _MEM_KIB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null) && [ -n "$_MEM_KIB" ] \
-        && [ "$_MEM_KIB" -lt $((2560 * 1024)) ]; then
-        AIRYRT_PROFILE="minimal"
-        log info "检测到低内存设备（MemTotal ${_MEM_KIB}KiB < 2560MiB），自动启用 minimal 画像"
-    else
-        AIRYRT_PROFILE="full"
-    fi
+    _HW_ASSESS="$(assess_hardware)"
+    AIRYRT_PROFILE="${_HW_ASSESS%%|*}"
+    log info "硬件评估: 内存 ${_HW_ASSESS#*|}"
+    log info "自动画像: $AIRYRT_PROFILE"
 fi
 log debug "AIRYRT_PROFILE=$AIRYRT_PROFILE"
 
@@ -340,6 +387,52 @@ _sock_alive() { # <socket路径>
     fi
 }
 
+# ── 硬件监控补齐（2.3.2：monitor/profile 共用）────────────────────────────
+# _ensure_daemon <bin路径> <socket路径>：socket 未就绪则独立后台拉起。
+# 与 _launch_daemon 的差异：不绑定本次会话生命周期（会话退出不回收）——
+# 由后续 airymaxrt 会话的复用探测（_sock_alive）接管管理，适合常驻补齐。
+_ensure_daemon() {
+    local bin="$1" sock="$2" bname
+    [ -x "$bin" ] || return 0
+    bname="${bin##*/}"
+    if _sock_alive "$sock"; then
+        log debug "补齐跳过: $bname 已在运行（$sock）"
+        return 0
+    fi
+    if [ -S "$sock" ]; then
+        log warn "$bname stale socket（无监听），移除后补齐: $sock"
+        rm -f "$sock"
+    fi
+    "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
+    log info "补齐 daemon: $bname（PID=$!），日志: $AIRY_HOME/logs/${bname}.out"
+}
+
+# full 画像的 12 个能力 daemon（minimal 裁剪项）：硬件增强后自动恢复。
+# 顺序与正常启动路径一致（hook→plugin→monit→sched→channel→market→
+# cupolas→mem→a2a→info→notify→observe）。
+ensure_aux_daemons() {
+    _ensure_daemon "$(find_tool AIRY_HOOK_BIN hook_d "$AIRY_HOME/bin/hook_d" "$AIRYRT_HOME/agentrt/build/bin/hook_d" "$AIRYRT_HOME/build/bin/hook_d")" "$RUNTIME_DIR/hook.sock"
+    _ensure_daemon "$(find_tool AIRY_PLUGIN_BIN plugin_d "$AIRY_HOME/bin/plugin_d" "$AIRYRT_HOME/agentrt/build/bin/plugin_d" "$AIRYRT_HOME/build/bin/plugin_d")" "$RUNTIME_DIR/plugin.sock"
+    _ensure_daemon "$(find_tool AIRY_MONIT_BIN monit_d "$AIRY_HOME/bin/monit_d" "$AIRYRT_HOME/agentrt/build/bin/monit_d" "$AIRYRT_HOME/build/bin/monit_d")" "$RUNTIME_DIR/monit.sock"
+    _ensure_daemon "$(find_tool AIRY_SCHED_BIN sched_d "$AIRY_HOME/bin/sched_d" "$AIRYRT_HOME/agentrt/build/bin/sched_d" "$AIRYRT_HOME/build/bin/sched_d")" "$RUNTIME_DIR/sched.sock"
+    _ensure_daemon "$(find_tool AIRY_CHANNEL_BIN channel_d "$AIRY_HOME/bin/channel_d" "$AIRYRT_HOME/agentrt/build/bin/channel_d" "$AIRYRT_HOME/build/bin/channel_d")" "$RUNTIME_DIR/channel.sock"
+    _ensure_daemon "$(find_tool AIRY_MARKET_BIN market_d "$AIRY_HOME/bin/market_d" "$AIRYRT_HOME/agentrt/build/bin/market_d" "$AIRYRT_HOME/build/bin/market_d")" "$RUNTIME_DIR/market.sock"
+    _ensure_daemon "$(find_tool AIRY_CUPOLAS_BIN cupolas_d "$AIRY_HOME/bin/cupolas_d" "$AIRYRT_HOME/agentrt/build/bin/cupolas_d" "$AIRYRT_HOME/build/bin/cupolas_d")" "$RUNTIME_DIR/cupolas.sock"
+    _ensure_daemon "$(find_tool AIRY_MEM_BIN mem_d "$AIRY_HOME/bin/mem_d" "$AIRYRT_HOME/agentrt/build/bin/mem_d" "$AIRYRT_HOME/build/bin/mem_d")" "$RUNTIME_DIR/mem.sock"
+    _ensure_daemon "$(find_tool AIRY_A2A_BIN a2a_d "$AIRY_HOME/bin/a2a_d" "$AIRYRT_HOME/agentrt/build/bin/a2a_d" "$AIRYRT_HOME/build/bin/a2a_d")" "$RUNTIME_DIR/a2a.sock"
+    _ensure_daemon "$(find_tool AIRY_INFO_BIN info_d "$AIRY_HOME/bin/info_d" "$AIRYRT_HOME/agentrt/build/bin/info_d" "$AIRYRT_HOME/build/bin/info_d")" "$RUNTIME_DIR/info.sock"
+    _ensure_daemon "$(find_tool AIRY_NOTIFY_BIN notify_d "$AIRY_HOME/bin/notify_d" "$AIRYRT_HOME/agentrt/build/bin/notify_d" "$AIRYRT_HOME/build/bin/notify_d")" "$RUNTIME_DIR/notify.sock"
+    _ensure_daemon "$(find_tool AIRY_OBSERVE_BIN observe_d "$AIRY_HOME/bin/observe_d" "$AIRYRT_HOME/agentrt/build/bin/observe_d" "$AIRYRT_HOME/build/bin/observe_d")" "$RUNTIME_DIR/observe.sock"
+}
+
+# 画像状态持久化（profile 子命令/monitor 使用）
+write_profile_state() { # <full|minimal|auto>
+    mkdir -p "$AIRY_HOME/config"
+    printf 'AIRY_PROFILE=%s\n' "$1" >"$PROFILE_ENV"
+    chmod 600 "$PROFILE_ENV" 2>/dev/null || true
+    log info "运行画像已持久化: $PROFILE_ENV（AIRY_PROFILE=$1）"
+}
+
 # ── 子命令：help / status / doctor / uninstall ──────────────────────────────
 # 86：CLI/TUI 随时转换——`cli` 子命令不直接 exec（否则跳过 daemon 群启动，
 # CLI 直连 socket 时群未拉起会报"目标不存在"），而是置 FORCE_CLI 标记后
@@ -351,6 +444,8 @@ case "$CMD" in
     --help|-h|help)
         echo "用法: airymaxrt [--gateway-url URL] [--agent-file FILE]"
         echo "      airymaxrt cli [airy_cli 参数]  强制 CLI 模式（默认 TUI；随时可切换）"
+        echo "      airymaxrt profile [full|minimal|auto]  查看/切换运行画像（硬件自适应）"
+        echo "      airymaxrt monitor   硬件监控：检测到能力增强自动恢复功能（Ctrl+C 退出）"
         echo "      airymaxrt status      查看运行时状态"
         echo "      airymaxrt doctor      组件健康检查"
         echo "      airymaxrt uninstall   一键卸载（--keep-data 保留记忆数据）"
@@ -367,6 +462,82 @@ case "$CMD" in
         AIRYRT_FORCE_CLI=1
         shift
         CLI_ARGS=("$@")
+        ;;
+    profile)
+        # 2.3.2: 查看/切换运行画像（full|minimal|auto）。硬件变化（内存扩容、
+        # 插入显卡等外设）后执行 `airymaxrt profile` 重新评估；指定画像时
+        # 持久化并立即补齐被裁剪的能力 daemon。
+        case "${2:-}" in
+            ""|status)
+                _HW="$(assess_hardware)"
+                _HW_P="${_HW%%|*}"
+                _HW_REST="${_HW#*|}"
+                log info "当前画像: ${AIRYRT_PROFILE:-auto}（硬件建议: $_HW_P）"
+                log info "硬件快照: MemTotal=${_HW_REST%%|*}KiB ${_HW_REST#*|}"
+                exit 0
+                ;;
+            full|minimal|auto)
+                if [ "$2" = "auto" ]; then
+                    _HW="$(assess_hardware)"
+                    log info "自动评估画像: ${_HW%%|*}"
+                    write_profile_state auto
+                    AIRYRT_PROFILE="auto"
+                else
+                    write_profile_state "$2"
+                    AIRYRT_PROFILE="$2"
+                fi
+                if [ "$AIRYRT_PROFILE" = "full" ]; then
+                    log info "full 画像：补齐能力 daemon…"
+                    ensure_aux_daemons
+                fi
+                log info "画像已生效: $AIRYRT_PROFILE（下次启动持久生效）"
+                exit 0
+                ;;
+            *)
+                log error "无效画像 '$2'（支持 full|minimal|auto）"
+                exit 2
+                ;;
+        esac
+        ;;
+    monitor)
+        # 2.3.2: 前台硬件监控——周期评估硬件画像，检测到能力增强（内存扩容/
+        # 外设接入）时自动补齐被裁剪 daemon，实现"硬件变化自动恢复功能"；
+        # 资源下降时提示主动裁剪。Ctrl+C 干净退出，不残留监控进程。
+        # 判定依据：硬件建议画像与「当前生效画像」不一致即动作（而非前后
+        # 两次建议比较——后者在 minimal 状态下永远等不到变化，增强永不触发）。
+        trap 'log info "硬件监控退出"; exit 0' INT TERM
+        _INT="${AIRYRT_MONITOR_INTERVAL:-10}"
+        _HINTED=""   # 已提示的画像值：差异持续时只提示一次，回归一致后重置
+        log info "硬件监控启动（间隔 ${_INT}s，Ctrl+C 退出），当前画像: ${AIRYRT_PROFILE}"
+        while true; do
+            _HW="$(assess_hardware)"
+            _CUR="${_HW%%|*}"
+            _SNAP="${_HW#*|}"
+            if [ "$_CUR" != "$AIRYRT_PROFILE" ]; then
+                if [ "$_CUR" = "full" ]; then
+                    if [ "$AIRYRT_PROFILE_RAW" != "auto" ]; then
+                        if [ "$_HINTED" != "$_CUR" ]; then
+                            log warn "检测到硬件能力增强（$_SNAP），但画像为显式设置 ${AIRYRT_PROFILE}"
+                            log warn "执行 'airymaxrt profile full' 可立即恢复全量功能"
+                            _HINTED="$_CUR"
+                        fi
+                    else
+                        log info "检测到硬件能力增强（$_SNAP），自动恢复全量功能"
+                        write_profile_state full
+                        AIRYRT_PROFILE=full
+                        ensure_aux_daemons
+                        _HINTED=""
+                    fi
+                elif [ "$_HINTED" != "$_CUR" ]; then
+                    log warn "检测到资源下降（$_SNAP，建议 minimal），当前画像 ${AIRYRT_PROFILE}"
+                    log warn "可执行 'airymaxrt profile minimal' 主动裁剪，或重启进入 minimal"
+                    _HINTED="$_CUR"
+                fi
+            else
+                _HINTED=""
+            fi
+            sleep "$_INT"
+        done
         ;;
     status)
         log info "AIRY_HOME=$AIRY_HOME"
