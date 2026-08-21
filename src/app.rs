@@ -65,6 +65,19 @@ pub struct LogEntry {
     pub daemon: Option<String>,
 }
 
+/// 会话 tab（2026-08-21 多会话）：对话核心状态的快照。
+///
+/// 轻量模型：App 主字段（messages/input/cursor/scroll）恒为"当前会话"；
+/// 其他会话以快照存于 App.session_tabs。新建（Ctrl+T）/切换（Alt+1..9）
+/// 时在快照与主字段间搬移，不触碰 GCCP/任务流等执行态（执行中不切换）。
+pub struct SessionTab {
+    pub title: String,
+    pub messages: VecDeque<ChatMessage>,
+    pub input: String,
+    pub cursor: usize,
+    pub scroll_offset: u16,
+}
+
 /// Application state.
 pub struct App {
     /// Agent file being used
@@ -167,6 +180,13 @@ pub struct App {
     last_hall_poll: Instant,
     /// hall 面板在途请求（spawn 后异步返回，下次 poll_hall 消费结果）
     hall_poll_rx: Option<tokio::sync::oneshot::Receiver<HallPollOutcome>>,
+    /// hall.watch SSE 推送流接收端（2026-08-21：事件流驱动，替代纯轮询；
+    /// Board/Events 面板激活时订阅，离开时 drop 以结束 watch 任务）
+    hall_watch_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// 多会话 tab（2026-08-21）：其他会话快照；None = 主会话即当前会话
+    pub session_tabs: Vec<SessionTab>,
+    /// 当前显示的 tab 索引（None = 主会话；Some(n) = session_tabs[n]）
+    pub active_tab: Option<usize>,
     /// /chain 在途请求（task_id 为空 = 任务列表）
     chain_pending: Option<tokio::sync::oneshot::Receiver<ChainOutcome>>,
     /// /chain 请求的任务 id（" " 空串 = 任务列表，非空 = 该任务决策链）
@@ -323,6 +343,15 @@ impl App {
             hall_events: Vec::new(),
             last_hall_poll: Instant::now(),
             hall_poll_rx: None,
+            hall_watch_rx: None,
+            session_tabs: vec![SessionTab {
+                title: String::new(),
+                messages: VecDeque::new(),
+                input: String::new(),
+                cursor: 0,
+                scroll_offset: 0,
+            }],
+            active_tab: None,
             chain_pending: None,
             chain_task: String::new(),
             ops_pending: None,
@@ -1022,6 +1051,16 @@ impl App {
         if self.active_panel != ActivePanel::Board && self.active_panel != ActivePanel::Events {
             return;
         }
+        // hall.watch 推送消费（2026-08-21）：SSE 事件到达 → 立即刷新（跳过节流）
+        if let Some(rx) = &mut self.hall_watch_rx {
+            let mut pushed = false;
+            while rx.try_recv().is_ok() {
+                pushed = true;
+            }
+            if pushed {
+                self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+            }
+        }
         // 消费在途结果
         if let Some(mut rx) = self.hall_poll_rx.take() {
             match rx.try_recv() {
@@ -1061,6 +1100,23 @@ impl App {
     /// 强制下次 poll_hall 立即拉取（F6/F7 进入面板时调用）。
     pub fn force_hall_refresh(&mut self) {
         self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+    }
+
+    /// 订阅 hall.watch SSE 推送流（2026-08-21 事件流驱动；Board/Events 面板
+    /// 激活时调用）。收到任何推送事件 → 立即刷新（跳过 1s 节流），轮询保留
+    /// 为断连/离线兜底。
+    pub fn start_hall_watch(&mut self) {
+        if self.hall_watch_rx.is_none() {
+            self.hall_watch_rx = Some(self.gateway.hall_watch_events());
+            log::debug!("hall.watch: SSE 推送订阅已启动");
+        }
+    }
+
+    /// 停止 hall.watch SSE 订阅（离开面板时调用；drop 接收端使 watch 任务退出）。
+    pub fn stop_hall_watch(&mut self) {
+        if self.hall_watch_rx.take().is_some() {
+            log::debug!("hall.watch: SSE 推送订阅已停止");
+        }
     }
 
     /* ---- 2026-08-17：F6/F7 面板交互（光标 + 过滤）---- */
@@ -1214,8 +1270,14 @@ impl App {
     pub fn toggle_panel(&mut self, panel: ActivePanel) {
         if self.active_panel == panel {
             self.active_panel = ActivePanel::Chat;
+            self.stop_hall_watch();
         } else {
             self.active_panel = panel;
+            if panel == ActivePanel::Board || panel == ActivePanel::Events {
+                self.start_hall_watch();
+            } else {
+                self.stop_hall_watch();
+            }
         }
     }
 
@@ -1336,6 +1398,19 @@ impl App {
 
         // Add user message
         self.add_message(MessageRole::User, input.clone());
+
+        // 多会话：首条用户消息派生会话标题（tab 栏展示）
+        let ci = self.current_tab_index();
+        if self
+            .session_tabs
+            .get(ci)
+            .map(|t| t.title.is_empty())
+            .unwrap_or(false)
+        {
+            if let Some(tab) = self.session_tabs.get_mut(ci) {
+                tab.title = derive_session_title(&input);
+            }
+        }
 
         // 记忆：持久化用户输入（普通对话与任务均记录）
         if let Err(e) = self.memory.push("user", &input, "chat") {
@@ -2072,6 +2147,129 @@ impl App {
         }
     }
 
+    /* ==================== 多会话 tab（2026-08-21） ==================== */
+
+    /// 当前会话在 tab 列表中的索引（None = 主会话，即槽 0）。
+    fn current_tab_index(&self) -> usize {
+        self.active_tab.unwrap_or(0)
+    }
+
+    /// 主字段内容写回当前 tab 槽位（title 保留，搬移对话状态）。
+    fn save_current_tab(&mut self) {
+        let i = self.current_tab_index();
+        if let Some(tab) = self.session_tabs.get_mut(i) {
+            tab.messages = std::mem::take(&mut self.messages);
+            tab.input = std::mem::take(&mut self.input);
+            tab.cursor = self.cursor;
+            tab.scroll_offset = self.scroll_offset;
+            self.cursor = 0;
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// 加载 tab 槽位内容到主字段（None = 主会话槽 0）。
+    fn load_tab(&mut self, i: usize) {
+        let Some(tab) = self.session_tabs.get(i) else {
+            return;
+        };
+        self.messages = tab.messages.clone();
+        self.input = tab.input.clone();
+        self.cursor = tab.cursor;
+        self.scroll_offset = tab.scroll_offset;
+        self.active_tab = if i == 0 { None } else { Some(i) };
+    }
+
+    /// tab 总数（含主会话，恒 ≥1）。
+    pub fn tab_count(&self) -> usize {
+        self.session_tabs.len()
+    }
+
+    /// 指定 tab 的展示标题（无标题回退「会话 N」；tab 栏渲染用）。
+    pub fn tab_title(&self, i: usize) -> String {
+        self.session_tabs
+            .get(i)
+            .map(|t| {
+                if t.title.is_empty() {
+                    format!("会话 {}", i + 1)
+                } else {
+                    t.title.clone()
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// 当前 tab 索引（渲染高亮用；主会话 = 0）。
+    pub fn current_tab_index_pub(&self) -> usize {
+        self.current_tab_index()
+    }
+
+    /// Ctrl+T：新建会话 tab。当前对话（有内容时）保留为 tab，开启空白新会话。
+    ///
+    /// 执行态保护：请求进行中（loading/busy）不可新建——GCCP/GRAD/执行流
+    /// 绑定主字段，切换会破坏进行中任务的上下文连续性。
+    pub fn new_session_tab(&mut self) {
+        if self.loading || self.pending.is_some() {
+            self.add_message(
+                MessageRole::System,
+                "任务执行中不可新建会话（Ctrl+X 中止当前请求后可操作）。".to_string(),
+            );
+            return;
+        }
+        if !self.messages.is_empty() || !self.input.trim().is_empty() {
+            self.save_current_tab();
+        }
+        let tab = SessionTab {
+            title: String::new(),
+            messages: VecDeque::new(),
+            input: String::new(),
+            cursor: 0,
+            scroll_offset: 0,
+        };
+        self.session_tabs.push(tab);
+        self.active_tab = Some(self.session_tabs.len() - 1);
+        // 主字段切入新会话（save_current_tab 已搬空；无内容时兜底清空）
+        self.messages.clear();
+        self.input.clear();
+        self.cursor = 0;
+        self.scroll_offset = 0;
+        self.streaming_text.clear();
+        self.stream_reasoning.clear();
+        self.stream_tool_events.clear();
+        self.add_message(
+            MessageRole::System,
+            "已新建会话。Ctrl+T 再开新会话 · Alt+1..9 切换。".to_string(),
+        );
+        self.add_log(
+            "INFO",
+            format!("新建会话 tab {}（共 {} 个）", self.session_tabs.len(), self.session_tabs.len()),
+        );
+    }
+
+    /// Alt+1..9：切换会话。Alt+1 = 主会话；Alt+N（N≥2）= 第 N 个 tab。
+    pub fn switch_tab(&mut self, n: usize) {
+        if n == 0 || n > self.session_tabs.len() {
+            return;
+        }
+        if self.loading || self.pending.is_some() {
+            self.add_message(
+                MessageRole::System,
+                "任务执行中不可切换会话（Ctrl+X 中止当前请求后可操作）。".to_string(),
+            );
+            return;
+        }
+        let target = n - 1;
+        if self.current_tab_index() == target {
+            return;
+        }
+        self.save_current_tab();
+        self.load_tab(target);
+        // 切换后清空流式残留，避免上一会话的增量污染新视口
+        self.streaming_text.clear();
+        self.stream_reasoning.clear();
+        self.stream_tool_events.clear();
+        self.add_log("INFO", format!("切换到会话 tab {}（{}）", n, self.tab_title(target)));
+    }
+
     /// 生成客户端预分配会话 ID（sess_ 前缀，gateway 校验后采用）。
     fn new_session_id(&self) -> String {
         let now_ms = std::time::SystemTime::now()
@@ -2658,6 +2856,20 @@ impl App {
 
 // ─────────────────────────── 模型配置持久化 ───────────────────────────
 
+/// 会话标题：取用户输入首行，截断到 24 字符（tab 栏展示用）。
+fn derive_session_title(input: &str) -> String {
+    let t = input.trim();
+    let first = t.lines().next().unwrap_or(t);
+    let mut s: String = first.chars().take(24).collect();
+    if first.chars().count() > 24 {
+        s.push('…');
+    }
+    if s.is_empty() {
+        s = "（空会话）".to_string();
+    }
+    s
+}
+
 /// 用户配置目录：$AIRY_HOME/data/agentrt/tui（AIRY_HOME 路径体系收敛，2026-08-19）
 fn tui_config_dir() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("AIRY_HOME") {
@@ -2763,6 +2975,8 @@ fn build_help_text() -> Vec<String> {
         "  End         - 回到底部（最新消息）".to_string(),
         "  Ctrl+X      - 中止当前请求（任务执行/对话等待）".to_string(),
         "  Ctrl+Z      - 暂停/恢复等待（请求继续在后台执行）".to_string(),
+        "  Ctrl+T      - 新建会话 tab（多会话；任务执行中不可用）".to_string(),
+        "  Alt+1..9    - 切换会话（Alt+1 = 主会话，Alt+N = 第 N 个 tab）".to_string(),
         "  /hiairy     - 重新打开首次启动向导".to_string(),
         "  /model      - 查看当前模型；/model <模型名> 切换并持久化".to_string(),
         "  /status     - 运行时状态总览（连接/版本/模型/用量/记忆/技能）".to_string(),
@@ -3042,5 +3256,79 @@ mod tests {
         assert!(app.load_project_context(Some(&sub)));
         assert!(app.project_context.contains("项目约定"));
         assert!(app.project_context.contains("AGENTS.md"));
+    }
+
+    /// 多会话 tab：新建保留当前内容、主会话与 tab 间切换往返一致。
+    ///
+    /// submit_input 会 spawn 后台请求（需要 tokio 运行时）；测试环境无
+    /// 事件循环消费结果，提交后用 abort_task 清空在途请求再操作 tab。
+    #[tokio::test]
+    async fn session_tabs_new_and_switch_roundtrip() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("AIRY_HOME", dir.path());
+        let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
+            .expect("gateway client");
+        let mut app = App::new("agents/main.agent.yaml", gw);
+
+        // 初始：仅主会话（槽 0）
+        assert_eq!(app.tab_count(), 1);
+        assert_eq!(app.current_tab_index_pub(), 0);
+
+        // 主会话发一条消息 → 标题派生
+        app.submit_input("帮我写一个冒泡排序").expect("submit");
+        assert_eq!(app.tab_title(0), "帮我写一个冒泡排序");
+        app.abort_task();
+
+        // Ctrl+T 新建：主会话内容保留，新 tab 为空（仅含系统提示）
+        app.new_session_tab();
+        assert_eq!(app.tab_count(), 2);
+        assert_eq!(app.current_tab_index_pub(), 1);
+        assert!(
+            app.messages.iter().all(|m| m.role == MessageRole::System),
+            "新会话应仅含系统提示"
+        );
+        assert!(
+            !app.messages.iter().any(|m| m.content.contains("冒泡排序")),
+            "新会话不应携带旧内容"
+        );
+        // 新会话发消息 → 标题派生到 tab 2
+        app.submit_input("继续聊另一个话题").expect("submit");
+        assert_eq!(app.tab_title(1), "继续聊另一个话题");
+        app.abort_task();
+
+        // Alt+1 切回主会话：内容还原
+        app.switch_tab(1);
+        assert_eq!(app.current_tab_index_pub(), 0);
+        assert!(
+            app.messages.iter().any(|m| m.content.contains("冒泡排序")),
+            "主会话内容应还原"
+        );
+
+        // Alt+2 切到新会话：内容还原
+        app.switch_tab(2);
+        assert_eq!(app.current_tab_index_pub(), 1);
+        assert!(
+            app.messages.iter().any(|m| m.content.contains("另一个话题")),
+            "tab 2 内容应还原"
+        );
+
+        // 越界/0：无操作
+        app.switch_tab(0);
+        assert_eq!(app.current_tab_index_pub(), 1);
+        app.switch_tab(9);
+        assert_eq!(app.current_tab_index_pub(), 1);
+    }
+
+    /// 会话标题派生：首行截断 ≤24 字符，空输入回退占位。
+    #[test]
+    fn derive_session_title_truncates_and_falls_back() {
+        assert_eq!(derive_session_title("你好"), "你好");
+        assert_eq!(derive_session_title("  带空格的输入  "), "带空格的输入");
+        let long = "这是一个超过二十四字符长度的超长会话标题用来测试截断逻辑是否生效";
+        let t = derive_session_title(long);
+        assert!(t.chars().count() <= 25, "标题应截断: {}", t);
+        assert!(t.ends_with('…'), "超长标题应有省略号: {}", t);
+        assert_eq!(derive_session_title("   "), "（空会话）");
     }
 }

@@ -83,15 +83,25 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .split(area);
 
     render_brand_bar(f, main_layout[0], app);
-    match app.active_panel {
-        ActivePanel::Chat => panels::chat::render(f, main_layout[1], app),
-        ActivePanel::Help => panels::help::render(f, main_layout[1], app),
-        ActivePanel::Config => panels::config::render(f, main_layout[1], app),
-        ActivePanel::Logs => panels::logs::render(f, main_layout[1], app),
-        ActivePanel::Memory => panels::memory::render(f, main_layout[1], app),
-        ActivePanel::Plugins => panels::plugins::render(f, main_layout[1], app),
-        ActivePanel::Board => panels::board::render(f, main_layout[1], app),
-        ActivePanel::Events => panels::events::render(f, main_layout[1], app),
+    // 多会话 tab 栏（Chat 面板顶部一行；仅存在多会话时渲染）
+    if app.active_panel == ActivePanel::Chat && app.tab_count() > 1 {
+        let tab_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(main_layout[1]);
+        render_tab_bar(f, tab_layout[0], app);
+        panels::chat::render(f, tab_layout[1], app);
+    } else {
+        match app.active_panel {
+            ActivePanel::Chat => panels::chat::render(f, main_layout[1], app),
+            ActivePanel::Help => panels::help::render(f, main_layout[1], app),
+            ActivePanel::Config => panels::config::render(f, main_layout[1], app),
+            ActivePanel::Logs => panels::logs::render(f, main_layout[1], app),
+            ActivePanel::Memory => panels::memory::render(f, main_layout[1], app),
+            ActivePanel::Plugins => panels::plugins::render(f, main_layout[1], app),
+            ActivePanel::Board => panels::board::render(f, main_layout[1], app),
+            ActivePanel::Events => panels::events::render(f, main_layout[1], app),
+        }
     }
     let mut idx = 2;
     if has_approval {
@@ -166,6 +176,35 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
     ]);
     f.render_widget(
         Paragraph::new(Text::from(vec![line1, line2])).style(Style::default().bg(theme::surface())),
+        area,
+    );
+}
+
+/// 会话 tab 栏（2026-08-21 多会话）：`1 标题 | 2 标题 …` 胶囊。
+/// 当前 tab 高亮（主色底 + 反色字），其余弱化；Alt+1..9 切换 · Ctrl+T 新建。
+fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
+    let n = app.tab_count();
+    let current = app.current_tab_index_pub();
+    let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default())];
+    for i in 0..n {
+        let active = i == current;
+        let mut title = app.tab_title(i);
+        let cnt = title.chars().count();
+        if cnt > 16 {
+            title = title.chars().take(16).collect();
+            title.push('…');
+        }
+        spans.push(Span::styled(
+            format!(" {} {} ", i + 1, title),
+            Style::default()
+                .fg(if active { theme::ON_COLOR } else { theme::dim() })
+                .bg(if active { theme::PRIMARY } else { theme::surface_active() })
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("  ", Style::default()));
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::surface())),
         area,
     );
 }

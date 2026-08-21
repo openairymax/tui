@@ -11,6 +11,7 @@ use log::{debug, error, info};
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
+use tokio_stream::StreamExt;
 
 /// Gateway API client for the TUI application.
 ///
@@ -436,6 +437,62 @@ impl GatewayClient {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default())
     }
+
+    /// 订阅 hall.watch SSE 推送流（实时事件驱动，2026-08-21）。
+    ///
+    /// gateway 的 GET /api/v1/hall/watch 是长连接 SSE：每次 hall 事件落盘
+    /// 即推 `data: <compact event JSON>`（hall.stream 是 poll-based pull，
+    /// watch 是 real-time push 侧）。独立无超时 client，断连后 2s 自动重连；
+    /// 接收端 drop 时（离开看板/事件流面板）watch 任务自动退出。
+    pub fn hall_watch_events(&self) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let base = self.base_url.clone();
+        tokio::spawn(async move {
+            let client = match HttpClient::builder()
+                .user_agent(format!("agentrt-tui-watch/{}", env!("CARGO_PKG_VERSION")))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            loop {
+                let url = format!("{}/api/v1/hall/watch", base);
+                if let Ok(resp) = client.get(&url).send().await {
+                    let mut stream = resp.bytes_stream();
+                    let mut buf: Vec<u8> = Vec::new();
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = match chunk {
+                            Ok(c) => c,
+                            Err(_) => break,
+                        };
+                        buf.extend_from_slice(&chunk);
+                        // SSE 帧以空行分隔；每帧含 0..N 个 "data: " 行。
+                        while let Some(pos) = sse_frame_end(&buf) {
+                            let frame: Vec<u8> = buf.drain(..pos).collect();
+                            let text = String::from_utf8_lossy(&frame);
+                            for line in text.lines() {
+                                if let Some(d) = line.strip_prefix("data: ") {
+                                    if tx.send(d.to_string()).is_err() {
+                                        return; // 接收端已 drop
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if tx.is_closed() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+        rx
+    }
+}
+
+/// 定位 SSE 帧结束位置（首个空行 "\n\n"，含末尾分隔符）。
+fn sse_frame_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(2).position(|w| w == b"\n\n").map(|p| p + 2)
 }
 
 #[derive(Debug, Deserialize)]
