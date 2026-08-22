@@ -27,13 +27,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ));
 
     if app.logs.is_empty() {
+        let home = std::env::var("AIRY_HOME").unwrap_or_else(|_| "~/.airymaxrt".to_string());
         let text = vec![
             Line::from(Span::styled(
                 "  暂无日志",
                 Style::default().fg(theme::dim()),
             )),
             Line::from(Span::styled(
-                "  连接 gateway 后日志将在此显示。",
+                "  连接 gateway 后事件日志将在此显示。",
+                Style::default().fg(theme::faint()),
+            )),
+            Line::from(Span::styled(
+                format!("  完整运行时日志（各 daemon）：{home}/logs/*.log"),
                 Style::default().fg(theme::faint()),
             )),
         ];
@@ -49,14 +54,24 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             "INFO" => Style::default().fg(theme::ACCENT),
             _ => Style::default().fg(theme::text()),
         };
-
-        lines.push(Line::from(vec![
+        let daemon_span = entry
+            .daemon
+            .as_deref()
+            .map(|d| {
+                vec![
+                    Span::styled(format!("[{d}] "), Style::default().fg(theme::faint())),
+                ]
+            })
+            .unwrap_or_default();
+        let mut spans = vec![
             Span::styled(&entry.timestamp, Style::default().fg(theme::faint())),
             Span::raw(" "),
             Span::styled(&entry.level, level_style),
             Span::raw(" "),
-            Span::styled(&entry.message, Style::default().fg(theme::dim())),
-        ]));
+        ];
+        spans.extend(daemon_span);
+        spans.push(Span::styled(&entry.message, Style::default().fg(theme::dim())));
+        lines.push(Line::from(spans));
     }
 
     f.render_widget(

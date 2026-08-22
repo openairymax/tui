@@ -105,19 +105,19 @@ pub const ON_COLOR: Color = Color::Rgb(15, 18, 24);
 
 // ─────────────────────────── 中性色（随主题切换） ───────────────────────────
 
-/// 终端背景（深：近黑深蓝；浅：近白）
+/// 终端背景（深：纯黑；浅：纯白。2.2.1.5.1 命令窗背景随主题明暗切换）
 pub fn bg() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => Color::Rgb(17, 19, 26),
-        ThemeMode::Light => Color::Rgb(247, 248, 251),
+        ThemeMode::Dark => Color::Rgb(0, 0, 0),
+        ThemeMode::Light => Color::Rgb(255, 255, 255),
     }
 }
 
-/// 面板表面（略亮于背景）
+/// 面板表面（略亮于背景；纯黑/纯白下保留一档层次）
 pub fn surface() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => Color::Rgb(26, 29, 39),
-        ThemeMode::Light => Color::Rgb(238, 241, 246),
+        ThemeMode::Dark => Color::Rgb(13, 15, 21),
+        ThemeMode::Light => Color::Rgb(239, 242, 247),
     }
 }
 

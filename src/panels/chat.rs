@@ -13,7 +13,6 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MessageRole};
 use crate::gccp::FlowPhase;
@@ -110,7 +109,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // 输出的思考链，完整展示结果」）
     let mut fold_spans: Vec<(usize, usize)> = Vec::new();
     if app.messages.is_empty() && app.flow_phase == FlowPhase::Chat {
-        append_welcome(&mut lines, width, viewport);
+        append_welcome(&mut lines, width, viewport, app);
     } else {
         let mut is_first = true;
         for msg in app.messages.iter() {
@@ -549,39 +548,98 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
     lines.push(Line::raw(""));
 }
 
-/// 欢迎页（无消息时，垂直+水平居中，随终端大小自适应）。
-fn append_welcome(lines: &mut Vec<Line>, width: usize, height: usize) {
-    let w = [
-        "◈  AirymaxRT",
-        "Agent 运行时 · 对话即生产力",
-        "输入消息，Enter 发送",
-        "F1 查看帮助",
-    ];
+/// 欢迎页英雄区（无消息时，垂直+水平居中，随终端大小自适应）。
+/// 2.2.1.5.2：升级为完整英雄区——品牌 + 实时状态（连接/模型/计费）+ 项目
+/// 上下文 + 快捷键引导，晶蓝主题边框；不再是最简四行文字。
+fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, app: &'a App) {
+    let ver = env!("CARGO_PKG_VERSION");
+    let online = app.connected;
+    let model = if app.model.is_empty() { "default" } else { &app.model };
+    let proj = if app.project_context.is_empty() {
+        "未加载项目上下文"
+    } else {
+        app.project_context.lines().next().unwrap_or("已加载项目上下文")
+    };
 
-    // 垂直居中：前置空行
-    let pad = (height as usize).saturating_sub(w.len() + 2) / 2;
+    let content_max = width.saturating_sub(8);
+    let mut hero: Vec<Line> = Vec::new();
+
+    // 标题行：品牌 + 版本
+    hero.push(Line::from(vec![
+        Span::styled(
+            "◈ AirymaxRT",
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
+    ]));
+    hero.push(Line::raw(""));
+
+    // 实时状态行
+    let status = if online {
+        Span::styled("● ONLINE", Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled("○ OFFLINE", Style::default().fg(theme::DANGER).add_modifier(Modifier::BOLD))
+    };
+    hero.push(Line::from(vec![
+        Span::styled("状态  ", Style::default().fg(theme::dim())),
+        status,
+        Span::styled("   模型  ", Style::default().fg(theme::dim())),
+        Span::styled(model, Style::default().fg(theme::ACCENT)),
+    ]));
+
+    // 计费/轮次行（token 与成本随会话实时累计）
+    hero.push(Line::from(vec![
+        Span::styled("计费  ", Style::default().fg(theme::dim())),
+        Span::styled(
+            format!("{} tokens · ${:.4} · {} 轮", app.tokens, app.cost, app.turn),
+            Style::default().fg(theme::text()),
+        ),
+    ]));
+
+    // 项目上下文行
+    let proj_disp: String = proj.chars().take(content_max.saturating_sub(2)).collect();
+    hero.push(Line::from(vec![
+        Span::styled("项目  ", Style::default().fg(theme::dim())),
+        Span::styled(proj_disp, Style::default().fg(theme::text())),
+    ]));
+    hero.push(Line::raw(""));
+
+    // 快捷键引导
+    hero.push(Line::from(vec![
+        Span::styled("输入消息 Enter 发送 · ", Style::default().fg(theme::dim())),
+        Span::styled("F1 帮助 · F2 配置 · F3 日志 · F4 记忆 · F6 看板 · F8 切换 CLI",
+                     Style::default().fg(theme::faint())),
+    ]));
+
+    // 垂直居中
+    let pad = (height as usize).saturating_sub(hero.len() + 2) / 2;
     for _ in 0..pad {
         lines.push(Line::raw(""));
     }
 
-    for (i, s) in w.iter().enumerate() {
-        let styled = if i == 0 {
-            Span::styled(
-                s.to_string(),
-                Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
-            )
-        } else if i == 1 {
-            Span::styled(s.to_string(), Style::default().fg(theme::ACCENT))
-        } else {
-            Span::styled(s.to_string(), Style::default().fg(theme::dim()))
-        };
-        // 水平居中：按实际显示宽度计算左侧补白
-        let disp = s.width();
-        let lead = if disp >= width { 1 } else { (width - disp) / 2 };
+    // 边框（上下线 + 左右竖线），主题色为晶蓝
+    let border = if width >= 44 { "─".repeat(width.saturating_sub(2).min(72)) } else { String::new() };
+    if width >= 44 {
         lines.push(Line::from(vec![
-            Span::styled(" ".repeat(lead), Style::default()),
-            styled,
+            Span::styled("╭", Style::default().fg(theme::PRIMARY)),
+            Span::styled(border.clone(), Style::default().fg(theme::PRIMARY)),
+            Span::styled("╮", Style::default().fg(theme::PRIMARY)),
         ]));
+        for h in hero.iter() {
+            let mut hline = Line::from(vec![
+                Span::styled("│", Style::default().fg(theme::PRIMARY)),
+                Span::styled(" ", Style::default()),
+            ]);
+            hline.extend(h.spans.clone());
+            lines.push(hline);
+        }
+        lines.push(Line::from(vec![
+            Span::styled("╰", Style::default().fg(theme::PRIMARY)),
+            Span::styled(border, Style::default().fg(theme::PRIMARY)),
+            Span::styled("╯", Style::default().fg(theme::PRIMARY)),
+        ]));
+    } else {
+        lines.extend(hero);
     }
 }
 

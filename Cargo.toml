@@ -25,7 +25,9 @@ ratatui = "0.28"
 crossterm = "0.28"
 
 # HTTP client for gateway communication
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+# default-features=false：禁用默认 native-tls（openssl），改用纯 Rust rustls，
+# 消除运行时 libssl 依赖，x86/ARM/RISC-V 与 Windows/macOS 交叉编译一致。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
