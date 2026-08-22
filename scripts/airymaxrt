@@ -405,7 +405,7 @@ _ensure_daemon() {
         log warn "$bname stale socket（无监听），移除后补齐: $sock"
         rm -f "$sock"
     fi
-    "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
+    nohup "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
     log info "补齐 daemon: $bname（PID=$!），日志: $AIRY_HOME/logs/${bname}.out"
 }
 
@@ -876,7 +876,12 @@ else
             log warn "$bname 检测到 stale socket（无监听），移除后重新拉起: $sock"
             rm -f "$sock"
         fi
-        "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
+        # nohup 忽略 SIGHUP：终端会话异常退出（SSH 断连/终端关闭）时 daemon
+        # 不被进程组 SIGHUP 连带杀死（历史故障：会话退出后 daemon 群全灭、
+        # 残留 defunct 僵尸）。$! 语义不变（nohup 对可执行文件直接 exec），
+        # cleanup 按 PID TERM 回收仍有效；正常退出（TUI/CLI 结束）时由
+        # cleanup 主动回收本次拉起的 daemon，行为与之前一致。
+        nohup "$bin" >"$AIRY_HOME/logs/${bname}.out" 2>&1 &
         ALL_DAEMON_PIDS+=("$!")
         WAIT_SOCKS+=("$bname|$sock")
         DAEMON_SOCKS+=("$sock")
@@ -896,10 +901,10 @@ else
             fi
             if [ -f "$MODEL_CONFIG" ]; then
                 log debug "llm_d 使用模型配置: $MODEL_CONFIG"
-                "$LLM_BIN" --manager "$MODEL_CONFIG" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
+                nohup "$LLM_BIN" --manager "$MODEL_CONFIG" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
             else
                 log warn "模型配置不存在（$MODEL_CONFIG），llm_d 使用默认配置"
-                "$LLM_BIN" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
+                nohup "$LLM_BIN" >"$AIRY_HOME/logs/llm_d.out" 2>&1 &
             fi
             ALL_DAEMON_PIDS+=("$!")
             WAIT_SOCKS+=("llm_d|$RUNTIME_DIR/llm.sock")
@@ -984,8 +989,8 @@ else
         done
     fi
     if [ "$GW_START" = "yes" ]; then
-        log debug "执行: \"$GATEWAY_BIN\" -h 127.0.0.1 -p \"$GATEWAY_PORT\" > \"$AIRY_HOME/logs/gateway_d.out\" 2>&1 &"
-        "$GATEWAY_BIN" -h 127.0.0.1 -p "$GATEWAY_PORT" >"$AIRY_HOME/logs/gateway_d.out" 2>&1 &
+        log debug "执行: nohup \"$GATEWAY_BIN\" -h 127.0.0.1 -p \"$GATEWAY_PORT\" > \"$AIRY_HOME/logs/gateway_d.out\" 2>&1 &"
+        nohup "$GATEWAY_BIN" -h 127.0.0.1 -p "$GATEWAY_PORT" >"$AIRY_HOME/logs/gateway_d.out" 2>&1 &
         GATEWAY_PID=$!
         log info "gateway_d 已拉起（PID=$GATEWAY_PID），日志: $AIRY_HOME/logs/gateway_d.out"
     else
