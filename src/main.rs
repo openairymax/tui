@@ -29,10 +29,10 @@ mod wizard;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    cursor::Hide,
+    cursor::{Hide, MoveTo},
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{Clear, disable_raw_mode, enable_raw_mode, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use log::{debug, error, info, warn};
 use ratatui::prelude::*;
@@ -238,6 +238,11 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+    /* 2.2.1.2 修复：F8 切 CLI 前必须清空主屏。退出 alt screen 后主屏
+     * 仍是进入 TUI 前的画面，直接 exec airy_cli 会让 CLI 的新输出与残留
+     * 内容重叠（用户反馈"界面重叠/英雄区混乱"）。清屏 + 光标归零，保证
+     * CLI 从干净画布开始（正常退出路径同样受益，退出后终端无残留）。 */
+    execute!(terminal.backend_mut(), Clear(ClearType::All), MoveTo(0, 0))?;
     info!("Terminal restored.");
 
     // 2026-08-17：F8 切换到 CLI——终端已恢复，用 airy_cli 替换当前进程

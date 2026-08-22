@@ -6,19 +6,21 @@
 // AirymaxRT TUI 主渲染：统一布局与主题（极简自适应）。
 
 // Layout structure（主内容区随终端大小弹性伸缩）:
-// ┌─ Brand Bar ─────────────────────────────────┐
-// │ ◈ AirymaxRT v0.1.2  ● ONLINE    技能 0  [对话]│
-// ├─ Main Content（自适应填充）───────────────────┤
-// ├─ Input Bar ────────────────────────────────┤
-// │ ❯ 输入提示…                                 │
-// └─ Shortcuts（居中）──────────────────────────┘
+// ┌─ ◈ AirymaxRT v0.1.2 ───────────── ● ONLINE  22:45:33 ─┐
+// │ 对话 2 · 技能 3 · 记忆 128     模型 deepseek-v4-flash  │
+// │ 12,345 tok · $0.0080 · [对话]                         │
+// └──────────────────────────────────────────────────────┘  ← 英雄区
+// ├─ Main Content（自适应填充）─────────────────────────────┤
+// ├─ Input Bar ───────────────────────────────────────────┤
+// │ ❯ 输入提示…                                            │
+// └─ Shortcuts（居中）─────────────────────────────────────┘
 //  F1 帮助  F2 配置  F3 日志  F4 记忆  F5 插件  Ctrl+C 退出
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use crate::app::{ActivePanel, App};
@@ -27,32 +29,19 @@ use crate::panels;
 use crate::theme;
 use crate::wizard;
 
-/// 呼吸灯光标字符（在输入末尾闪烁，提示此处可输入）
+/// 输入光标字符（黑白两色交替闪动，替代终端方块光标）
 const BREATH_CURSOR: &str = "▍";
-/// 呼吸灯周期（ms）：2 秒完成一次"亮→暗→亮"
-const BREATH_PERIOD_MS: u128 = 2000;
+/// 光标闪烁周期（ms）：黑白两态各 500ms（≈ Word 默认光标闪动频率）
+const BLINK_PERIOD_MS: u128 = 1000;
 
-/// 呼吸灯颜色：在品牌主色（亮）与极弱色（暗）之间插值。
-/// phase 为 0..=1000 的亮度曲线值（0 = 暗，1000 = 亮）。
-fn breathing_color(phase: u128) -> ratatui::style::Color {
-    let t = phase.min(1000) as f32 / 1000.0;
-    // 正弦缓入缓出：呼吸更自然（亮→暗对称）
-    let ease = (t * std::f32::consts::PI).sin();
-    fn lerp(a: u8, b: u8, t: f32) -> u8 {
-        (a as f32 + (b as f32 - a as f32) * t).round() as u8
-    }
-    if let (
-        ratatui::style::Color::Rgb(dr, dg, db),
-        ratatui::style::Color::Rgb(br, bg, bb),
-    ) = (theme::faint(), theme::PRIMARY)
-    {
-        ratatui::style::Color::Rgb(
-            lerp(dr, br, ease),
-            lerp(dg, bg, ease),
-            lerp(db, bb, ease),
-        )
+/// 2.2.1.4 光标颜色：黑白两色交替（Word 风格，半周期 ≈500ms）。
+/// 深色终端白色可见、浅色终端黑色可见——任一时刻都保证与背景高对比；
+/// 对当前背景不可见的那一态即"灭"，形成经典块状闪烁，视觉引导科学。
+fn blink_cursor_color(elapsed_ms: u128) -> ratatui::style::Color {
+    if (elapsed_ms % BLINK_PERIOD_MS) < BLINK_PERIOD_MS / 2 {
+        ratatui::style::Color::White
     } else {
-        theme::PRIMARY
+        ratatui::style::Color::Black
     }
 }
 
@@ -67,7 +56,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     let mut constraints = vec![
-        Constraint::Length(1), // Brand bar
+        Constraint::Length(4), // Hero（英雄区：上框 + 2 内容行 + 下框）
         Constraint::Min(3),    // Main content（自适应）
     ];
     // 有未决议的工具审批时，在输入栏上方插入审批提示条（Claude Code 风格）
@@ -82,7 +71,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .constraints(constraints)
         .split(area);
 
-    render_brand_bar(f, main_layout[0], app);
+    render_hero(f, main_layout[0], app);
     // 多会话 tab 栏（Chat 面板顶部一行；仅存在多会话时渲染）
     if app.active_panel == ActivePanel::Chat && app.tab_count() > 1 {
         let tab_layout = Layout::default()
@@ -209,12 +198,15 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// 品牌栏（左）：品牌 + 连接状态灯 + 宿主机当前时间；右：模型 + 用量 + 阶段徽章。
-fn render_brand_bar(f: &mut Frame, area: Rect, app: &App) {
-    // 窄屏（<52 列）只保留左侧，右侧徽章整体收起，避免挤占
+/// 英雄区（2.2.1.5.1）：晶蓝 box 品牌区，双行内容——
+/// 行1 状态（连接灯 + 宿主机时间）+ 会话/技能/记忆统计；
+/// 行2 模型 + token + 成本 + 阶段徽章（+ 任务控制状态）。
+/// 窄屏（<52 列）自动收起为单行精简品牌条，不挤占主内容区。
+fn render_hero(f: &mut Frame, area: Rect, app: &App) {
+    // 窄屏只保留精简品牌行，右侧徽章整体收起，避免挤占
     let wide = area.width >= 52;
 
-    // 左侧：品牌 + 状态灯 + 时间（宿主机时区，每帧刷新）
+    // 状态灯
     let (light, label, color) = if app.connected {
         ("●", "ONLINE", theme::SUCCESS)
     } else if app.loading {
@@ -223,51 +215,45 @@ fn render_brand_bar(f: &mut Frame, area: Rect, app: &App) {
         ("●", "OFFLINE", theme::DANGER)
     };
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
-
-    let left = Line::from(vec![
-        Span::styled(" ◈ ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            "AirymaxRT",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" v{}", app.gateway_version.as_deref().unwrap_or(env!("CARGO_PKG_VERSION"))),
-            Style::default().fg(theme::faint()),
-        ),
-        Span::styled("    ", Style::default()),
-        Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {label}"), Style::default().fg(color)),
-        // 宿主机本地时间（与 ONLINE 状态并列，随帧刷新）
-        Span::styled(
-            format!("  {}", now),
-            Style::default().fg(theme::dim()),
-        ),
-    ]);
+    let ver = app
+        .gateway_version
+        .clone()
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
     if !wide {
+        let line = Line::from(vec![
+            Span::styled(" ◈ ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+            Span::styled("AirymaxRT", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" v{}", ver), Style::default().fg(theme::faint())),
+            Span::styled("    ", Style::default()),
+            Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {label}"), Style::default().fg(color)),
+            Span::styled(format!("  {}", now), Style::default().fg(theme::dim())),
+        ]);
         f.render_widget(
-            Paragraph::new(left).style(Style::default().bg(theme::surface())),
+            Paragraph::new(line).style(Style::default().bg(theme::surface())),
             area,
         );
         return;
     }
 
-    let split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(area);
+    // 行1：状态 + 时间 + 会话/技能/记忆统计
+    let line1 = Line::from(vec![
+        Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {label}"), Style::default().fg(color)),
+        Span::styled(format!("  {}", now), Style::default().fg(theme::dim())),
+        Span::raw("   "),
+        Span::styled(format!("对话 {}", app.tab_count()), Style::default().fg(theme::faint())),
+        Span::styled(" · ", Style::default().fg(theme::faint())),
+        Span::styled(format!("技能 {}", app.skills.len()), Style::default().fg(theme::faint())),
+        Span::styled(" · ", Style::default().fg(theme::faint())),
+        Span::styled(format!("记忆 {}", app.memory.len()), Style::default().fg(theme::faint())),
+    ]);
 
-    f.render_widget(
-        Paragraph::new(left).style(Style::default().bg(theme::surface())),
-        split[0],
-    );
-
-    // 右侧：模型 · Token · 成本 · 技能 · 阶段徽章（右对齐，轻量分隔）
+    // 行2：模型 · token · 成本 · 任务控制徽章 · 阶段徽章
     let (badge, badge_color) = phase_badge(app.flow_phase);
     let badge_text = match app.flow_phase {
-        FlowPhase::GccpRound(_) => {
-            format!(" 任务事实确认 {}/5 ", app.gccp.answered())
-        }
+        FlowPhase::GccpRound(_) => format!(" 任务事实确认 {}/5 ", app.gccp.answered()),
         _ => badge,
     };
     let model_text = if app.model.is_empty() {
@@ -275,60 +261,50 @@ fn render_brand_bar(f: &mut Frame, area: Rect, app: &App) {
     } else {
         app.model.clone()
     };
-    let sep = Span::styled("·", Style::default().fg(theme::faint()));
-    // 任务集人工控制状态徽章（运行中/已暂停/已中止）
     let control_badge: Option<(String, ratatui::style::Color)> = match app.task_control {
         crate::gccp::TaskControl::Running => None,
-        crate::gccp::TaskControl::Paused => Some((
-            " ⏸ 已暂停 ".to_string(),
-            theme::PRIMARY,
-        )),
-        crate::gccp::TaskControl::Aborted => Some((
-            " ✕ 已中止 ".to_string(),
-            theme::DANGER,
-        )),
+        crate::gccp::TaskControl::Paused => Some((" ⏸ 已暂停 ".to_string(), theme::PRIMARY)),
+        crate::gccp::TaskControl::Aborted => Some((" ✕ 已中止 ".to_string(), theme::DANGER)),
     };
-    let mut right_spans = vec![
+    let mut line2_spans = vec![
         Span::styled(
             format!("{}  ", model_text),
             Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
         ),
-        sep.clone(),
-        Span::styled(
-            format!(" {} ", app.tokens),
-            Style::default().fg(theme::dim()),
-        ),
+        Span::styled(format!("{} ", app.tokens), Style::default().fg(theme::dim())),
         Span::styled("tok", Style::default().fg(theme::faint())),
-        Span::styled("  ", Style::default()),
-        sep.clone(),
-        Span::styled(
-            format!(" ${:.4}  ", app.cost),
-            Style::default().fg(theme::dim()),
-        ),
-        Span::styled(
-            format!("技能 {}", app.skills.len()),
-            Style::default().fg(theme::faint()),
-        ),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ·  ", Style::default().fg(theme::faint())),
+        Span::styled(format!("${:.4}  ", app.cost), Style::default().fg(theme::dim())),
     ];
-    if let Some((label, color)) = control_badge {
-        right_spans.push(Span::styled(
-            label,
-            Style::default().fg(theme::ON_COLOR).bg(color).add_modifier(Modifier::BOLD),
+    if let Some((lbl, c)) = control_badge {
+        line2_spans.push(Span::styled(
+            lbl,
+            Style::default().fg(theme::ON_COLOR).bg(c).add_modifier(Modifier::BOLD),
         ));
-        right_spans.push(Span::raw("  "));
+        line2_spans.push(Span::raw("  "));
     }
-    right_spans.push(Span::styled(
+    line2_spans.push(Span::styled(
         badge_text,
-        Style::default().fg(theme::ON_COLOR).bg(badge_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::ON_COLOR)
+            .bg(badge_color)
+            .add_modifier(Modifier::BOLD),
     ));
-    right_spans.push(Span::raw("  "));
-    let right = Line::from(right_spans);
+    let line2 = Line::from(line2_spans);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::PRIMARY))
+        .title(Span::styled(
+            format!(" ◈ AirymaxRT v{} ", ver),
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(Alignment::Left);
     f.render_widget(
-        Paragraph::new(right)
-            .alignment(Alignment::Right)
-            .style(Style::default().bg(theme::surface())),
-        split[1],
+        Paragraph::new(Text::from(vec![line1, line2]))
+            .style(Style::default().bg(theme::surface()))
+            .block(block),
+        area,
     );
 }
 
@@ -402,15 +378,9 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(hint, Style::default().fg(hint_color)),
     ];
     if focused {
-        // 呼吸灯光标：相位按会话时间推进（100ms 一帧 → 20 帧/周期），颜色呼吸明暗
-        let phase = app.session_start.elapsed().as_millis() % BREATH_PERIOD_MS;
-        let phase_val = if phase < BREATH_PERIOD_MS / 2 {
-            phase
-        } else {
-            BREATH_PERIOD_MS - phase
-        };
-        let cursor_color = breathing_color(phase_val * 1000 / (BREATH_PERIOD_MS / 2));
-        // 光标处断开文本：前半 + 呼吸灯光标 + 后半
+        // 黑白交替光标：相位按会话时间推进（500ms 切换一次，≈ Word 频率）
+        let cursor_color = blink_cursor_color(app.session_start.elapsed().as_millis());
+        // 光标处断开文本：前半 + 黑白交替光标 + 后半
         let cursor_byte = app.cursor.min(app.input.len());
         if app.input.is_char_boundary(cursor_byte) {
             let (before, after) = app.input.split_at(cursor_byte);
@@ -418,7 +388,7 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
                 before.to_string(),
                 Style::default().fg(theme::text()),
             ));
-            // 呼吸灯光标：替代终端方块光标，提示输入焦点
+            // 黑白交替光标：替代终端方块光标，提示输入焦点
             spans.push(Span::styled(
                 BREATH_CURSOR,
                 Style::default().fg(cursor_color),

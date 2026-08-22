@@ -28,10 +28,14 @@
 #   AIRY_TUI_BIN / AIRY_GATEWAY_BIN / AIRY_LLM_BIN  组件路径覆盖
 #   AIRYRT_LOG_LEVEL 日志级别（默认 info；debug 可看到完整排查信息）
 #   AIRYRT_PROFILE   运行画像：auto（按可用内存自动裁剪，默认；<2.5GiB 时
-#                     自动降为 minimal）| full（全量 16 daemon）| minimal
+#                     自动降为 minimal）| full（全量 17 daemon：16 socket +
+#                     gateway）| minimal
 #                     （最小 daemon 集，仅 llm/think/agent/tool + gateway）。
 #                     低资源设备（如树莓派 4B 2GB）建议 minimal，可显著降低
 #                     内存占用；非核心 daemon 未拉起时 gateway 自动降级。
+#                     硬件变化（内存扩容/插入显卡）后执行 `airymaxrt profile`
+#                     重新评估，或 `airymaxrt monitor --daemon` 后台常驻监控，
+#                     检测到能力增强自动恢复被裁剪的 daemon（--stop 停止）。
 #   AIRYRT_FORCE_TUI 强制 TUI 模式（跳过终端能力评估，默认自动评估：
 #                     TERM=dumb/unknown 或屏幕 <20 行/<60 列时自动降级 CLI）。
 #
@@ -135,6 +139,18 @@ log() { # log <debug|info|warn|error> <消息...>
 #   - rocm：AMD ROCm 运行时可用
 #   - dri：/dev/dri 渲染节点（Intel/AMD iGPU 或亮机卡）
 #   - none：无可见加速器
+# 架构检测（uname -m 归一化）：与 install.sh detect_arch 同口径（SSoT），
+# 记录在画像中供 status 展示；install.sh 二进制模式以 {arch} 占位符
+# 选择预编译包（见 agentrt/scripts/install.sh install_binary）。
+detect_arch() {
+    case "$(uname -m 2>/dev/null)" in
+        x86_64|amd64)     echo "x86_64" ;;
+        aarch64|arm64)    echo "aarch64" ;;
+        armv7l|armv6l|armhf) echo "armv7l" ;;
+        riscv64)          echo "riscv64" ;;
+        *)                echo "unknown" ;;
+    esac
+}
 detect_accel() {
     if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
         echo "nvidia:$(nvidia-smi -L 2>/dev/null | wc -l)"
@@ -435,6 +451,19 @@ write_profile_state() { # <full|minimal|auto>
     log info "运行画像已持久化: $PROFILE_ENV（AIRY_PROFILE=$1）"
 }
 
+# 更新画像中单个变量（外设变化时仅刷新对应行，保留其余固化信息）：
+# monitor 检测到加速器增删时用——AIRY_HW_ACCEL 行存在则替换，否则追加。
+upsert_profile_var() { # <KEY> <值>
+    local key="$1" val="$2"
+    mkdir -p "$AIRY_HOME/config"
+    if grep -q "^${key}=" "$PROFILE_ENV" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$PROFILE_ENV"
+    else
+        printf '%s=%s\n' "$key" "$val" >>"$PROFILE_ENV"
+    fi
+    chmod 600 "$PROFILE_ENV" 2>/dev/null || true
+}
+
 # ── 子命令：help / status / doctor / uninstall ──────────────────────────────
 # 86：CLI/TUI 随时转换——`cli` 子命令不直接 exec（否则跳过 daemon 群启动，
 # CLI 直连 socket 时群未拉起会报"目标不存在"），而是置 FORCE_CLI 标记后
@@ -447,7 +476,8 @@ case "$CMD" in
         echo "用法: airymaxrt [--gateway-url URL] [--agent-file FILE]"
         echo "      airymaxrt cli [airy_cli 参数]  强制 CLI 模式（默认 TUI；随时可切换）"
         echo "      airymaxrt profile [full|minimal|auto]  查看/切换运行画像（硬件自适应）"
-        echo "      airymaxrt monitor   硬件监控：检测到能力增强自动恢复功能（Ctrl+C 退出）"
+        echo "      airymaxrt monitor   硬件监控：检测到能力增强自动恢复功能"
+        echo "                        （monitor --daemon 后台常驻 / --stop 停止）"
         echo "      airymaxrt status      查看运行时状态"
         echo "      airymaxrt doctor      组件健康检查"
         echo "      airymaxrt uninstall   一键卸载（--keep-data 保留记忆数据）"
@@ -474,8 +504,14 @@ case "$CMD" in
                 _HW="$(assess_hardware)"
                 _HW_P="${_HW%%|*}"
                 _HW_REST="${_HW#*|}"
+                _MEM_TOTAL="${_HW_REST%%|*}"
+                _MEM_REST="${_HW_REST#*|}"
+                _MEM_AVAIL="${_MEM_REST%%|*}"
+                _CPU="${_MEM_REST#*|}"
+                _CPU="${_CPU%%|*}"
+                _ACCEL="${_HW_REST##*|}"
                 log info "当前画像: ${AIRYRT_PROFILE:-auto}（硬件建议: $_HW_P）"
-                log info "硬件快照: MemTotal=${_HW_REST%%|*}KiB ${_HW_REST#*|}"
+                log info "硬件快照: $(detect_arch) · 内存 ${_MEM_TOTAL}KiB/可用 ${_MEM_AVAIL}KiB · CPU ${_CPU} 核 · 加速器 ${_ACCEL}"
                 exit 0
                 ;;
             full|minimal|auto)
@@ -502,11 +538,52 @@ case "$CMD" in
         esac
         ;;
     monitor)
-        # 2.3.2: 前台硬件监控——周期评估硬件画像，检测到能力增强（内存扩容/
+        # 2.3.2: 硬件监控——周期评估硬件画像，检测到能力增强（内存扩容/
         # 外设接入）时自动补齐被裁剪 daemon，实现"硬件变化自动恢复功能"；
-        # 资源下降时提示主动裁剪。Ctrl+C 干净退出，不残留监控进程。
+        # 资源下降时提示主动裁剪。
+        #   airymaxrt monitor              前台监控（Ctrl+C 干净退出）
+        #   airymaxrt monitor --daemon     后台常驻（PID 记录 $RUNTIME_DIR/
+        #                                   airymaxrt-monitor.pid）——端侧/服务
+        #                                   器部署后无需保持终端，插入显卡等
+        #                                   外设增强即自动恢复全量功能
+        #   airymaxrt monitor --stop       停止后台监控
         # 判定依据：硬件建议画像与「当前生效画像」不一致即动作（而非前后
         # 两次建议比较——后者在 minimal 状态下永远等不到变化，增强永不触发）。
+        case "${2:-}" in
+            --daemon|--background|-d)
+                _MON_PID_FILE="$RUNTIME_DIR/airymaxrt-monitor.pid"
+                if [ -f "$_MON_PID_FILE" ] && \
+                   [ -n "$(cat "$_MON_PID_FILE" 2>/dev/null)" ] && \
+                   kill -0 "$(cat "$_MON_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+                    log warn "硬件监控已在后台运行（PID=$(cat "$_MON_PID_FILE" 2>/dev/null)）"
+                    exit 0
+                fi
+                mkdir -p "$RUNTIME_DIR"
+                # 递归以真实脚本绝对路径启动，避免软链/相对路径在后台失效；
+                # 环境变量（AIRY_HOME/AIRYRT_PROFILE 等）已 export，子进程继承。
+                nohup bash "$SCRIPT_DIR/airymaxrt" monitor \
+                    >"$AIRY_HOME/logs/airymaxrt-monitor.log" 2>&1 &
+                echo "$!" >"$_MON_PID_FILE"
+                log info "硬件监控后台运行（PID=$!，日志 $AIRY_HOME/logs/airymaxrt-monitor.log）"
+                exit 0
+                ;;
+            --stop)
+                _MON_PID_FILE="$RUNTIME_DIR/airymaxrt-monitor.pid"
+                if [ -f "$_MON_PID_FILE" ]; then
+                    _MON_PID="$(cat "$_MON_PID_FILE" 2>/dev/null)"
+                    if [ -n "$_MON_PID" ] && kill -0 "$_MON_PID" 2>/dev/null; then
+                        kill "$_MON_PID" 2>/dev/null
+                        log info "硬件监控已停止（PID=$_MON_PID）"
+                    else
+                        log warn "硬件监控未在运行（陈旧 PID 文件）"
+                    fi
+                    rm -f "$_MON_PID_FILE"
+                else
+                    log warn "未找到后台监控 PID 文件（未在后台运行？）"
+                fi
+                exit 0
+                ;;
+        esac
         trap 'log info "硬件监控退出"; exit 0' INT TERM
         _INT="${AIRYRT_MONITOR_INTERVAL:-10}"
         _HINTED=""   # 已提示的画像值：差异持续时只提示一次，回归一致后重置
@@ -515,6 +592,21 @@ case "$CMD" in
             _HW="$(assess_hardware)"
             _CUR="${_HW%%|*}"
             _SNAP="${_HW#*|}"
+            # 外设变化检测：加速器增删（插卡/拔卡、驱动启用/禁用）不改变
+            # 画像但改变本地推理能力——与画像固化值对比，变化即提示并刷新
+            # profile.env（AIRY_HW_ACCEL）。AIRY_HW_ACCEL 由 install.sh
+            # persist_profile 固化、本脚本启动时 source 导入。
+            _ACCEL_NOW="${_SNAP##*|}"
+            _ACCEL_BASE="${AIRY_HW_ACCEL:-none}"
+            if [ "$_ACCEL_NOW" != "$_ACCEL_BASE" ]; then
+                log info "外设变化: 加速器 ${_ACCEL_BASE} → ${_ACCEL_NOW}"
+                upsert_profile_var AIRY_HW_ACCEL "$_ACCEL_NOW"
+                if [ "$_ACCEL_NOW" != "none" ]; then
+                    log info "检测到加速器（${_ACCEL_NOW}），本地推理能力可用（可配置本地模型）"
+                else
+                    log warn "加速器已不可见，本地推理将不可用（远程 LLM 不受影响）"
+                fi
+            fi
             if [ "$_CUR" != "$AIRYRT_PROFILE" ]; then
                 if [ "$_CUR" = "full" ]; then
                     if [ "$AIRYRT_PROFILE_RAW" != "auto" ]; then
@@ -543,6 +635,7 @@ case "$CMD" in
         ;;
     status)
         log info "AIRY_HOME=$AIRY_HOME"
+        log info "画像: ${AIRYRT_PROFILE:-auto} · 架构: $(detect_arch) · 加速器: $(detect_accel)"
         log info "组件: TUI=${TUI_BIN:-缺失} GATEWAY=${GATEWAY_BIN:-缺失} LLM=${LLM_BIN:-缺失}"
         if wait_for_health "$GATEWAY_URL" 1; then
             log info "gateway: 在线（$GATEWAY_URL）"
