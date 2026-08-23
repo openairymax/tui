@@ -930,6 +930,21 @@ else
             log debug "清理 stale pid 文件: $_pf"
         fi
     done
+    # ---- 运行时日志清理（2.2.1.7 强化运行时日志）----
+    # agent 子进程日志（logs/agent_*.log）无轮转会无限累积；daemon 的
+    # *.out（stdout/stderr 重定向）同样只增不减。启动前清理 7 天前的
+    # 陈旧文件（保留近期便于排障），幂等且不影响正在写入的当前日志。
+    _LOG_KEEP_DAYS="${AIRYRT_LOG_KEEP_DAYS:-7}"
+    if command -v find >/dev/null 2>&1 && [ -d "$AIRY_HOME/logs" ]; then
+        _CUTOFF=$(( $(date +%s) - _LOG_KEEP_DAYS * 86400 ))
+        while IFS= read -r _old; do
+            [ -n "$_old" ] || continue
+            rm -f "$_old"
+            log debug "清理过期运行时日志: $_old"
+        done < <(find "$AIRY_HOME/logs" -maxdepth 1 -type f \
+                     \( -name 'agent_*.log' -o -name '*.out' -o -name '*.pid' \) \
+                     ! -newermt "@$_CUTOFF" -print 2>/dev/null)
+    fi
     # ---- 并行拉起全部守护进程（0.1.2 启动优化） ----
     # 16 个 Unix socket daemon + gateway_d 一次性后台拉起：daemon 启动即 bind
     # 自身 socket，对等连接在请求时建立，启动互不阻塞；随后统一轮询等待全部
