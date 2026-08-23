@@ -237,17 +237,27 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // 行1：状态 + 时间 + 会话/技能/记忆统计
+    // 行1：状态 + 时间 + 会话耗时 + 会话/技能/记忆统计
+    let sess_elapsed = app.session_start.elapsed();
+    let sess_hms = format!(
+        "{:02}:{:02}",
+        sess_elapsed.as_secs() / 60,
+        sess_elapsed.as_secs() % 60
+    );
     let line1 = Line::from(vec![
         Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {label}"), Style::default().fg(color)),
         Span::styled(format!("  {}", now), Style::default().fg(theme::dim())),
+        Span::styled(format!(" · ↑{}", sess_hms), Style::default().fg(theme::dim())),
         Span::raw("   "),
         Span::styled(format!("对话 {}", app.tab_count()), Style::default().fg(theme::faint())),
         Span::styled(" · ", Style::default().fg(theme::faint())),
         Span::styled(format!("技能 {}", app.skills.len()), Style::default().fg(theme::faint())),
         Span::styled(" · ", Style::default().fg(theme::faint())),
-        Span::styled(format!("记忆 {}", app.memory.len()), Style::default().fg(theme::faint())),
+        Span::styled(
+            format!("记忆 {}·{}", app.memory.len(), app.memory.backend_name()),
+            Style::default().fg(theme::faint()),
+        ),
     ]);
 
     // 行2：模型 · token · 成本 · 任务控制徽章 · 阶段徽章

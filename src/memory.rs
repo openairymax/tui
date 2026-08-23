@@ -66,6 +66,11 @@ pub trait ConversationMemory: Send + Sync {
     fn recent(&self, n: usize) -> Vec<MemoryRecord>;
     /// 记忆条数
     fn len(&self) -> usize;
+    /// 2.2.2.1：当前记忆后端名（TUI 展示用，默认 "Jsonl"）。
+    /// MemoryRovol 覆盖为 "MemoryRovol"，volatile 覆盖为 "volatile"。
+    fn backend_name(&self) -> &'static str {
+        "Jsonl"
+    }
 }
 
 /// JSONL 持久化记忆后端（默认）。
@@ -352,10 +357,17 @@ pub mod memoryrovol {
             unsafe {
                 for i in 0..count {
                     let item = results.add(i).read();
-                    let content = if item.record_id.is_null() {
+                    // 2.2.2.1 修复：召回正文取自 item.data（含 data_len 的原始
+                    // 数据），此前误读 record_id——MemoryRovol 启用时注入
+                    // prompt 的"相关记忆"全是 rec_xxx 记录 ID，直接污染对话。
+                    let content = if item.data.is_null() || item.data_len == 0 {
                         String::new()
                     } else {
-                        CStr::from_ptr(item.record_id).to_string_lossy().into_owned()
+                        let slice = std::slice::from_raw_parts(
+                            item.data as *const u8,
+                            item.data_len,
+                        );
+                        String::from_utf8_lossy(slice).into_owned()
                     };
                     let score = item.score;
                     // 释放 C 侧分配（mr_free 定义于本模块，原 crate::memory::mr_free
@@ -397,6 +409,10 @@ pub mod memoryrovol {
                 .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).nth(1))
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(0)
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "MemoryRovol"
         }
     }
 
