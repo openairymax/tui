@@ -21,6 +21,7 @@ mod gccp;
 mod markdown;
 mod memory;
 mod panels;
+mod secrets;
 mod skills;
 mod theme;
 mod ui;
