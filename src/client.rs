@@ -557,7 +557,9 @@ pub struct GccpQuestion {
     pub question: String,
     #[serde(default)]
     pub hint: String,
+    /// 是否必答（GCCP 协议字段；UI 当前不区分展示，保留保证反序列化完整）
     #[serde(default)]
+    #[allow(dead_code)]
     pub required: bool,
 }
 
