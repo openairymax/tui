@@ -161,6 +161,9 @@ pub struct App {
     /// 思考阶段开始时刻（首个 reasoning 增量到达时记录；chat.rs 状态行
     /// 显示耗时，2026-08-19 与 C 版 CLI 的 "N 字 · T.Ts" 进度对齐）。
     pub stream_reasoning_start: Option<Instant>,
+    /// 2.1.1.6：本轮流式思考链待持久化副本（apply_stream_result 落屏后
+    /// 保留，apply_chat_result 写记忆时随 assistant 记录落盘）。
+    pub pending_reasoning: Option<String>,
     /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
@@ -334,6 +337,7 @@ impl App {
             stream_reasoning: String::new(),
             stream_reasoning_model: String::new(),
             stream_reasoning_start: None,
+            pending_reasoning: None,
             approvals: Vec::new(),
             project_context: String::new(),
             last_approval_poll: Instant::now(),
@@ -1498,9 +1502,12 @@ impl App {
         for line in std::mem::take(&mut self.stream_tool_events) {
             self.add_message(MessageRole::ToolCall, line);
         }
-        // 思考链（reasoning_content）→ 落为 [Dual Think] 正式消息（折叠展示）
+        // 思考链（reasoning_content）→ 落为 [Dual Think] 正式消息（折叠展示）。
+        // 2.1.1.6：同时保留副本到 pending_reasoning，随 assistant 回复持久化
+        // 到记忆库（思考 token 不丢失）。
         if !self.stream_reasoning.is_empty() {
             let reasoning = std::mem::take(&mut self.stream_reasoning);
+            self.pending_reasoning = Some(reasoning.clone());
             self.add_message(MessageRole::System, reasoning);
         }
         self.stream_reasoning_model.clear();
@@ -1590,8 +1597,14 @@ impl App {
                 } else {
                     self.add_message(MessageRole::Agent, cleaned.clone());
                 }
-                // 记忆：持久化助手响应
-                if let Err(e) = self.memory.push("assistant", &cleaned, "chat") {
+                // 记忆：持久化助手响应（2.1.1.6：思考链随记录落盘保留）
+                let reasoning = self.pending_reasoning.take();
+                if let Err(e) = self.memory.push_with_reasoning(
+                    "assistant",
+                    &cleaned,
+                    reasoning.as_deref(),
+                    "chat",
+                ) {
                     log::warn!("memory push(assistant) failed: {}", e);
                 }
 
@@ -2047,6 +2060,7 @@ impl App {
         self.stream_reasoning.clear();
         self.stream_reasoning_model.clear();
         self.stream_reasoning_start = None;
+        self.pending_reasoning = None;
         self.last_reveal_tick = Instant::now();
         self.stream_tool_events.clear();
     }
@@ -2340,6 +2354,17 @@ impl App {
                         // 2.3.14：思考链模型轨（t2/t1-f/t1-p → Dual Slow/Fast/Prof Think）
                         if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
                             self.stream_reasoning_model = m.to_string();
+                        }
+                        continue;
+                    }
+                    // 2.1.1.5：usage 事件（llm_d 流式尾帧真实 token 消耗，gateway
+                    // 透传）→ 累加到会话级统计（TUI 英雄区 tok/$ 实时真实）。
+                    if v.get("__airy_evt").and_then(|k| k.as_str()) == Some("usage") {
+                        if let Some(t) = v.get("total_tokens").and_then(|t| t.as_u64()) {
+                            self.tokens += t;
+                        }
+                        if let Some(c) = v.get("cost_usd").and_then(|c| c.as_f64()) {
+                            self.cost += c;
                         }
                         continue;
                     }
@@ -3198,18 +3223,21 @@ mod tests {
                 content: "上次的问题".into(),
                 timestamp: "2026-08-08T10:00:00".into(),
                 tags: "chat".into(),
+                reasoning: None,
             },
             MemoryRecord {
                 role: "assistant".into(),
                 content: "上次的回答".into(),
                 timestamp: "2026-08-08T10:00:01".into(),
                 tags: "chat".into(),
+                reasoning: None,
             },
             MemoryRecord {
                 role: "system".into(),
                 content: "不应恢复的系统消息".into(),
                 timestamp: "2026-08-08T10:00:02".into(),
                 tags: "chat".into(),
+                reasoning: None,
             },
         ];
         let path = mem_dir.join("memory.jsonl");

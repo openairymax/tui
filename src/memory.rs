@@ -29,6 +29,10 @@ pub struct MemoryRecord {
     pub content: String,
     pub timestamp: String,  // ISO8601
     pub tags: String,       // 逗号分隔，如 "task,chat,preference"
+    /// 2.1.1.6：思考链（reasoning_content）随助手回复持久化保留。
+    /// 旧记录无此字段（serde default 容忍），升级后历史记忆不丢。
+    #[serde(default)]
+    pub reasoning: Option<String>,
 }
 
 /// 召回结果（内容 + 相关度得分）
@@ -43,6 +47,19 @@ pub struct MemoryHit {
 pub trait ConversationMemory: Send + Sync {
     /// 写入一条记忆
     fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()>;
+    /// 2.1.1.6：写入一条带思考链（reasoning_content）的助手记忆。
+    /// 默认实现忽略 reasoning（如 MemoryRovol 后端无此字段），
+    /// JSONL 后端重写为持久化 reasoning。
+    fn push_with_reasoning(
+        &mut self,
+        role: &str,
+        content: &str,
+        reasoning: Option<&str>,
+        tags: &str,
+    ) -> std::io::Result<()> {
+        let _ = reasoning;
+        self.push(role, content, tags)
+    }
     /// 召回与 query 相关、且 time_before 之前的记忆
     fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit>;
     /// 最近 N 条对话（按时间倒序）
@@ -101,24 +118,17 @@ impl JsonlMemory {
 
 impl ConversationMemory for JsonlMemory {
     fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()> {
-        let rec = MemoryRecord {
-            role: role.to_string(),
-            content: content.to_string(),
-            timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-            tags: tags.to_string(),
-        };
-        // 追加写：单条记录一次 write + flush，崩溃时最多丢当前记录
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
-        writeln!(f, "{}", serde_json::to_string(&rec)?)?;
-        f.flush()?;
-        self.records.push(rec);
-        if self.records.len() > self.max_records {
-            // 裁剪最旧记录并重写文件（保持文件与内存一致）
-            let drain = self.records.len() - self.max_records;
-            self.records.drain(..drain);
-            self.rewrite()?;
-        }
-        Ok(())
+        self.push_impl(role, content, None, tags)
+    }
+
+    fn push_with_reasoning(
+        &mut self,
+        role: &str,
+        content: &str,
+        reasoning: Option<&str>,
+        tags: &str,
+    ) -> std::io::Result<()> {
+        self.push_impl(role, content, reasoning, tags)
     }
 
     fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit> {
@@ -176,6 +186,35 @@ impl ConversationMemory for JsonlMemory {
 }
 
 impl JsonlMemory {
+    /// 2.1.1.6：带思考链的追加写实现（push / push_with_reasoning 共用）。
+    fn push_impl(
+        &mut self,
+        role: &str,
+        content: &str,
+        reasoning: Option<&str>,
+        tags: &str,
+    ) -> std::io::Result<()> {
+        let rec = MemoryRecord {
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+            tags: tags.to_string(),
+            reasoning: reasoning.map(|s| s.to_string()),
+        };
+        // 追加写：单条记录一次 write + flush，崩溃时最多丢当前记录
+        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        writeln!(f, "{}", serde_json::to_string(&rec)?)?;
+        f.flush()?;
+        self.records.push(rec);
+        if self.records.len() > self.max_records {
+            // 裁剪最旧记录并重写文件（保持文件与内存一致）
+            let drain = self.records.len() - self.max_records;
+            self.records.drain(..drain);
+            self.rewrite()?;
+        }
+        Ok(())
+    }
+
     fn rewrite(&self) -> std::io::Result<()> {
         let mut f = OpenOptions::new().create(true).truncate(true).write(true).open(&self.path)?;
         for rec in &self.records {
@@ -418,6 +457,26 @@ mod tests {
         let recent = m.recent(2);
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].role, "assistant");
+    }
+
+    #[test]
+    fn push_with_reasoning_persists_reasoning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut m = JsonlMemory::new(Some(dir.path())).expect("new");
+            m.push_with_reasoning("assistant", "最终回答", Some("思考过程"), "chat")
+                .expect("push");
+        }
+        // 重新加载：思考链随记录落盘保留（2.1.1.6）
+        let m = JsonlMemory::new(Some(dir.path())).expect("reload");
+        let rec = m.recent(1).into_iter().next().expect("record");
+        assert_eq!(rec.reasoning.as_deref(), Some("思考过程"));
+        // 旧格式记录（无 reasoning 字段）反序列化兼容
+        let raw = format!(
+            "{{\"role\":\"assistant\",\"content\":\"旧记录\",\"timestamp\":\"2026-01-01T00:00:00\",\"tags\":\"chat\"}}"
+        );
+        let old: MemoryRecord = serde_json::from_str(&raw).expect("old record parse");
+        assert_eq!(old.reasoning, None);
     }
 
     #[test]
