@@ -620,13 +620,13 @@ fn append_message(
 }
 
 /// 欢迎页品牌英雄区（无消息时，顶部对齐，随终端大小自适应）。
-/// 2.2.1.5 任务 1 强化（2026-08-23）：完整品牌英雄区——
+/// 2026-08-23 重设计：与顶部系统状态条职责分离——状态条承载实时
+/// 运行数据（连接灯/模型/token/成本/阶段），欢迎墙专注静态品牌与
+/// 能力展示（tagline/核心链路/硬件/项目/快捷键），两者无重叠。
 ///   · 品牌：◈ AirymaxRT + 版本 + tagline「极境智能体运行平台」
-///   · 运行时状态：连接灯 + 在线 daemon 计数 + 在线 Agent +
-///     核心链路 llm · think · agent · tool
-///   · 会话信息：会话数 / 模型 / token / 成本 / 记忆条数
+///   · 核心链路 llm · think · agent · tool
 ///   · 硬件快照：架构 / 内存总量·可用 / 加速器（探测失败显示占位）
-///   · 快捷键提示行
+///   · 项目上下文 + 快捷键提示行
 /// 布局轻盈（留白呼吸感）、theme 函数取色、顶部对齐不居中。
 fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, app: &'a App) {
     let ver = env!("CARGO_PKG_VERSION");
@@ -671,37 +671,6 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
     ]));
     hero.push(Line::raw(""));
 
-    // 运行时状态：连接灯 + 在线 daemon 计数 + 在线 Agent
-    let (light, label, color) = if app.connected {
-        ("●", "ONLINE", theme::SUCCESS)
-    } else if app.loading {
-        ("◐", "WAITING", theme::WARNING)
-    } else {
-        ("●", "OFFLINE", theme::DANGER)
-    };
-    // 在线 daemon 计数：无持久状态时显示占位（/daemons 可查 16 个 daemon）
-    let agents = app.hall_board.as_ref().map(|b| b.agents.len()).unwrap_or(0);
-    hero.push(Line::from(vec![
-        Span::styled("  ", Style::default()),
-        Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {label}"), Style::default().fg(color)),
-        Span::styled(
-            format!(
-                "   ·   daemon 在线 —   ·   在线 Agent {}",
-                if agents > 0 {
-                    agents.to_string()
-                } else {
-                    "—".to_string()
-                }
-            ),
-            Style::default().fg(theme::dim()),
-        ),
-        Span::styled(
-            "   ·   （/daemons 查看）",
-            Style::default().fg(theme::faint()),
-        ),
-    ]));
-
     // 核心链路 chips：llm · think · agent · tool
     let chain = [
         ("llm", theme::ACCENT),
@@ -722,32 +691,6 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
     }
     hero.push(Line::from(chain_spans));
     hero.push(Line::raw(""));
-
-    // 会话信息：会话数 / 模型 / token / 成本 / 记忆
-    let model_text = if app.model.is_empty() {
-        "默认模型".to_string()
-    } else {
-        app.model.clone()
-    };
-    let model_disp: String = model_text.chars().take(24).collect();
-    hero.push(Line::from(vec![
-        Span::styled("  会话  ", Style::default().fg(theme::faint())),
-        Span::styled(format!("{}", app.tab_count()), Style::default().fg(theme::text())),
-        Span::styled("  ·  模型  ", Style::default().fg(theme::faint())),
-        Span::styled(
-            model_disp,
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ·  ", Style::default().fg(theme::faint())),
-        Span::styled(format!("{} tok", app.tokens), Style::default().fg(theme::dim())),
-        Span::styled("  ·  ", Style::default().fg(theme::faint())),
-        Span::styled(format!("${:.4}", app.cost), Style::default().fg(theme::dim())),
-        Span::styled("  ·  记忆  ", Style::default().fg(theme::faint())),
-        Span::styled(
-            format!("{}", app.memory.len()),
-            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
-        ),
-    ]));
 
     // 硬件快照：架构 / 内存 / 加速器（数据探测失败显示占位）
     let (mem_total, mem_avail) = crate::panels::config::mem_snapshot();

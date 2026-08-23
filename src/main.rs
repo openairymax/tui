@@ -385,6 +385,11 @@ async fn run_app<B: Backend>(
                         debug!("Panel: Esc → return to Chat");
                         app.active_panel = ActivePanel::Chat;
                     }
+                // IME 拼音态：Esc 退出拼音模式并上屏拼音原文（保持输入行内容）
+                KeyCode::Esc if app.ime_visible() => {
+                    app.ime_commit_raw();
+                    app.ime_active = false;
+                }
                 KeyCode::F(1) => {
                     debug!("Panel: toggle Help");
                     app.toggle_panel(ActivePanel::Help);
@@ -518,6 +523,11 @@ async fn run_app<B: Backend>(
                                             // F10：内置拼音输入法切换（busy 插入对话场景同样可用）
                                             KeyCode::F(10) => {
                                                 app.ime_toggle();
+                                            }
+                                            // IME 拼音态：Esc 退出拼音模式并上屏拼音原文
+                                            KeyCode::Esc if app.ime_visible() => {
+                                                app.ime_commit_raw();
+                                                app.ime_active = false;
                                             }
                                             // ── 插入对话（2.3.7）：任务执行中输入文本 ──
                                             KeyCode::Enter => {

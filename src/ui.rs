@@ -57,8 +57,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    // 顶部：1 行系统状态条（实时状态，紧凑不占屏；品牌/能力墙在
+    // chat 空态欢迎区，避免与系统头重叠——2026-08-23 重设计）
     let mut constraints = vec![
-        Constraint::Length(4), // Hero（英雄区：上框 + 2 内容行 + 下框）
+        Constraint::Length(1), // System status bar
         Constraint::Min(3),    // Main content（自适应）
     ];
     // 有未决议的工具审批时，在输入栏上方插入审批提示条（Claude Code 风格）
@@ -66,12 +68,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if has_approval {
         constraints.push(Constraint::Length(2));
     }
-    // IME 拼音候选条：拼音态且缓冲非空时在输入栏上方占一行（仅 Chat 面板输入）
+    // IME 拼音态：输入框扩为两行（输入行 + 候选区）再叠底部细分隔线
     let ime_bar = app.ime_visible();
-    if ime_bar {
-        constraints.push(Constraint::Length(1));
-    }
-    constraints.push(Constraint::Length(2)); // Input bar（内容行 + 底部细分隔线）
+    constraints.push(Constraint::Length(if ime_bar { 3 } else { 2 })); // Input bar
     constraints.push(Constraint::Length(1)); // Shortcuts
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -104,23 +103,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_approval_banner(f, main_layout[idx], app);
         idx += 1;
     }
-    if ime_bar {
-        render_ime_cands(f, main_layout[idx], app);
-        idx += 1;
-    }
     render_input_bar(f, main_layout[idx], app);
     render_shortcuts(f, main_layout[idx + 1], app);
 }
 
-/// IME 拼音候选条（输入栏上方一行）：`[中] 拼音` + 数字键候选。
+/// IME 候选区（输入框第二行）：`[中] 拼音` + 数字键候选。
 ///
-/// 与 C 侧 CLI 的 tui_ime_draw_cands 视觉语义一致：拼音高亮 + 候选按
-/// 频次降序排列，第一个候选高亮（空格/1 直接上屏），其余数字选字。
-/// 仅拼音态且缓冲非空时调用（render() 已按 ime_visible() 预留行）。
+/// 2.2.3 重新设计（2026-08-23）：F10 激活后输入框恒为两行（第一行
+/// 输入 + 第二行候选区），本函数渲染第二行。拼音缓冲为空时显示
+/// `[中] 拼音输入中…` 占位，让激活瞬间即有明确视觉反馈；缓冲非空
+/// 时显示拼音高亮 + 按频次降序的候选（第一个高亮，空格/1 上屏，
+/// 其余数字选字）。与 C 侧 CLI 的 tui_ime_draw_cands 语义一致。
 fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
     let mut spans = vec![
         Span::styled(
-            format!(" {} ", app.ime_buf),
+            "[中]",
             Style::default()
                 .fg(theme::ON_COLOR)
                 .bg(theme::PRIMARY)
@@ -128,17 +125,32 @@ fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::raw(" "),
     ];
-    for (i, cand) in app.ime_cands.iter().enumerate() {
-        let tag = format!("{}.{} ", i + 1, cand);
-        if i == 0 {
-            spans.push(Span::styled(
-                tag,
-                Style::default()
-                    .fg(theme::PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            spans.push(Span::styled(tag, Style::default().fg(theme::dim())));
+    if app.ime_buf.is_empty() {
+        spans.push(Span::styled(
+            "拼音输入中…（a-z 拼音 · 1-9 选字 · 空格 首候选 · Esc/切回 上屏原文）",
+            Style::default().fg(theme::faint()),
+        ));
+    } else {
+        spans.push(Span::styled(
+            format!(" {} ", app.ime_buf),
+            Style::default()
+                .fg(theme::ON_COLOR)
+                .bg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+        for (i, cand) in app.ime_cands.iter().enumerate() {
+            let tag = format!("{}.{} ", i + 1, cand);
+            if i == 0 {
+                spans.push(Span::styled(
+                    tag,
+                    Style::default()
+                        .fg(theme::PRIMARY)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(tag, Style::default().fg(theme::dim())));
+            }
         }
     }
     f.render_widget(
@@ -245,14 +257,15 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// 英雄区（2.2.1.5.1）：晶蓝 box 品牌区，双行内容——
-/// 行1 状态（连接灯 + 宿主机时间）+ 会话/技能/记忆统计；
-/// 行2 模型 + token + 成本 + 阶段徽章（+ 任务控制状态）。
-/// 窄屏（<52 列）自动收起为单行精简品牌条，不挤占主内容区。
+/// 系统状态条（顶部 1 行，2026-08-23 重设计）。
+///
+/// 2.2.1.5.1 曾把英雄区做成 4 行晶蓝 box，与 chat 空态欢迎墙
+/// （append_welcome 的 ╭─╮ 大框）内容重叠（品牌/状态/模型/记忆重复），
+/// 视觉上"两个头叠罗汉"。全新设计：顶部收敛为**单行紧凑状态条**
+/// （实时运行状态：连接灯 + 时间 + 会话耗时 + 模型 + token + 成本 +
+/// 阶段徽章），品牌/能力/硬件等静态展示移交 chat 空态欢迎墙独占，
+/// 两区域职责分离、无重叠。窄屏自动收起冗余段。
 fn render_hero(f: &mut Frame, area: Rect, app: &App) {
-    // 窄屏只保留精简品牌行，右侧徽章整体收起，避免挤占
-    let wide = area.width >= 52;
-
     // 状态灯
     let (light, label, color) = if app.connected {
         ("●", "ONLINE", theme::SUCCESS)
@@ -266,101 +279,74 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         .gateway_version
         .clone()
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-
-    if !wide {
-        let line = Line::from(vec![
-            Span::styled(" ◈ ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
-            Span::styled("AirymaxRT", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" v{}", ver), Style::default().fg(theme::faint())),
-            Span::styled("    ", Style::default()),
-            Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {label}"), Style::default().fg(color)),
-            Span::styled(format!("  {}", now), Style::default().fg(theme::dim())),
-        ]);
-        f.render_widget(
-            Paragraph::new(line).style(Style::default().bg(theme::surface())),
-            area,
-        );
-        return;
-    }
-
-    // 行1：状态 + 时间 + 会话耗时 + 会话/技能/记忆统计
     let sess_elapsed = app.session_start.elapsed();
     let sess_hms = format!(
         "{:02}:{:02}",
         sess_elapsed.as_secs() / 60,
         sess_elapsed.as_secs() % 60
     );
-    let line1 = Line::from(vec![
+
+    let mut spans: Vec<Span> = vec![
+        Span::styled(" ◈ ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+        Span::styled("AirymaxRT", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" v{ver}"), Style::default().fg(theme::faint())),
+        Span::styled("   ", Style::default()),
         Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {label}"), Style::default().fg(color)),
-        Span::styled(format!("  {}", now), Style::default().fg(theme::dim())),
-        Span::styled(format!(" · ↑{}", sess_hms), Style::default().fg(theme::dim())),
-        Span::raw("   "),
-        Span::styled(format!("对话 {}", app.tab_count()), Style::default().fg(theme::faint())),
-        Span::styled(" · ", Style::default().fg(theme::faint())),
-        Span::styled(format!("技能 {}", app.skills.len()), Style::default().fg(theme::faint())),
-        Span::styled(" · ", Style::default().fg(theme::faint())),
-        Span::styled(
-            format!("记忆 {}·{}", app.memory.len(), app.memory.backend_name()),
-            Style::default().fg(theme::faint()),
-        ),
-    ]);
-
-    // 行2：模型 · token · 成本 · 任务控制徽章 · 阶段徽章
-    let (badge, badge_color) = phase_badge(app.flow_phase);
-    let badge_text = match app.flow_phase {
-        FlowPhase::GccpRound(_) => format!(" 任务事实确认 {}/5 ", app.gccp.answered()),
-        _ => badge,
-    };
-    let model_text = if app.model.is_empty() {
-        "默认模型".to_string()
-    } else {
-        app.model.clone()
-    };
-    let control_badge: Option<(String, ratatui::style::Color)> = match app.task_control {
-        crate::gccp::TaskControl::Running => None,
-        crate::gccp::TaskControl::Paused => Some((" ⏸ 已暂停 ".to_string(), theme::PRIMARY)),
-        crate::gccp::TaskControl::Aborted => Some((" ✕ 已中止 ".to_string(), theme::DANGER)),
-    };
-    let mut line2_spans = vec![
-        Span::styled(
-            format!("{}  ", model_text),
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("{} ", app.tokens), Style::default().fg(theme::dim())),
-        Span::styled("tok", Style::default().fg(theme::faint())),
-        Span::styled("  ·  ", Style::default().fg(theme::faint())),
-        Span::styled(format!("${:.4}  ", app.cost), Style::default().fg(theme::dim())),
+        Span::styled(format!("  {} · ↑{}", now, sess_hms), Style::default().fg(theme::dim())),
     ];
-    if let Some((lbl, c)) = control_badge {
-        line2_spans.push(Span::styled(
-            lbl,
-            Style::default().fg(theme::ON_COLOR).bg(c).add_modifier(Modifier::BOLD),
+    // 窄屏（<72 列）只保留左段（品牌 + 连接 + 时间），右侧运行数据收起
+    if area.width >= 72 {
+        let model_text = if app.model.is_empty() {
+            "默认模型".to_string()
+        } else {
+            app.model.clone()
+        };
+        spans.push(Span::styled("   ", Style::default()));
+        spans.push(Span::styled(
+            model_text,
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
         ));
-        line2_spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("  {} tok · ${:.4}", app.tokens, app.cost),
+            Style::default().fg(theme::dim()),
+        ));
+        let (badge, badge_color) = phase_badge(app.flow_phase);
+        let badge_text = match app.flow_phase {
+            FlowPhase::GccpRound(_) => format!(" 任务事实确认 {}/5 ", app.gccp.answered()),
+            _ => badge,
+        };
+        spans.push(Span::styled(
+            "  ",
+            Style::default(),
+        ));
+        spans.push(Span::styled(
+            badge_text,
+            Style::default()
+                .fg(theme::ON_COLOR)
+                .bg(badge_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+        if let crate::gccp::TaskControl::Paused = app.task_control {
+            spans.push(Span::styled(
+                "  ⏸ 已暂停 ",
+                Style::default()
+                    .fg(theme::ON_COLOR)
+                    .bg(theme::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if let crate::gccp::TaskControl::Aborted = app.task_control {
+            spans.push(Span::styled(
+                "  ✕ 已中止 ",
+                Style::default()
+                    .fg(theme::ON_COLOR)
+                    .bg(theme::DANGER)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
     }
-    line2_spans.push(Span::styled(
-        badge_text,
-        Style::default()
-            .fg(theme::ON_COLOR)
-            .bg(badge_color)
-            .add_modifier(Modifier::BOLD),
-    ));
-    let line2 = Line::from(line2_spans);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::PRIMARY))
-        .title(Span::styled(
-            format!(" ◈ AirymaxRT v{} ", ver),
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(Alignment::Left);
     f.render_widget(
-        Paragraph::new(Text::from(vec![line1, line2]))
-            .style(Style::default().bg(theme::surface()))
-            .block(block),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::surface())),
         area,
     );
 }
@@ -376,13 +362,38 @@ fn phase_badge(phase: FlowPhase) -> (String, ratatui::style::Color) {
     }
 }
 
-/// 输入栏：`❯` 前缀 + 阶段引导/占位提示 + 用户输入 + 呼吸灯光标。
+/// 输入栏（2026-08-23 重设计）：IME 激活时输入框变两行——
+/// 第一行 `❯` 前缀 + 输入文本（含 IME 模式指示），第二行候选区
+/// （render_ime_cands），末行底部细分隔线；非激活时仅 输入行 + 隔线。
 ///
 /// 交互语义（参考 Claude 对话设计的克制输入框）：
 ///   - 可输入时：输入末尾有呼吸灯光标（颜色随时间明暗呼吸），提示此处可输入；
 ///   - 等待回复（loading）时：输入框保持中性安静，不显示 thinking 动画——
 ///     思考动效仅出现在对话主区（chat.rs），避免输入框与对话区重复提醒。
 fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
+    let ime_bar = app.ime_visible();
+    // 内容行 +（IME 候选区）+ 底部细分隔线
+    let mut parts = vec![Constraint::Length(1)];
+    if ime_bar {
+        parts.push(Constraint::Length(1));
+    }
+    parts.push(Constraint::Length(1));
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(parts)
+        .split(area);
+
+    render_input_line(f, layout[0], app);
+    let mut idx = 1;
+    if ime_bar {
+        render_ime_cands(f, layout[idx], app);
+        idx += 1;
+    }
+    render_input_sep(f, layout[idx], app);
+}
+
+/// 输入行（第一行）：`❯` 前缀 + 阶段引导/占位提示 + 输入文本 + 光标。
+fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
     // 等待回复：prefix 保持普通，无呼吸灯、无动画（思考动效在对话主区，输入框安静克制）；
     // 但按阶段给出明确的等待语义，让用户知道"正在做什么"。
     if app.loading {
@@ -409,14 +420,7 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]);
         f.render_widget(
-            Paragraph::new(line)
-                .style(Style::default().bg(theme::surface()))
-                .block(
-                    Block::default()
-                        .style(Style::default().bg(theme::surface()))
-                        .borders(ratatui::widgets::Borders::BOTTOM)
-                        .border_style(Style::default().fg(theme::border())),
-                ),
+            Paragraph::new(line).style(Style::default().bg(theme::surface())),
             area,
         );
         return;
@@ -429,13 +433,29 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
         (app.flow_phase.input_hint(), theme::dim())
     };
 
+    // IME 模式指示：激活时 [中] 高亮（晶蓝底），未激活 [英] 灰显
+    let mut spans = vec![Span::styled(" ❯ ", Style::default().fg(theme::PRIMARY))];
+    if app.ime_engine.is_some() {
+        if app.ime_active {
+            spans.push(Span::styled(
+                "[中] ",
+                Style::default()
+                    .fg(theme::ON_COLOR)
+                    .bg(theme::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                "[英] ",
+                Style::default().fg(theme::faint()),
+            ));
+        }
+    }
+    spans.push(Span::styled(hint, Style::default().fg(hint_color)));
+
     // 呼吸灯光标仅在对话面板显示（其他面板输入栏保持安静克制）；
     // 光标渲染在输入文本的实际位置（readline 风格：←→ 移动后光标可见）
     let focused = app.active_panel == ActivePanel::Chat;
-    let mut spans = vec![
-        Span::styled(" ❯ ", Style::default().fg(theme::PRIMARY)),
-        Span::styled(hint, Style::default().fg(hint_color)),
-    ];
     if focused {
         // 黑白交替光标：相位按会话时间推进（500ms 切换一次，≈ Word 频率）
         let cursor_color = blink_cursor_color(app.session_start.elapsed().as_millis());
@@ -474,17 +494,19 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let line = Line::from(spans);
-
-    // 输入栏：surface 背景 + 底部细分隔线（与主内容区分，视觉更清晰）
     f.render_widget(
-        Paragraph::new(line)
+        Paragraph::new(line).style(Style::default().bg(theme::surface())),
+        area,
+    );
+}
+
+/// 输入栏底部细分隔线（surface 背景 + BOTTOM 边框，与主内容区分）。
+fn render_input_sep(f: &mut Frame, area: Rect, app: &App) {
+    f.render_widget(
+        Block::default()
             .style(Style::default().bg(theme::surface()))
-            .block(
-                Block::default()
-                    .style(Style::default().bg(theme::surface()))
-                    .borders(ratatui::widgets::Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme::border())),
-            ),
+            .borders(ratatui::widgets::Borders::BOTTOM)
+            .border_style(Style::default().fg(theme::border())),
         area,
     );
 }
