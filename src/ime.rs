@@ -102,6 +102,21 @@ impl ImeEngine {
                     .join("airy_ime.dat"),
             );
         }
+        // 二进制包布局（解压即用）：bin/agentrt-tui 与 share/ 平级，
+        // 词典在 <exe>/../share/agentrt/ime/airy_ime.dat。避免用户
+        // 直接从包解压运行（未安装、AIRY_HOME 未设）时 IME 因缺词典
+        // 降级禁用（F10 无效果）。
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(
+                    dir.join("..")
+                        .join("share")
+                        .join("agentrt")
+                        .join("ime")
+                        .join("airy_ime.dat"),
+                );
+            }
+        }
         candidates.push(PathBuf::from("share/agentrt/ime/airy_ime.dat"));
         // 开发布局：agentrt 源码树内联词典（伞仓 sdk/tui → agent-workload/agentrt）
         candidates.push(
