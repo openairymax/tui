@@ -16,8 +16,12 @@ path = "src/main.rs"
 # 构建时由 build.rs 定位 libagentrt_memoryrovol.a：
 #   MEMORYROVOL_LIB env → $AIRY_HOME/lib/libagentrt_memoryrovol.a → 伞仓构建产物
 # 库缺失时 FFI 不编译，运行时优雅降级 JsonlMemory（真实可用后备）。
-default = ["memoryrovol"]
+default = ["memoryrovol", "ime"]
 memoryrovol = ["dep:libc"]
+# IRON-8 内置拼音输入法：FFI 链接 agentrt libairy_common.a（airy_ime 符号）。
+# 构建时由 build.rs 定位静态库：AIRY_COMMON_LIB env → $AIRY_HOME/lib →
+# agentrt 源码树构建产物；库缺失时 IME 降级禁用（F10 无效，英文输入不受影响）。
+ime = ["dep:libc"]
 
 [dependencies]
 # TUI framework

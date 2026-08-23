@@ -18,6 +18,7 @@
 mod app;
 mod client;
 mod gccp;
+mod ime;
 mod markdown;
 mod memory;
 mod panels;
@@ -423,6 +424,10 @@ async fn run_app<B: Backend>(
                     app.switch_to_cli = true;
                     return Ok(());
                 }
+                // F10：内置拼音输入法 中/英 切换（词典缺失时无效果）
+                KeyCode::F(10) => {
+                    app.ime_toggle();
+                }
                 KeyCode::Enter => {
                     // 面板激活（Board/Events）：Enter = 查看选中条目详情
                     if app.active_panel == ActivePanel::Board {
@@ -440,6 +445,8 @@ async fn run_app<B: Backend>(
                         app.input_insert_text("\n");
                         continue;
                     }
+                    // 拼音态：先提交拼音原文（随后提交整行）
+                    app.ime_commit_enter();
                     let input = std::mem::take(&mut app.input);
                     app.cursor = 0;
                     debug!("User submitted input: '{}' ({} chars)",
@@ -508,8 +515,14 @@ async fn run_app<B: Backend>(
                                                 app.force_hall_refresh();
                                                 app.start_hall_watch();
                                             }
+                                            // F10：内置拼音输入法切换（busy 插入对话场景同样可用）
+                                            KeyCode::F(10) => {
+                                                app.ime_toggle();
+                                            }
                                             // ── 插入对话（2.3.7）：任务执行中输入文本 ──
                                             KeyCode::Enter => {
+                                                // 拼音态：先提交拼音原文（随后提交整行）
+                                                app.ime_commit_enter();
                                                 let input =
                                                     std::mem::take(&mut app.input);
                                                 app.cursor = 0;
@@ -518,7 +531,9 @@ async fn run_app<B: Backend>(
                                                 }
                                             }
                                             KeyCode::Backspace => {
-                                                app.input_backspace();
+                                                if !app.ime_backspace() {
+                                                    app.input_backspace();
+                                                }
                                             }
                                             KeyCode::Delete => {
                                                 app.input_delete_after();
@@ -536,8 +551,10 @@ async fn run_app<B: Backend>(
                                                 app.cursor_end();
                                             }
                                             KeyCode::Char(c) => {
-                                                // 普通字符插入输入框（光标感知）
-                                                app.input_insert_char(c);
+                                                if !app.ime_input_char(c) {
+                                                    // 普通字符插入输入框（光标感知；IME 拼音态已消费时跳过）
+                                                    app.input_insert_char(c);
+                                                }
                                             }
                                             _ => {}
                                         }
@@ -571,8 +588,10 @@ async fn run_app<B: Backend>(
                     }
                 }
                 KeyCode::Backspace => {
-                    // 删除光标前一个字符
-                    app.input_backspace();
+                    // 删除光标前一个字符（IME 拼音态：删拼音缓冲）
+                    if !app.ime_backspace() {
+                        app.input_backspace();
+                    }
                 }
                 KeyCode::Delete => {
                     // 删除光标后一个字符
@@ -659,8 +678,10 @@ async fn run_app<B: Backend>(
                     }
                 }
                 KeyCode::Char(c) => {
-                    // 普通字符插入到光标位置
-                    app.input_insert_char(c);
+                    // 普通字符插入到光标位置（IME 拼音态：先经拼音输入法）
+                    if !app.ime_input_char(c) {
+                        app.input_insert_char(c);
+                    }
                 }
                 KeyCode::Up => {
                     // F6/F7 面板：↑ 移动选中光标（循环）；其余场景滚对话/浏览历史

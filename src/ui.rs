@@ -66,6 +66,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if has_approval {
         constraints.push(Constraint::Length(2));
     }
+    // IME 拼音候选条：拼音态且缓冲非空时在输入栏上方占一行（仅 Chat 面板输入）
+    let ime_bar = app.ime_visible();
+    if ime_bar {
+        constraints.push(Constraint::Length(1));
+    }
     constraints.push(Constraint::Length(2)); // Input bar（内容行 + 底部细分隔线）
     constraints.push(Constraint::Length(1)); // Shortcuts
     let main_layout = Layout::default()
@@ -99,8 +104,48 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_approval_banner(f, main_layout[idx], app);
         idx += 1;
     }
+    if ime_bar {
+        render_ime_cands(f, main_layout[idx], app);
+        idx += 1;
+    }
     render_input_bar(f, main_layout[idx], app);
     render_shortcuts(f, main_layout[idx + 1], app);
+}
+
+/// IME 拼音候选条（输入栏上方一行）：`[中] 拼音` + 数字键候选。
+///
+/// 与 C 侧 CLI 的 tui_ime_draw_cands 视觉语义一致：拼音高亮 + 候选按
+/// 频次降序排列，第一个候选高亮（空格/1 直接上屏），其余数字选字。
+/// 仅拼音态且缓冲非空时调用（render() 已按 ime_visible() 预留行）。
+fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
+    let mut spans = vec![
+        Span::styled(
+            format!(" {} ", app.ime_buf),
+            Style::default()
+                .fg(theme::ON_COLOR)
+                .bg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+    ];
+    for (i, cand) in app.ime_cands.iter().enumerate() {
+        let tag = format!("{}.{} ", i + 1, cand);
+        if i == 0 {
+            spans.push(Span::styled(
+                tag,
+                Style::default()
+                    .fg(theme::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(tag, Style::default().fg(theme::dim())));
+        }
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans))
+            .style(Style::default().bg(theme::surface())),
+        area,
+    );
 }
 
 /// 工具审批提示条：pending 审批时在输入栏上方高亮显示（Claude Code 风格
