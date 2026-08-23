@@ -385,10 +385,9 @@ async fn run_app<B: Backend>(
                         debug!("Panel: Esc → return to Chat");
                         app.active_panel = ActivePanel::Chat;
                     }
-                // IME 拼音态：Esc 退出拼音模式并上屏拼音原文（保持输入行内容）
+                // IME 拼音态：Esc 取消拼音（微信语义：清空缓冲，放弃组合）
                 KeyCode::Esc if app.ime_visible() => {
-                    app.ime_commit_raw();
-                    app.ime_active = false;
+                    app.ime_cancel();
                 }
                 KeyCode::F(1) => {
                     debug!("Panel: toggle Help");
@@ -524,10 +523,9 @@ async fn run_app<B: Backend>(
                                             KeyCode::F(10) => {
                                                 app.ime_toggle();
                                             }
-                                            // IME 拼音态：Esc 退出拼音模式并上屏拼音原文
+                                            // IME 拼音态：Esc 取消拼音（微信语义）
                                             KeyCode::Esc if app.ime_visible() => {
-                                                app.ime_commit_raw();
-                                                app.ime_active = false;
+                                                app.ime_cancel();
                                             }
                                             // ── 插入对话（2.3.7）：任务执行中输入文本 ──
                                             KeyCode::Enter => {
@@ -549,10 +547,19 @@ async fn run_app<B: Backend>(
                                                 app.input_delete_after();
                                             }
                                             KeyCode::Left => {
-                                                app.cursor_left();
+                                                // ←：IME 拼音态移动候选高亮（微信式）
+                                                if app.ime_visible() {
+                                                    app.ime_move_sel(-1);
+                                                } else {
+                                                    app.cursor_left();
+                                                }
                                             }
                                             KeyCode::Right => {
-                                                app.cursor_right();
+                                                if app.ime_visible() {
+                                                    app.ime_move_sel(1);
+                                                } else {
+                                                    app.cursor_right();
+                                                }
                                             }
                                             KeyCode::Home => {
                                                 app.cursor_home();
@@ -608,12 +615,20 @@ async fn run_app<B: Backend>(
                     app.input_delete_after();
                 }
                 KeyCode::Left => {
-                    // ← 光标左移（Ctrl+← 同义：逐字符移动）
-                    app.cursor_left();
+                    // ←：IME 拼音态移动候选高亮；否则光标左移（微信式）
+                    if app.ime_visible() {
+                        app.ime_move_sel(-1);
+                    } else {
+                        app.cursor_left();
+                    }
                 }
                 KeyCode::Right => {
-                    // → 光标右移
-                    app.cursor_right();
+                    // →：IME 拼音态移动候选高亮；否则光标右移（微信式）
+                    if app.ime_visible() {
+                        app.ime_move_sel(1);
+                    } else {
+                        app.cursor_right();
+                    }
                 }
                 KeyCode::Home => {
                     // Home：光标到输入开头
@@ -717,10 +732,20 @@ async fn run_app<B: Backend>(
                     }
                 }
                 KeyCode::PageUp => {
-                    app.scroll_page_up();
+                    // PgUp：IME 拼音态翻上一页（微信式）；否则滚动上翻
+                    if app.ime_visible() {
+                        app.ime_page_flip(-1);
+                    } else {
+                        app.scroll_page_up();
+                    }
                 }
                 KeyCode::PageDown => {
-                    app.scroll_page_down();
+                    // PgDn：IME 拼音态翻下一页（微信式）；否则滚动下翻
+                    if app.ime_visible() {
+                        app.ime_page_flip(1);
+                    } else {
+                        app.scroll_page_down();
+                    }
                 }
                 _ => {}
             }

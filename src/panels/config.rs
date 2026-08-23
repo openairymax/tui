@@ -388,22 +388,6 @@ fn probe_gpu() -> String {
     "无 / 未探测".to_string()
 }
 
-/// 内存快照（供聊天英雄区硬件快照复用）：(总量, 可用) GiB 字符串。
-pub(crate) fn mem_snapshot() -> (String, String) {
-    let h = host_info();
-    (h.mem_total.clone(), h.mem_avail.clone())
-}
-
-/// 架构（供聊天英雄区硬件快照复用）。
-pub(crate) fn arch_snapshot() -> String {
-    host_info().arch.clone()
-}
-
-/// 加速器快照（供聊天英雄区硬件快照复用）。
-pub(crate) fn accelerator_snapshot() -> String {
-    host_info().gpu.clone()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,8 +407,7 @@ mod tests {
     #[test]
     fn probe_functions_never_panic() {
         // 探测失败必须返回占位而非 panic（无卡/无 /proc 环境）
-        let _ = arch_snapshot();
-        let _ = mem_snapshot();
-        let _ = accelerator_snapshot();
+        let h = host_info();
+        let _ = (&h.arch, &h.gpu);
     }
 }

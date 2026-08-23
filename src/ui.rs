@@ -107,13 +107,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_shortcuts(f, main_layout[idx + 1], app);
 }
 
-/// IME 候选区（输入框第二行）：`[中] 拼音` + 数字键候选。
+/// IME 候选区（输入框第二行）：`[中] 拼音` + 当前页候选。
 ///
 /// 2.2.3 重新设计（2026-08-23）：F10 激活后输入框恒为两行（第一行
 /// 输入 + 第二行候选区），本函数渲染第二行。拼音缓冲为空时显示
 /// `[中] 拼音输入中…` 占位，让激活瞬间即有明确视觉反馈；缓冲非空
-/// 时显示拼音高亮 + 按频次降序的候选（第一个高亮，空格/1 上屏，
-/// 其余数字选字）。与 C 侧 CLI 的 tui_ime_draw_cands 语义一致。
+/// 时显示拼音高亮 + 微信式分页候选（当前页 9 个，页内高亮蓝底，
+/// 多页时尾部页码指示 ‹1/2›；空格/Enter 上屏高亮候选，数字选字，
+/// ,/. 或 PgUp/PgDn 翻页，←/→ 移动高亮）。与 C 侧 CLI 的
+/// tui_ime_draw_cands 语义一致。
 fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
     let mut spans = vec![
         Span::styled(
@@ -127,7 +129,7 @@ fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
     ];
     if app.ime_buf.is_empty() {
         spans.push(Span::styled(
-            "拼音输入中…（a-z 拼音 · 1-9 选字 · 空格 首候选 · Esc/切回 上屏原文）",
+            "拼音输入中…（a-z 拼音 · 1-9 选字 · 空格/Enter 上屏 · ,/. 翻页 · Esc 取消）",
             Style::default().fg(theme::faint()),
         ));
     } else {
@@ -139,18 +141,29 @@ fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
-        for (i, cand) in app.ime_cands.iter().enumerate() {
-            let tag = format!("{}.{} ", i + 1, cand);
-            if i == 0 {
+        // 当前页切片（微信式分页：每页 9 个，页内高亮）
+        let start = app.ime_page * 9;
+        let end = (start + 9).min(app.ime_cands.len());
+        for (off, cand) in app.ime_cands[start..end].iter().enumerate() {
+            let tag = format!("{}.{} ", off + 1, cand);
+            if off == app.ime_sel {
                 spans.push(Span::styled(
                     tag,
                     Style::default()
-                        .fg(theme::PRIMARY)
+                        .fg(theme::ON_COLOR)
+                        .bg(theme::PRIMARY)
                         .add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::styled(tag, Style::default().fg(theme::dim())));
             }
+        }
+        // 页码指示（多页时显示 ‹cur/total›）
+        if app.ime_pages > 1 {
+            spans.push(Span::styled(
+                format!("‹{}/{}›", app.ime_page + 1, app.ime_pages),
+                Style::default().fg(theme::faint()),
+            ));
         }
     }
     f.render_widget(
@@ -262,9 +275,12 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
 /// 2.2.1.5.1 曾把英雄区做成 4 行晶蓝 box，与 chat 空态欢迎墙
 /// （append_welcome 的 ╭─╮ 大框）内容重叠（品牌/状态/模型/记忆重复），
 /// 视觉上"两个头叠罗汉"。全新设计：顶部收敛为**单行紧凑状态条**
-/// （实时运行状态：连接灯 + 时间 + 会话耗时 + 模型 + token + 成本 +
+/// （实时运行状态：连接灯 + 时间 + 模型 + token + 成本 +
 /// 阶段徽章），品牌/能力/硬件等静态展示移交 chat 空态欢迎墙独占，
 /// 两区域职责分离、无重叠。窄屏自动收起冗余段。
+///
+/// 0.1.3 Claude 风格降噪：去掉会话耗时段，状态条保持安静克制，
+/// 信息密度让位于对话主体。
 fn render_hero(f: &mut Frame, area: Rect, app: &App) {
     // 状态灯
     let (light, label, color) = if app.connected {
@@ -279,12 +295,6 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         .gateway_version
         .clone()
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-    let sess_elapsed = app.session_start.elapsed();
-    let sess_hms = format!(
-        "{:02}:{:02}",
-        sess_elapsed.as_secs() / 60,
-        sess_elapsed.as_secs() % 60
-    );
 
     let mut spans: Vec<Span> = vec![
         Span::styled(" ◈ ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
@@ -293,7 +303,7 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("   ", Style::default()),
         Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {label}"), Style::default().fg(color)),
-        Span::styled(format!("  {} · ↑{}", now, sess_hms), Style::default().fg(theme::dim())),
+        Span::styled(format!("  {now}"), Style::default().fg(theme::dim())),
     ];
     // 窄屏（<72 列）只保留左段（品牌 + 连接 + 时间），右侧运行数据收起
     if area.width >= 72 {
@@ -511,7 +521,8 @@ fn render_input_sep(f: &mut Frame, area: Rect) {
     );
 }
 
-/// 快捷键（居中、紧凑；窄屏自动收起文字标签）。
+/// 快捷键（单行低对比，Claude Code 风格克制；0.1.3 去掉彩色胶囊背景，
+/// 仅当前面板键以主色高亮，其余灰显；窄屏自动收起文字标签）。
 fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
     let items = [
         ("F1", "帮助", ActivePanel::Help),
@@ -524,7 +535,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         ("F8", "CLI", ActivePanel::Chat),
     ];
 
-    // 窄屏只显示键位胶囊，隐藏文字标签，避免溢出
+    // 窄屏只显示键位，隐藏文字标签，避免溢出
     let compact = area.width < 72;
 
     let mut spans: Vec<Span> = Vec::with_capacity(items.len() * 2 + 2);
@@ -532,35 +543,32 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         let active = app.active_panel == panel;
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::default()
-                .fg(if active { theme::ON_COLOR } else { theme::PRIMARY })
-                .bg(if active { theme::PRIMARY } else { theme::surface_active() })
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(if active { theme::PRIMARY } else { theme::dim() }),
         ));
         if !compact {
             spans.push(Span::styled(
-                format!(" {label} "),
-                Style::default().fg(if active { theme::PRIMARY } else { theme::dim() }),
+                format!("{label} "),
+                Style::default().fg(if active { theme::PRIMARY } else { theme::faint() }),
             ));
         }
     }
     if area.width >= 52 {
         spans.push(Span::styled(
-            "   Ctrl+Z 暂停  Ctrl+X 中止  ",
+            "   Ctrl+Z 暂停 · Ctrl+X 中止",
             Style::default().fg(theme::faint()),
         ));
     }
     if area.width >= 40 {
         spans.push(Span::styled(
-            "  Ctrl+C 退出 ",
+            " · Ctrl+C 退出",
             Style::default().fg(theme::faint()),
         ));
     }
 
     f.render_widget(
         Paragraph::new(Line::from(spans))
-            .alignment(Alignment::Center)
-            .style(Style::default().bg(theme::bg())),
+            .alignment(Alignment::Left)
+            .style(Style::default().bg(theme::surface())),
         area,
     );
 }

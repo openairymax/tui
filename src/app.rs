@@ -133,8 +133,12 @@ pub struct App {
     pub ime_active: bool,
     /// 拼音缓冲（仅小写 [a-z]；ü 以 v 表示）
     pub ime_buf: String,
-    /// 当前拼音的候选词（UTF-8，频次降序，最多 9 个）
+    /// 当前拼音的候选词（UTF-8，频次降序，0.1.3 起最多 27 个=3 页）
     pub ime_cands: Vec<String>,
+    /// IME 分页（微信式，0.1.3）：当前页 / 总页数 / 页内高亮下标
+    pub ime_page: usize,
+    pub ime_pages: usize,
+    pub ime_sel: usize,
     /// 任务流阶段（对话 / GCCP 任务事实确认 / GRAD 任务流程图确认 / 执行）
     pub flow_phase: FlowPhase,
     /// GCCP 五问状态（任务事实确认）
@@ -357,6 +361,9 @@ impl App {
             ime_active: false,
             ime_buf: String::new(),
             ime_cands: Vec::new(),
+            ime_page: 0,
+            ime_pages: 1,
+            ime_sel: 0,
             flow_phase: FlowPhase::Chat,
             gccp: GccpState::default(),
             gccp_pending: None,
@@ -615,13 +622,17 @@ impl App {
         }
     }
 
-    /// 以当前拼音缓冲刷新候选列表。
+    /// 以当前拼音缓冲刷新候选列表（微信式分页 0.1.3：一次取 27 个，
+    /// 3 页 × 9；拼音变化后页码/高亮归零——新上下文从第一页首候选开始）。
     fn ime_refresh(&mut self) {
         if let Some(eng) = &self.ime_engine {
             self.ime_cands = eng.query(&self.ime_buf);
         } else {
             self.ime_cands.clear();
         }
+        self.ime_pages = (self.ime_cands.len().max(1) + 8) / 9;
+        self.ime_page = self.ime_page.min(self.ime_pages.saturating_sub(1));
+        self.ime_sel = self.ime_sel.min(8);
     }
 
     /// 拼音原文上屏（插入输入行光标处），清空拼音缓冲与候选。
@@ -632,6 +643,9 @@ impl App {
         }
         self.ime_buf.clear();
         self.ime_cands.clear();
+        self.ime_page = 0;
+        self.ime_pages = 1;
+        self.ime_sel = 0;
     }
 
     /// 候选字上屏：清空拼音缓冲并保持拼音模式（连续词组输入不中断）。
@@ -641,6 +655,62 @@ impl App {
         }
         self.ime_buf.clear();
         self.ime_cands.clear();
+        self.ime_page = 0;
+        self.ime_pages = 1;
+        self.ime_sel = 0;
+    }
+
+    /// 当前高亮候选在候选池中的绝对下标（None = 无候选）。
+    pub fn ime_sel_index(&self) -> Option<usize> {
+        let idx = self.ime_page * 9 + self.ime_sel;
+        if idx < self.ime_cands.len() {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    /// 翻页（微信式：,/. 或 PgUp/PgDn）。越界回绕。
+    pub fn ime_page_flip(&mut self, dir: isize) {
+        if self.ime_pages <= 1 {
+            return;
+        }
+        let pages = self.ime_pages as isize;
+        let mut p = self.ime_page as isize + dir;
+        if p < 0 {
+            p = pages - 1;
+        }
+        if p >= pages {
+            p = 0;
+        }
+        self.ime_page = p as usize;
+    }
+
+    /// 页内高亮移动（微信式：←/→ 选中候选）。
+    pub fn ime_move_sel(&mut self, dir: isize) {
+        let start = self.ime_page * 9;
+        let page_cnt = self.ime_cands.len().saturating_sub(start).min(9);
+        if page_cnt == 0 {
+            return;
+        }
+        let mut s = self.ime_sel as isize + dir;
+        if s < 0 {
+            s = 0;
+        }
+        if s >= page_cnt as isize {
+            s = page_cnt as isize - 1;
+        }
+        self.ime_sel = s as usize;
+    }
+
+    /// 取消拼音（微信语义：清空缓冲，放弃组合，退出拼音态）。
+    pub fn ime_cancel(&mut self) {
+        self.ime_buf.clear();
+        self.ime_cands.clear();
+        self.ime_page = 0;
+        self.ime_pages = 1;
+        self.ime_sel = 0;
+        self.ime_active = false;
     }
 
     /// 拼音态按键处理（仅 ime_active 时调用）。返回 true = 已消费该键。
@@ -654,17 +724,30 @@ impl App {
                 self.ime_refresh();
             }
             '1'..='9' => {
+                // 数字选字：当前页内第 N 个候选（微信式分页）
                 let i = (c as usize) - ('1' as usize);
-                if i < self.ime_cands.len() {
-                    self.ime_commit_cand(i);
+                let idx = self.ime_page * 9 + i;
+                if idx < self.ime_cands.len() {
+                    self.ime_commit_cand(idx);
                 }
             }
             ' ' => {
-                if !self.ime_cands.is_empty() {
-                    self.ime_commit_cand(0);
+                // 空格：上屏高亮候选（微信式，默认高亮第一个）
+                if let Some(idx) = self.ime_sel_index() {
+                    self.ime_commit_cand(idx);
                 } else {
                     // 无候选：空格输出拼音原文
                     self.ime_commit_raw();
+                }
+            }
+            ',' | '.' => {
+                // 翻页（微信式：, 上一页 / . 下一页）；单页时标点走正常路径
+                if self.ime_pages > 1 {
+                    self.ime_page_flip(if c == '.' { 1 } else { -1 });
+                } else {
+                    self.ime_commit_raw();
+                    self.ime_active = false;
+                    return false;
                 }
             }
             _ => {
@@ -692,13 +775,18 @@ impl App {
         true
     }
 
-    /// 拼音态 Enter 提交：拼音原文上屏 + 退出拼音态（随后由调用方处理
-    /// 整行提交）。返回 true = 已有拼音态需要先提交。
+    /// 拼音态 Enter 提交（微信语义）：有候选时上屏高亮候选，无候选时
+    /// 提交拼音原文；随后退出拼音态（由调用方提交整行）。返回 true =
+    /// 已有拼音态需要先提交。
     pub fn ime_commit_enter(&mut self) -> bool {
         if !self.ime_active {
             return false;
         }
-        self.ime_commit_raw();
+        if let Some(idx) = self.ime_sel_index() {
+            self.ime_commit_cand(idx);
+        } else {
+            self.ime_commit_raw();
+        }
         self.ime_active = false;
         true
     }

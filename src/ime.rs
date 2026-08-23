@@ -128,6 +128,7 @@ impl ImeEngine {
 
     /// 全拼前缀查询：pinyin 仅接受小写 [a-z]（ü 以 v 表示）。
     /// 返回候选文本（UTF-8，频次降序），空 = 无匹配或非法输入。
+    /// 0.1.3 微信式分页：一次取足 3 页（27 个），翻页不再回查 C 词典。
     pub fn query(&self, pinyin: &str) -> Vec<String> {
         #[cfg(all(feature = "ime", ime_linked))]
         {
@@ -142,7 +143,7 @@ impl ImeEngine {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
-            const CAP: c_int = 9;
+            const CAP: c_int = 27;
             let mut out = [ffi::airy_ime_cand {
                 text: std::ptr::null(),
                 freq: 0,

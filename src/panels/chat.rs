@@ -619,15 +619,10 @@ fn append_message(
     }
 }
 
-/// 欢迎页品牌英雄区（无消息时，顶部对齐，随终端大小自适应）。
-/// 2026-08-23 重设计：与顶部系统状态条职责分离——状态条承载实时
-/// 运行数据（连接灯/模型/token/成本/阶段），欢迎墙专注静态品牌与
-/// 能力展示（tagline/核心链路/硬件/项目/快捷键），两者无重叠。
-///   · 品牌：◈ AirymaxRT + 版本 + tagline「极境智能体运行平台」
-///   · 核心链路 llm · think · agent · tool
-///   · 硬件快照：架构 / 内存总量·可用 / 加速器（探测失败显示占位）
-///   · 项目上下文 + 快捷键提示行
-/// 布局轻盈（留白呼吸感）、theme 函数取色、顶部对齐不居中。
+/// 空态欢迎（无消息时，Claude Code 风格极简式，0.1.3 重设计）。
+/// 去掉此前 ╭─╮ 大边框英雄区：静态品牌只保留一行 tagline，能力提示
+/// 一行，引导一行，垂直居中——把屏幕让给对话本体，克制优雅。
+/// 运行数据（连接灯/模型/token/成本/阶段）由顶部系统状态条独占。
 fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, app: &'a App) {
     let ver = env!("CARGO_PKG_VERSION");
     let proj = if app.project_context.is_empty() {
@@ -640,8 +635,8 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
             .to_string()
     };
 
-    // 高度过小（<8 行）：仅输出精简品牌行，不画边框，避免挤占
-    if height < 8 {
+    // 极窄屏（<44 列）：仅一行精简品牌
+    if width < 44 {
         lines.push(Line::from(vec![
             Span::styled(
                 "◈ AirymaxRT",
@@ -649,107 +644,75 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
             ),
             Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
             Span::styled(
-                "  ·  极境智能体运行平台 · 输入消息开始对话",
+                "  极境智能体运行平台 · 输入消息开始对话",
                 Style::default().fg(theme::dim()),
             ),
         ]));
         return;
     }
 
-    let border_w = width.saturating_sub(2).min(72);
-    let content_max = border_w.saturating_sub(2).max(8);
+    let content_max = width.saturating_sub(4).max(16);
     let mut hero: Vec<Line> = Vec::new();
 
-    // 品牌行：名称 + 版本 + tagline
-    hero.push(Line::from(vec![
+    // 品牌行：◈ AirymaxRT v0.1.3 —— 极境智能体运行平台（居中）
+    let brand = Line::from(vec![
         Span::styled(
             "◈ AirymaxRT",
             Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
-        Span::styled("   ·   极境智能体运行平台", Style::default().fg(theme::dim())),
-    ]));
+        Span::styled(format!(" v{ver}"), Style::default().fg(theme::faint())),
+        Span::styled(" — 极境智能体运行平台", Style::default().fg(theme::dim())),
+    ]);
+    // 手动水平居中（Claude 空态：品牌一行居中，能力提示靠左低对比）
+    let pad = content_max.saturating_sub(2).saturating_sub(brand.width()) / 2;
+    let mut centered: Vec<Span> = vec![Span::raw(" ".repeat(pad))];
+    centered.extend(brand.spans.clone());
+    hero.push(Line::from(centered));
     hero.push(Line::raw(""));
 
-    // 核心链路 chips：llm · think · agent · tool
+    // 能力提示（核心链路 chips 内联，低对比，一行）
     let chain = [
         ("llm", theme::ACCENT),
         ("think", theme::WARNING),
         ("agent", theme::SUCCESS),
         ("tool", theme::MAGENTA),
     ];
-    let mut chain_spans: Vec<Span> =
-        vec![Span::styled("  核心链路  ", Style::default().fg(theme::dim()))];
+    let mut caps_line = Line::from(vec![
+        Span::styled("核心链路  ", Style::default().fg(theme::faint())),
+    ]);
     for (i, (name, c)) in chain.iter().enumerate() {
         if i > 0 {
-            chain_spans.push(Span::styled(" · ", Style::default().fg(theme::faint())));
+            caps_line.spans.push(Span::styled(
+                " · ",
+                Style::default().fg(theme::faint()),
+            ));
         }
-        chain_spans.push(Span::styled(
+        caps_line.spans.push(Span::styled(
             *name,
             Style::default().fg(*c).add_modifier(Modifier::BOLD),
         ));
     }
-    hero.push(Line::from(chain_spans));
+    hero.push(caps_line);
     hero.push(Line::raw(""));
 
-    // 硬件快照：架构 / 内存 / 加速器（数据探测失败显示占位）
-    let (mem_total, mem_avail) = crate::panels::config::mem_snapshot();
-    let hw = format!(
-        "{} · 内存 {} / {} · 加速器 {}",
-        crate::panels::config::arch_snapshot(),
-        mem_total,
-        mem_avail,
-        crate::panels::config::accelerator_snapshot(),
-    );
-    let hw_disp: String = hw.chars().take(content_max.saturating_sub(6)).collect();
+    // 引导行（低对比）：输入消息 + 常用键
+    let proj_disp: String = proj.chars().take(content_max.saturating_sub(4)).collect();
     hero.push(Line::from(vec![
-        Span::styled("  硬件  ", Style::default().fg(theme::faint())),
-        Span::styled(hw_disp, Style::default().fg(theme::dim())),
+        Span::styled("输入消息开始对话 · F1 帮助 · F2 配置 · F10 输入法", Style::default().fg(theme::faint())),
     ]));
-
-    // 项目上下文行（未加载时给出引导）
-    let proj_disp: String = proj.chars().take(content_max.saturating_sub(6)).collect();
-    hero.push(Line::from(vec![
-        Span::styled("  项目  ", Style::default().fg(theme::faint())),
-        Span::styled(proj_disp, Style::default().fg(theme::text())),
-    ]));
-    hero.push(Line::raw(""));
-
-    // 快捷键提示行
-    let hint = "输入消息 Enter 发送 · F1 帮助 · F2 配置 · F3 日志 · F4 记忆 · F5 插件 · F6 看板 · F7 事件 · F8 CLI · Ctrl+C 退出";
-    let hint_disp: String = hint.chars().take(content_max.saturating_sub(2)).collect();
-    hero.push(Line::from(vec![
-        Span::styled("  ", Style::default()),
-        Span::styled(hint_disp, Style::default().fg(theme::faint())),
-    ]));
-
-    // 顶部对齐：先输出 1 行呼吸空间，不垂直居中
-    lines.push(Line::raw(""));
-
-    // 边框（上下线 + 左右竖线），主题色为晶蓝
-    let border = "─".repeat(border_w);
-    if width >= 44 {
-        lines.push(Line::from(vec![
-            Span::styled("╭", Style::default().fg(theme::PRIMARY)),
-            Span::styled(border.clone(), Style::default().fg(theme::PRIMARY)),
-            Span::styled("╮", Style::default().fg(theme::PRIMARY)),
+    if !proj_disp.is_empty() {
+        hero.push(Line::from(vec![
+            Span::styled("项目  ", Style::default().fg(theme::faint())),
+            Span::styled(proj_disp, Style::default().fg(theme::dim())),
         ]));
-        for h in hero.iter() {
-            let mut hline = Line::from(vec![
-                Span::styled("│", Style::default().fg(theme::PRIMARY)),
-                Span::styled(" ", Style::default()),
-            ]);
-            hline.extend(h.spans.clone());
-            lines.push(hline);
-        }
-        lines.push(Line::from(vec![
-            Span::styled("╰", Style::default().fg(theme::PRIMARY)),
-            Span::styled(border, Style::default().fg(theme::PRIMARY)),
-            Span::styled("╯", Style::default().fg(theme::PRIMARY)),
-        ]));
-    } else {
-        lines.extend(hero);
     }
+
+    // 垂直居中：高度不足时顶部对齐
+    let lead = height.saturating_sub(hero.len()).saturating_sub(2) / 2;
+    for _ in 0..lead {
+        lines.push(Line::raw(""));
+    }
+    lines.extend(hero);
 }
 
 #[cfg(test)]
