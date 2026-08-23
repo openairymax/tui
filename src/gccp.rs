@@ -20,6 +20,9 @@ pub enum FlowPhase {
     Chat,
     /// 任务事实确认（GCCP）第 N 轮：等待用户回答第 N 问（N = 1..=5）
     GccpRound(u8),
+    /// 服务端 GCCP 目标澄清（P-A 两段式交互）：think.process 返回
+    /// gccp_need_interaction，等待用户回答问题集（见 GccpPending）
+    GccpClarify,
     /// 任务流程图确认（GRAD）：等待用户确认流程图
     GradConfirm,
     /// 任务集执行中
@@ -55,6 +58,7 @@ impl FlowPhase {
         match self {
             FlowPhase::Chat => "对话",
             FlowPhase::GccpRound(_) => "任务事实确认",
+            FlowPhase::GccpClarify => "目标澄清",
             FlowPhase::GradConfirm => "任务流程图确认",
             FlowPhase::Executing => "任务集",
         }
@@ -64,6 +68,9 @@ impl FlowPhase {
     pub fn input_hint(self) -> String {
         match self {
             FlowPhase::GccpRound(n) => format!("回答第 {} 问：", n),
+            FlowPhase::GccpClarify => {
+                "回答 GCCP 澄清问题（空行逐条，或「跳过」放弃本轮问答）".to_string()
+            }
             FlowPhase::GradConfirm => "输入「确认」通过流程图，或输入修改意见：".to_string(),
             // 普通对话 / 执行中：无引导语，前缀 ❯ 已足够
             FlowPhase::Chat | FlowPhase::Executing => String::new(),
@@ -764,6 +771,7 @@ mod tests {
         assert_eq!(FlowPhase::Chat.label(), "对话");
         assert_eq!(FlowPhase::GccpRound(1).label(), "任务事实确认");
         assert_eq!(FlowPhase::GccpRound(5).label(), "任务事实确认");
+        assert_eq!(FlowPhase::GccpClarify.label(), "目标澄清");
         assert_eq!(FlowPhase::GradConfirm.label(), "任务流程图确认");
         assert_eq!(FlowPhase::Executing.label(), "任务集");
     }

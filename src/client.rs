@@ -70,6 +70,10 @@ impl GatewayClient {
     /// `history` 为可选的完整对话历史（OpenAI messages 数组，user/assistant
     /// 交替，含当前输入作为末条 user 消息）。携带时 gateway 以整个数组作为
     /// 工具循环的初始上下文（M1/M2 修复），否则退化为单条 prompt。
+    ///
+    /// `gccp_answers` 为 GCCP 两段式交互第二段的用户答案 JSON（可 None；
+    /// 第一段 think.process 返回 gccp_need_interaction 后，客户端展示问题、
+    /// 收集答案并以本参数重发同一 prompt 完成澄清闭环）。
     pub async fn send_message(
         &self,
         prompt: &str,
@@ -78,6 +82,7 @@ impl GatewayClient {
         session_id: Option<&str>,
         agent: Option<serde_json::Value>,
         history: Option<serde_json::Value>,
+        gccp_answers: Option<&str>,
     ) -> Result<RunResponse> {
         // gateway 采用 JSON-RPC（POST /），method=agent.run，params 透传 prompt/agent_file
         let url = format!("{}/", self.base_url);
@@ -103,6 +108,12 @@ impl GatewayClient {
         if let Some(h) = history {
             // 完整对话历史（OpenAI messages 数组）：gateway 透传为工具循环初始上下文
             params["messages"] = h;
+        }
+        if let Some(a) = gccp_answers {
+            // GCCP 两段式交互第二段：用户答案 JSON（gateway 透传 think.process）
+            if !a.is_empty() {
+                params["gccp_answers"] = serde_json::Value::String(a.to_string());
+            }
         }
         let request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -158,6 +169,18 @@ impl GatewayClient {
         // {plan: DAG, feedback: GRAD 反馈, stats}，供对话面板展示
         let thinking = result.get("thinking").and_then(|v| v.as_object()).cloned();
 
+        // GCCP 两段式交互（P-A）：think.process 第一段挂起时 gateway 回传
+        // {gccp_need_interaction:1, gccp_questions:[...]}——客户端展示问题、
+        // 收集答案后以 gccp_answers 重发同一 prompt（第二段完成澄清闭环）。
+        let gccp_need_interaction = result
+            .get("gccp_need_interaction")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let gccp_questions: Vec<GccpQuestion> = result
+            .get("gccp_questions")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
         // Agent 工具调用轨迹（可选）
         let tool_trace = result.get("tool_trace").and_then(|v| {
             serde_json::from_value::<Vec<ToolTrace>>(v.clone()).ok()
@@ -173,6 +196,8 @@ impl GatewayClient {
             cost_usd,
             thinking,
             tool_trace,
+            gccp_need_interaction,
+            gccp_questions,
         })
     }
 
@@ -516,6 +541,24 @@ pub struct RunResponse {
     pub thinking: Option<serde_json::Map<String, serde_json::Value>>,
     /// Agent 工具调用轨迹（LLM→工具→结果），供对话面板展示
     pub tool_trace: Option<Vec<ToolTrace>>,
+    /// GCCP 两段式交互第一段：think.process 挂起，需要用户澄清
+    /// （gccp_need_interaction=true 时客户端进入问答轮）
+    #[serde(default)]
+    pub gccp_need_interaction: bool,
+    /// GCCP 交互问题集（id/question/hint/required），展示给用户收集答案
+    #[serde(default)]
+    pub gccp_questions: Vec<GccpQuestion>,
+}
+
+/// GCCP 目标澄清问题（think.process 第一段回传，见 gccp.h airy_gccp_question_t）
+#[derive(Debug, Clone, Deserialize)]
+pub struct GccpQuestion {
+    pub id: String,
+    pub question: String,
+    #[serde(default)]
+    pub hint: String,
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// 单次工具调用记录
