@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Paragraph},
     Frame,
 };
 use crate::app::{ActivePanel, App};
@@ -389,7 +389,7 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
         render_ime_cands(f, layout[idx], app);
         idx += 1;
     }
-    render_input_sep(f, layout[idx], app);
+    render_input_sep(f, layout[idx]);
 }
 
 /// 输入行（第一行）：`❯` 前缀 + 阶段引导/占位提示 + 输入文本 + 光标。
@@ -501,7 +501,7 @@ fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// 输入栏底部细分隔线（surface 背景 + BOTTOM 边框，与主内容区分）。
-fn render_input_sep(f: &mut Frame, area: Rect, app: &App) {
+fn render_input_sep(f: &mut Frame, area: Rect) {
     f.render_widget(
         Block::default()
             .style(Style::default().bg(theme::surface()))
