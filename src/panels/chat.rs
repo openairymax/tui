@@ -275,16 +275,50 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                 .collect();
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::styled(
-                    "任务事实确认",
-                    // 苹果轻量字重风格：无粗体，晶蓝
-                    Style::default().fg(theme::PRIMARY),
-                ),
+                Span::styled("任务事实确认", Style::default().fg(theme::PRIMARY)),
                 Span::styled(" ", Style::default()),
                 Span::styled(dots, Style::default().fg(theme::PRIMARY)),
                 Span::styled(format!("  {answered}/5"), Style::default().fg(theme::faint())),
             ]));
             lines.push(Line::raw(""));
+        }
+        FlowPhase::GccpClarify => {
+            // 服务端 GCCP 目标澄清（P-A）：问题集已由 think.process 回传，
+            // 逐条展示（id + 问题 + 提示），等待用户作答后携带 gccp_answers 重发。
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    "目标澄清",
+                    Style::default().fg(theme::PRIMARY),
+                ),
+                Span::styled(
+                    "  请回答以下问题（逐行作答，或输入「跳过」放弃本轮问答）",
+                    Style::default().fg(theme::dim()),
+                ),
+            ]));
+            lines.push(Line::raw(""));
+            if let Some(p) = &app.gccp_pending {
+                for (i, q) in p.questions.iter().enumerate() {
+                    let done = p.answers.contains_key(&q.id);
+                    let marker = if done { "●" } else { "○" };
+                    let mut spans = vec![Span::styled(
+                        format!("  {marker} "),
+                        Style::default().fg(theme::PRIMARY),
+                    )];
+                    spans.push(Span::styled(
+                        format!("{}. {}", i + 1, q.question),
+                        Style::default().fg(if done { theme::faint() } else { theme::ACCENT }),
+                    ));
+                    if !q.hint.is_empty() {
+                        spans.push(Span::styled(
+                            format!("  （{}）", q.hint),
+                            Style::default().fg(theme::faint()),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+                lines.push(Line::raw(""));
+            }
         }
         FlowPhase::GradConfirm => {
             lines.push(Line::from(vec![

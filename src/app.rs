@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::client::{GatewayClient, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval, RunResponse};
+use crate::client::{GccpQuestion, GatewayClient, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval, RunResponse};
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
 use crate::memory::{self, ConversationMemory};
 use crate::skills::{self, SkillStore};
@@ -130,6 +130,8 @@ pub struct App {
     pub flow_phase: FlowPhase,
     /// GCCP 五问状态（任务事实确认）
     pub gccp: GccpState,
+    /// GCCP 两段式交互第一段挂起状态（P-A，None = 无挂起；见 GccpPending）
+    pub gccp_pending: Option<GccpPending>,
     /// Skills 本地技能库（任务成功后自动沉淀经验）
     pub skills: Box<dyn SkillStore>,
     /// 首次启动向导（首次运行自动弹出；/hiairy 随时重开）
@@ -260,6 +262,8 @@ enum PendingKind {
         agent: Option<serde_json::Value>,
         /// 待继续请求携带的完整对话历史（连接通过后透传）
         history: Option<serde_json::Value>,
+        /// 待继续请求携带的 GCCP 交互答案 JSON（连接通过后透传）
+        gccp_answers: Option<String>,
     },
 }
 
@@ -286,6 +290,22 @@ enum PendingOutcome {
     Run(Result<RunResponse>),
     /// 连接检查结果（成功与否）
     Connect(bool),
+}
+
+/// GCCP 两段式交互第一段挂起状态（P-A）：think.process 返回
+/// gccp_need_interaction 后暂存问题集与原始请求，待用户作答后以
+/// gccp_answers 重发同一 prompt 完成澄清闭环（见 think_service.h）。
+pub struct GccpPending {
+    /// 原始用户输入（重发时作为 ChatRound.input，保持记忆/模式判定语义）
+    raw_input: String,
+    /// 原始 prompt（与第一段发送的一致，重发时保持同一任务上下文）
+    prompt: String,
+    /// 原始完整对话历史（重发时透传 gateway）
+    history: Option<serde_json::Value>,
+    /// 服务端回传的问题集（id/question/hint/required；panels/chat.rs 渲染用）
+    pub questions: Vec<GccpQuestion>,
+    /// 已收集答案（key = 问题 id；panels/chat.rs 渲染进度用）
+    pub answers: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl App {
@@ -320,6 +340,7 @@ impl App {
             },
             flow_phase: FlowPhase::Chat,
             gccp: GccpState::default(),
+            gccp_pending: None,
             skills: {
                 let s = skills::build_skill_store(None);
                 log::info!("skills: {} skills loaded", s.len());
@@ -1436,6 +1457,7 @@ impl App {
                 self.chat_round(&input)?;
             }
             FlowPhase::GccpRound(n) => self.gccp_round_n(n, &input)?,
+            FlowPhase::GccpClarify => self.gccp_clarify_answer(&input)?,
             FlowPhase::GradConfirm => self.grad_confirm(&input)?,
         }
 
@@ -1480,6 +1502,7 @@ impl App {
                 &prompt,
                 None,
                 history,
+                None,
             );
             return Ok(());
         }
@@ -1526,6 +1549,39 @@ impl App {
     fn apply_chat_result(&mut self, input: String, res: Result<RunResponse>) {
         match res {
             Ok(response) => {
+                // GCCP 两段式交互第一段（P-A）：think.process 判定输入需要
+                // 澄清并挂起，回传问题集（gccp_need_interaction=1）。进入目标
+                // 澄清轮：暂存问题集与原始请求，展示问题引导作答；不按普通
+                // 回复处理（无 Agent 消息/记忆写入/模式判定——本轮无实质结果）。
+                if response.gccp_need_interaction && !response.gccp_questions.is_empty() {
+                    let qcount = response.gccp_questions.len();
+                    log::info!(
+                        "apply_chat_result: GCCP 交互轮（{} 个澄清问题）",
+                        qcount
+                    );
+                    // 重发时保持与第一段一致的 prompt/history（同一任务上下文，
+                    // 引擎据此完成目标确认；此处重新构建，两轮间隔内记忆/技能
+                    // 状态稳定，产出等价上下文）。
+                    let prompt = self.build_context_prompt(&input);
+                    let history = self.build_history_messages(&prompt);
+                    self.gccp_pending = Some(GccpPending {
+                        raw_input: input.clone(),
+                        prompt,
+                        history,
+                        questions: response.gccp_questions,
+                        answers: Default::default(),
+                    });
+                    self.set_flow_phase(FlowPhase::GccpClarify);
+                    self.add_message(
+                        MessageRole::System,
+                        format!(
+                            "需要回答 {} 个澄清问题后继续（逐行作答，输入「跳过」放弃本轮问答）",
+                            qcount
+                        ),
+                    );
+                    return;
+                }
+
                 if let Some(t) = response.tokens_used {
                     self.tokens += t;
                 }
@@ -1656,6 +1712,58 @@ impl App {
             "检测到大任务集，进入「任务事实确认」（GCCP）阶段（共 5 问，逐一询问，每问之间我会先思考再提问）。".to_string(),
         );
         self.ask_gccp_round(1);
+    }
+
+    /// GCCP 两段式交互第二段（P-A）：处理目标澄清轮的用户作答，携带
+    /// gccp_answers 重发同一 prompt 完成澄清闭环。
+    ///
+    /// 输入语义：
+    ///   - 「跳过」/「skip」：放弃本轮问答，以空答案（{}）重发——引擎
+    ///     走降级确认继续（不与第一段无答案重发混淆，避免无限交互循环）；
+    ///   - 普通输入：逐行对应未回答的问题（支持 "1: xxx" 序号前缀），
+    ///     收集为 {"<question_id>":"<answer>",...} 答案 JSON。
+    fn gccp_clarify_answer(&mut self, input: &str) -> Result<()> {
+        let Some(pending) = self.gccp_pending.take() else {
+            self.set_flow_phase(FlowPhase::Chat);
+            return Ok(());
+        };
+        let t = input.trim();
+        let answers_json = if t.eq_ignore_ascii_case("跳过") || t.eq_ignore_ascii_case("skip") {
+            log::info!("gccp_clarify_answer: 用户放弃问答，以空答案重发（引擎降级确认）");
+            "{}".to_string()
+        } else {
+            let mut answers: std::collections::BTreeMap<String, serde_json::Value> =
+                pending.answers.clone();
+            let lines: Vec<String> = gccp::parse_answers(t)
+                .into_iter()
+                .filter(|s| !s.trim().is_empty())
+                .collect();
+            let unanswered: Vec<&GccpQuestion> = pending
+                .questions
+                .iter()
+                .filter(|q| !answers.contains_key(&q.id))
+                .collect();
+            for (i, q) in unanswered.iter().enumerate() {
+                if let Some(a) = lines.get(i) {
+                    answers.insert(q.id.clone(), serde_json::Value::String(a.clone()));
+                }
+            }
+            serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string())
+        };
+        self.add_message(
+            MessageRole::System,
+            "已收到目标澄清答案，继续处理…".to_string(),
+        );
+        // 重发同一请求（第二段）：原始用户输入作为 ChatRound.input（保持
+        // 记忆/模式判定语义），增强 prompt + 历史保持一致，答案透传 gateway。
+        self.dispatch_with_agent(
+            PendingKind::ChatRound { input: pending.raw_input },
+            &pending.prompt,
+            None,
+            pending.history,
+            Some(answers_json),
+        );
+        Ok(())
     }
 
     /// 向 LLM 请求生成指定轮次的问题并展示（round = 1..=5，每轮只问 1 个问题）。
@@ -1791,6 +1899,7 @@ impl App {
                 &prompt,
                 Some(agent_spec),
                 history,
+                None,
             );
         } else {
             // 用户反馈 → LLM 修订流程图（修订轮不走 agent 编排，保持对话式修订）
@@ -1925,7 +2034,7 @@ impl App {
 
     /// 分派一个后台 LLM 请求：已连接直接发起；未连接先检查连接，通过后继续。
     fn dispatch(&mut self, kind: PendingKind, prompt: &str) {
-        self.dispatch_with_agent(kind, prompt, None, None);
+        self.dispatch_with_agent(kind, prompt, None, None, None);
     }
 
     /// 分派一个后台请求，可携带 agent 编排 spec（任务执行场景：gateway
@@ -1933,25 +2042,28 @@ impl App {
     ///
     /// `history`：完整对话历史（OpenAI messages 数组，含当前输入作为末条
     /// user 消息）；携带时 gateway 以整个数组作为工具循环初始上下文。
+    /// `gccp_answers`：GCCP 两段式交互第二段答案 JSON（可 None）。
     fn dispatch_with_agent(
         &mut self,
         kind: PendingKind,
         prompt: &str,
         agent: Option<serde_json::Value>,
         history: Option<serde_json::Value>,
+        gccp_answers: Option<String>,
     ) {
         log::trace!(
-            "dispatch: {:?}（prompt_len={}，connected={}，agent={}，history={}）",
+            "dispatch: {:?}（prompt_len={}，connected={}，agent={}，history={}，gccp_answers={}）",
             kind,
             prompt.len(),
             self.connected,
             agent.is_some(),
-            history.is_some()
+            history.is_some(),
+            gccp_answers.is_some()
         );
         if self.connected {
-            self.start_pending(kind, prompt, agent, history);
+            self.start_pending(kind, prompt, agent, history, gccp_answers);
         } else {
-            self.start_connect_then(kind, prompt, agent, history);
+            self.start_connect_then(kind, prompt, agent, history, gccp_answers);
         }
     }
 
@@ -1959,12 +2071,14 @@ impl App {
     ///
     /// `agent`：携带时请求经 agent_d 编排执行（spawn+invoke），否则纯 LLM 对话。
     /// `history`：完整对话历史（OpenAI messages 数组），随请求透传 gateway。
+    /// `gccp_answers`：GCCP 两段式交互第二段答案 JSON（可 None，透传 think.process）。
     fn start_pending(
         &mut self,
         kind: PendingKind,
         prompt: &str,
         agent: Option<serde_json::Value>,
         history: Option<serde_json::Value>,
+        gccp_answers: Option<String>,
     ) {
         let gateway = self.gateway.clone();
         let agent_file = self.agent_file.clone();
@@ -1982,7 +2096,7 @@ impl App {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let r = gateway
-                .send_message(&prompt, &agent_file, model.as_deref(), Some(&sid_for_task), agent, history)
+                .send_message(&prompt, &agent_file, model.as_deref(), Some(&sid_for_task), agent, history, gccp_answers.as_deref())
                 .await;
             let _ = tx.send(PendingOutcome::Run(r));
         });
@@ -2040,6 +2154,8 @@ impl App {
                 cost_usd: None,
                 thinking: None,
                 tool_trace: None,
+                gccp_need_interaction: false,
+                gccp_questions: Vec::new(),
             })));
         });
         log::info!("start_stream_pending: 流式请求已发起（session={}）", session_id);
@@ -2072,6 +2188,7 @@ impl App {
         prompt: &str,
         agent: Option<serde_json::Value>,
         history: Option<serde_json::Value>,
+        gccp_answers: Option<String>,
     ) {
         log::debug!("start_connect_then: 未连接，先做健康检查后继续（kind={:?}）", kind);
         let gateway = self.gateway.clone();
@@ -2093,6 +2210,7 @@ impl App {
                 prompt,
                 agent,
                 history,
+                gccp_answers,
             },
             task: Some(task),
             session_id: String::new(),
@@ -2654,13 +2772,17 @@ impl App {
                     self.apply_distill_result(res);
                 }
             }
-            PendingKind::CheckConnect { kind, prompt, agent, history } => match outcome {
-                PendingOutcome::Connect(true) => {
-                    // 连接成功：继续执行真实请求（loading 由 start_pending 重新置位）
-                    log::info!("apply_result: 连接检查通过，继续执行请求（kind={:?}）", kind);
-                    self.connected = true;
-                    self.start_pending(*kind, &prompt, agent, history);
-                }
+            PendingKind::CheckConnect { kind, prompt, agent, history, gccp_answers } => {
+                match outcome {
+                    PendingOutcome::Connect(true) => {
+                        // 连接成功：继续执行真实请求（loading 由 start_pending 重新置位）
+                        log::info!(
+                            "apply_result: 连接检查通过，继续执行请求（kind={:?}）",
+                            kind
+                        );
+                        self.connected = true;
+                        self.start_pending(*kind, &prompt, agent, history, gccp_answers);
+                    }
                 _ => {
                     // 连接检查失败：若正在进行任务收尾（技能蒸馏），仍需结束任务流，
                     // 否则会卡在 Executing 阶段——「技能沉淀」被跳过且无法继续对话。
@@ -2679,6 +2801,7 @@ impl App {
                                 .to_string(),
                         );
                     }
+                }
                 }
             },
         }

@@ -318,11 +318,12 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// 阶段徽章配色（对话 / 任务事实确认 / 任务流程图确认 / 任务集）
+/// 阶段徽章配色（对话 / 任务事实确认 / 目标澄清 / 任务流程图确认 / 任务集）
 fn phase_badge(phase: FlowPhase) -> (String, ratatui::style::Color) {
     match phase {
         FlowPhase::Chat => (" 对话 ".into(), theme::SUCCESS),
         FlowPhase::GccpRound(_) => (" 任务事实确认 ".into(), theme::PRIMARY),
+        FlowPhase::GccpClarify => (" 目标澄清 ".into(), theme::PRIMARY),
         FlowPhase::GradConfirm => (" 任务流程图确认 ".into(), theme::MAGENTA),
         FlowPhase::Executing => (" 任务集 ".into(), theme::WARNING),
     }
@@ -341,6 +342,7 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
         let wait_hint = match app.flow_phase {
             FlowPhase::Chat => "…".to_string(),
             FlowPhase::GccpRound(n) => format!("正在思考第 {} 问…", n),
+            FlowPhase::GccpClarify => "正在汇总目标澄清答案…".to_string(),
             FlowPhase::GradConfirm => "正在生成任务流程图…".to_string(),
             FlowPhase::Executing => match app.task_control {
                 crate::gccp::TaskControl::Paused => "已暂停，Ctrl+Z 恢复…".to_string(),
