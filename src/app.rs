@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use crate::client::{GccpQuestion, GatewayClient, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval, RunResponse};
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
+use crate::ime::ImeEngine;
 use crate::memory::{self, ConversationMemory};
 use crate::skills::{self, SkillStore};
 use crate::wizard;
@@ -126,6 +127,14 @@ pub struct App {
     pub task_mode: bool,
     /// 对话记忆后端（跨会话"记得住"）
     pub memory: Box<dyn ConversationMemory>,
+    /// 内置拼音输入法引擎（词典加载失败/库未链接时为 None → IME 禁用）
+    pub ime_engine: Option<ImeEngine>,
+    /// IME 拼音态：true = 输入法开启（a-z 进拼音缓冲，1-9/空格选字）
+    pub ime_active: bool,
+    /// 拼音缓冲（仅小写 [a-z]；ü 以 v 表示）
+    pub ime_buf: String,
+    /// 当前拼音的候选词（UTF-8，频次降序，最多 9 个）
+    pub ime_cands: Vec<String>,
     /// 任务流阶段（对话 / GCCP 任务事实确认 / GRAD 任务流程图确认 / 执行）
     pub flow_phase: FlowPhase,
     /// GCCP 五问状态（任务事实确认）
@@ -338,6 +347,16 @@ impl App {
                 log::info!("memory: {} records loaded", m.len());
                 m
             },
+            ime_engine: {
+                let e = ImeEngine::load();
+                if e.is_none() {
+                    log::warn!("ime: 输入法不可用（词典缺失或库未链接），F10 无效");
+                }
+                e
+            },
+            ime_active: false,
+            ime_buf: String::new(),
+            ime_cands: Vec::new(),
             flow_phase: FlowPhase::Chat,
             gccp: GccpState::default(),
             gccp_pending: None,
@@ -571,6 +590,114 @@ impl App {
         }
         // 历史回填后光标置于末尾（readline 惯例）
         self.cursor = self.input.len();
+    }
+
+    // ─────────── 内置拼音输入法（F10 切换，语义与 CLI cli_tui.c 对齐） ───────────
+
+    /// 候选条是否可见：引擎就绪 && 拼音态 && 拼音缓冲非空。
+    /// 空缓冲时不占输入框上方一行（与 C 侧 tui_ime_draw_cands 一致）。
+    pub fn ime_visible(&self) -> bool {
+        self.ime_engine.is_some() && self.ime_active && !self.ime_buf.is_empty()
+    }
+
+    /// F10 切换中/英。切回英文时把拼音原文上屏（保留在输入行）。
+    /// 词典缺失/库未链接（engine None）时无效果。
+    pub fn ime_toggle(&mut self) {
+        if self.ime_engine.is_none() {
+            return;
+        }
+        self.ime_active = !self.ime_active;
+        if !self.ime_active {
+            self.ime_commit_raw();
+        }
+    }
+
+    /// 以当前拼音缓冲刷新候选列表。
+    fn ime_refresh(&mut self) {
+        if let Some(eng) = &self.ime_engine {
+            self.ime_cands = eng.query(&self.ime_buf);
+        } else {
+            self.ime_cands.clear();
+        }
+    }
+
+    /// 拼音原文上屏（插入输入行光标处），清空拼音缓冲与候选。
+    pub fn ime_commit_raw(&mut self) {
+        if !self.ime_buf.is_empty() {
+            let buf = std::mem::take(&mut self.ime_buf);
+            self.input_insert_text(&buf);
+        }
+        self.ime_buf.clear();
+        self.ime_cands.clear();
+    }
+
+    /// 候选字上屏：清空拼音缓冲并保持拼音模式（连续词组输入不中断）。
+    fn ime_commit_cand(&mut self, idx: usize) {
+        if let Some(text) = self.ime_cands.get(idx).cloned() {
+            self.input_insert_text(&text);
+        }
+        self.ime_buf.clear();
+        self.ime_cands.clear();
+    }
+
+    /// 拼音态按键处理（仅 ime_active 时调用）。返回 true = 已消费该键。
+    pub fn ime_input_char(&mut self, c: char) -> bool {
+        if !self.ime_active || self.ime_engine.is_none() {
+            return false;
+        }
+        match c {
+            'a'..='z' => {
+                self.ime_buf.push(c);
+                self.ime_refresh();
+            }
+            '1'..='9' => {
+                let i = (c as usize) - ('1' as usize);
+                if i < self.ime_cands.len() {
+                    self.ime_commit_cand(i);
+                }
+            }
+            ' ' => {
+                if !self.ime_cands.is_empty() {
+                    self.ime_commit_cand(0);
+                } else {
+                    // 无候选：空格输出拼音原文
+                    self.ime_commit_raw();
+                }
+            }
+            _ => {
+                // 标点/数字等：先提交拼音原文并退出拼音模式，按键继续
+                // 走正常输入路径（由调用方在返回 false 后处理）
+                self.ime_commit_raw();
+                self.ime_active = false;
+                return false;
+            }
+        }
+        true
+    }
+
+    /// 拼音态退格：删拼音（空则退出拼音态）。返回 true = 已消费。
+    pub fn ime_backspace(&mut self) -> bool {
+        if !self.ime_active {
+            return false;
+        }
+        if !self.ime_buf.is_empty() {
+            self.ime_buf.pop();
+            self.ime_refresh();
+        } else {
+            self.ime_active = false;
+        }
+        true
+    }
+
+    /// 拼音态 Enter 提交：拼音原文上屏 + 退出拼音态（随后由调用方处理
+    /// 整行提交）。返回 true = 已有拼音态需要先提交。
+    pub fn ime_commit_enter(&mut self) -> bool {
+        if !self.ime_active {
+            return false;
+        }
+        self.ime_commit_raw();
+        self.ime_active = false;
+        true
     }
 
     // ─────────── 输入编辑（光标感知，readline 风格） ───────────

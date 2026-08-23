@@ -21,8 +21,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    // 无论是否找到库都声明 mr_linked cfg，避免 rustc 1.80+ unexpected_cfgs 告警
+    // 无论是否找到库都声明 mr_linked / ime_linked cfg，避免 rustc 1.80+ unexpected_cfgs 告警
     println!("cargo:rustc-check-cfg=cfg(mr_linked)");
+    println!("cargo:rustc-check-cfg=cfg(ime_linked)");
 
     #[cfg(feature = "memoryrovol")]
     {
@@ -68,6 +69,30 @@ fn main() {
             println!("cargo:warning=memoryrovol: libagentrt_memoryrovol.a not found, TUI memory falls back to JsonlMemory");
         }
     }
+
+    #[cfg(feature = "ime")]
+    {
+        println!("cargo:rerun-if-env-changed=AIRY_COMMON_LIB");
+        println!("cargo:rerun-if-env-changed=AIRY_HOME");
+        println!("cargo:rerun-if-changed=build.rs");
+
+        if let Some(lib) = locate_common_lib() {
+            if is_asan_instrumented(&lib) {
+                println!(
+                    "cargo:warning=ime: {} carries ASan instrumentation and cannot be linked into the TUI; IME disabled",
+                    lib.display()
+                );
+                return;
+            }
+            let dir = lib.parent().expect("lib path has parent dir");
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=static=airy_common");
+            println!("cargo:rustc-cfg=ime_linked");
+            println!("cargo:warning=ime: linked libairy_common.a ({})", lib.display());
+        } else {
+            println!("cargo:warning=ime: libairy_common.a not found, builtin pinyin IME disabled (F10 unavailable)");
+        }
+    }
 }
 
 /// 按优先级定位 libagentrt_memoryrovol.a：
@@ -102,10 +127,39 @@ fn locate_lib() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+/// 按优先级定位 libairy_common.a（airy_ime 符号所在，agentrt commons 静态库）：
+///   1. AIRY_COMMON_LIB env（显式指定，交叉构建首选）
+///   2. $AIRY_HOME/lib/libairy_common.a（安装前缀）
+///   3. agentrt 源码树标准构建产物 agentrt/build/commons/libairy_common.a
+///   4. AIRYRT_HOME/agentrt/build/commons/libairy_common.a（伞仓环境变量）
+/// 注意：libairy_common.a 必须来自无 sanitizer 构建（ENABLE_SANITIZERS=OFF），
+/// 否则 __asan_* 符号无法被 Rust 独立链接（is_asan_instrumented 兜底拒绝）。
+#[cfg(feature = "ime")]
+fn locate_common_lib() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = env::var("AIRY_COMMON_LIB") {
+        candidates.push(PathBuf::from(p));
+    }
+    if let Ok(home) = env::var("AIRY_HOME") {
+        candidates.push(PathBuf::from(home).join("lib").join("libairy_common.a"));
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    candidates.push(
+        manifest
+            .join("../../agentrt/build/commons/libairy_common.a"),
+    );
+    if let Ok(rt_home) = env::var("AIRYRT_HOME") {
+        candidates.push(
+            PathBuf::from(rt_home)
+                .join("agentrt/build/commons/libairy_common.a"),
+        );
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 /// 检测静态库是否携带 ASan 插桩（引用 __asan_* 符号）。
 /// agentrt 默认 Release 构建（ENABLE_SANITIZERS=ON）产物无法被 TUI 独立
 /// 链接；OSS 独立构建（products/memoryrovol/build_oss）无插桩，可直接链接。
-#[cfg(feature = "memoryrovol")]
 fn is_asan_instrumented(lib: &Path) -> bool {
     Command::new("nm")
         .arg("-u")
