@@ -712,6 +712,7 @@ impl App {
         // 候选：/ 命令 + 本地技能名
         let mut cands: Vec<String> = vec![
             "/model".into(),
+            "/set-key".into(),
             "/hiairy".into(),
             "/help".into(),
             "/clear".into(),
@@ -788,6 +789,63 @@ impl App {
             MessageRole::System,
             format!("模型已设置为：{}（已持久化）", self.model),
         );
+    }
+
+    /// /set-key 命令：便捷写入 $AIRY_HOME/config/secrets.env 中的模型 API Key
+    /// （F2 配置面板 API Key 配置节的编辑入口；llm_d 热加载，无需重启）。
+    ///
+    ///   /set-key                         → 列出已知 Key 与用法
+    ///   /set-key DEEPSEEK_API_KEY sk-…  → 写入（原位替换 / 追加，chmod 600）
+    fn cmd_set_key(&mut self, input: &str) {
+        let rest = input.trim_start_matches("/set-key").trim();
+        // 无参数：提示用法与已知 Key 清单
+        if rest.is_empty() {
+            let known: Vec<&str> = crate::secrets::KNOWN_KEYS.iter().map(|(k, _)| *k).collect();
+            self.add_message(
+                MessageRole::System,
+                format!("用法：/set-key <KEY> <VALUE>（写入 $AIRY_HOME/config/secrets.env，chmod 600）\n已知 Key：{}", known.join(" / ")),
+            );
+            return;
+        }
+        let (key, value) = match rest.split_once(char::is_whitespace) {
+            Some((k, v)) => (k.trim(), v.trim()),
+            None => (rest.trim(), ""),
+        };
+        if !crate::secrets::valid_key_name(key) {
+            self.add_message(
+                MessageRole::System,
+                format!("Key 名非法：{}（应为大写下划线，如 DEEPSEEK_API_KEY）", key),
+            );
+            return;
+        }
+        if value.is_empty() {
+            self.add_message(
+                MessageRole::System,
+                format!("用法：/set-key {} <VALUE>（值不能为空）", key),
+            );
+            return;
+        }
+        match crate::secrets::set_key(key, value) {
+            Ok(()) => {
+                self.add_log("INFO", format!("API Key {} 已写入 secrets.env", key));
+                self.add_message(
+                    MessageRole::System,
+                    format!(
+                        "API Key {} 已写入 {}（{}）",
+                        key,
+                        crate::secrets::secrets_path().display(),
+                        crate::secrets::mask(value)
+                    ),
+                );
+            }
+            Err(e) => {
+                self.add_log("ERROR", format!("写入 secrets.env 失败：{}", e));
+                self.add_message(
+                    MessageRole::System,
+                    format!("写入 secrets.env 失败：{}", e),
+                );
+            }
+        }
     }
 
     /// /status 命令：展示运行时状态总览（连接/版本/模型/用量/记忆/技能）。
@@ -1332,6 +1390,12 @@ impl App {
         let lower = input.to_ascii_lowercase();
         if lower == "/model" || lower.starts_with("/model ") {
             self.cmd_model(&input);
+            return Ok(());
+        }
+
+        // /set-key：便捷写入 secrets.env 中的模型 API Key（F2 配置面板编辑入口）
+        if lower == "/set-key" || lower.starts_with("/set-key ") {
+            self.cmd_set_key(&input);
             return Ok(());
         }
 
@@ -3127,6 +3191,7 @@ fn build_help_text() -> Vec<String> {
         "  Alt+1..9    - 切换会话（Alt+1 = 主会话，Alt+N = 第 N 个 tab）".to_string(),
         "  /hiairy     - 重新打开首次启动向导".to_string(),
         "  /model      - 查看当前模型；/model <模型名> 切换并持久化".to_string(),
+        "  /set-key    - 写入模型 API Key：/set-key <KEY> <VALUE>（写回 secrets.env，chmod 600）".to_string(),
         "  /status     - 运行时状态总览（连接/版本/模型/用量/记忆/技能）".to_string(),
         "  /skills     - 列出本地技能库（任务成功自动沉淀）".to_string(),
         "  /memory     - 记忆统计面板（F4 等价）".to_string(),

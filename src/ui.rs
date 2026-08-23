@@ -31,12 +31,14 @@ use crate::wizard;
 
 /// 输入光标字符（黑白两色交替闪动，替代终端方块光标）
 const BREATH_CURSOR: &str = "▍";
-/// 光标闪烁周期（ms）：黑白两态各 500ms（≈ Word 默认光标闪动频率）
-const BLINK_PERIOD_MS: u128 = 1000;
 
-/// 2.2.1.4 光标颜色：黑白两色交替（Word 风格，半周期 ≈500ms）。
+/// 2.2.1.4 光标颜色：黑白两色交替（Word 风格）。Word 默认光标闪烁
+/// 周期 ≈530ms（Windows 控制台 530ms 全周期），半周期取 265ms。
 /// 深色终端白色可见、浅色终端黑色可见——任一时刻都保证与背景高对比；
 /// 对当前背景不可见的那一态即"灭"，形成经典块状闪烁，视觉引导科学。
+const BLINK_PERIOD_MS: u128 = 530;
+
+/// 2.2.1.4 光标颜色：黑白两色交替（Word 风格，半周期 ≈265ms）。
 fn blink_cursor_color(elapsed_ms: u128) -> ratatui::style::Color {
     if (elapsed_ms % BLINK_PERIOD_MS) < BLINK_PERIOD_MS / 2 {
         ratatui::style::Color::White

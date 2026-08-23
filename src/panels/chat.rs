@@ -112,6 +112,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         append_welcome(&mut lines, width, viewport, app);
     } else {
         let mut is_first = true;
+        let mut prev_is_tool = false;
         for msg in app.messages.iter() {
             if msg.role == MessageRole::User && !is_first {
                 push_turn_separator(&mut lines, app);
@@ -120,7 +121,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             if msg.role == MessageRole::System {
                 fold_spans.push((lines.len(), lines.len()));
             }
-            append_message(&mut lines, msg, width);
+            // 连续工具调用/结果紧凑呈现（Claude Code 风格）：工具与结果之间
+            // 不留空行，形成一组紧凑的 `[Sub xxx Agent]` 状态行
+            let is_tool =
+                matches!(msg.role, MessageRole::ToolCall | MessageRole::ToolResult);
+            append_message(&mut lines, msg, width, prev_is_tool && is_tool);
+            prev_is_tool = is_tool;
             if msg.role == MessageRole::System {
                 if let Some(span) = fold_spans.last_mut() {
                     span.1 = lines.len();
@@ -188,7 +194,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             content: revealed,
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
         };
-        append_message(&mut lines, &streaming_msg, width);
+        append_message(&mut lines, &streaming_msg, width, false);
     }
 
     if app.loading {
@@ -496,11 +502,22 @@ fn push_turn_separator(lines: &mut Vec<Line>, app: &App) {
 ///   [Sub xxx Agent]  品红 子代理与执行体（xxx = 代理类型，取自工具名）
 /// 时间戳展示在头部行；内容固定缩进 4 列；用户消息以气泡背景色块区分，
 /// 其余角色左对齐流式。
-fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: usize) {
+///
+/// 2.2.1.5 任务 2 强化：
+///   - 角色着色：用户 [For Thee] 晶蓝（PRIMARY，与助手绿区分）、助手绿、思考链 dim、
+///     工具调用品红 / 工具结果青（Claude Code 风格双色）；
+///   - 思考链（System）整体以 dim 色呈现（live 视口折叠为 dim 色块，浏览展开）；
+///   - 工具调用/结果单行紧凑预览（截断 + …），连续工具消息间不留空行（compact）。
+fn append_message(
+    lines: &mut Vec<Line>,
+    msg: &crate::app::ChatMessage,
+    width: usize,
+    compact: bool,
+) {
     let (name, color) = match msg.role {
-        MessageRole::User => ("[For Thee]".to_string(), theme::CYAN),
+        MessageRole::User => ("[For Thee]".to_string(), theme::PRIMARY),
         MessageRole::Agent => ("[Super Agent]".to_string(), theme::SUCCESS),
-        MessageRole::System => ("[Dual Think]".to_string(), theme::WARNING),
+        MessageRole::System => ("[Dual Think]".to_string(), theme::dim()),
         MessageRole::ToolCall | MessageRole::ToolResult => {
             // [Sub <tag> Agent]：tag 取工具名（ToolCall 首 token）；ToolResult
             // 是工具结果（JSON 等），无工具名可识别时回退 "exec"
@@ -509,7 +526,13 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
                 first.starts_with('{') || first.starts_with('[') || first.starts_with('"');
             let tag = if first.is_empty() || is_jsonish { "exec" } else { first };
             let tag: String = tag.chars().take(12).collect();
-            (format!("[Sub {} Agent]", tag), theme::MAGENTA)
+            // 工具调用品红（调用侧）· 工具结果青（回传侧），Claude Code 风格
+            let c = if msg.role == MessageRole::ToolCall {
+                theme::MAGENTA
+            } else {
+                theme::CYAN
+            };
+            (format!("[Sub {} Agent]", tag), c)
         }
     };
 
@@ -548,9 +571,9 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
     // 内容统一固定缩进 4 列（Claude 式克制排版；此前随角色名长度参差）
     const INDENT: usize = 4;
 
-    // 工具调用/结果为次要信息：轻量 dim 色
+    // 工具调用/结果与思考链为次要信息：轻量 dim 色
     let base = match msg.role {
-        MessageRole::ToolCall | MessageRole::ToolResult => {
+        MessageRole::ToolCall | MessageRole::ToolResult | MessageRole::System => {
             Style::default().fg(theme::dim())
         }
         _ => Style::default().fg(theme::text()),
@@ -560,6 +583,18 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
         lines.push(Line::from(Span::styled(
             format!("{:width$}（空）", "", width = INDENT),
             Style::default().fg(theme::faint()),
+        )));
+    } else if matches!(msg.role, MessageRole::ToolCall | MessageRole::ToolResult) {
+        // 工具调用/结果单行紧凑预览（Claude Code 风格）：首行截断 + …
+        let max = width.saturating_sub(INDENT + 3).max(8);
+        let first_line = msg.content.lines().next().unwrap_or("").trim();
+        let mut preview: String = first_line.chars().take(max).collect();
+        if first_line.chars().count() > max || msg.content.lines().count() > 1 {
+            preview.push('…');
+        }
+        lines.push(Line::from(Span::styled(
+            format!("{:width$}{}", "", preview, width = INDENT),
+            base,
         )));
     } else {
         let mut rendered = crate::markdown::render(&msg.content, INDENT, width, base);
@@ -578,21 +613,31 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
         lines.extend(rendered);
     }
 
-    // 消息间留白（替代粗分隔线，视觉更轻）
-    lines.push(Line::raw(""));
+    // 消息间留白（替代粗分隔线，视觉更轻）；连续工具消息（compact）不插空行
+    if !compact {
+        lines.push(Line::raw(""));
+    }
 }
 
-/// 欢迎页英雄区（无消息时，顶部对齐，随终端大小自适应）。
-/// 2.2.1.5.2 改进（2026-08-23）：与顶部英雄区明确分工——顶部负责实时
-/// 运行状态（连接/模型/计费/会话统计），本区为「空态引导卡」：品牌 +
-/// 项目上下文 + 快捷键引导，顶部对齐不再垂直居中（原实现居中导致
-/// "英雄区卡在页面中间"），信息不与顶部重复，视觉轻量清晰。
+/// 欢迎页品牌英雄区（无消息时，顶部对齐，随终端大小自适应）。
+/// 2.2.1.5 任务 1 强化（2026-08-23）：完整品牌英雄区——
+///   · 品牌：◈ AirymaxRT + 版本 + tagline「极境智能体运行平台」
+///   · 运行时状态：连接灯 + 在线 daemon 计数 + 在线 Agent +
+///     核心链路 llm · think · agent · tool
+///   · 会话信息：会话数 / 模型 / token / 成本 / 记忆条数
+///   · 硬件快照：架构 / 内存总量·可用 / 加速器（探测失败显示占位）
+///   · 快捷键提示行
+/// 布局轻盈（留白呼吸感）、theme 函数取色、顶部对齐不居中。
 fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, app: &'a App) {
     let ver = env!("CARGO_PKG_VERSION");
     let proj = if app.project_context.is_empty() {
-        "未加载项目上下文（F2 配置 / /project 加载）"
+        "未加载项目上下文（F2 配置 / /project 加载）".to_string()
     } else {
-        app.project_context.lines().next().unwrap_or("已加载项目上下文")
+        app.project_context
+            .lines()
+            .next()
+            .unwrap_or("已加载项目上下文")
+            .to_string()
     };
 
     // 高度过小（<8 行）：仅输出精简品牌行，不画边框，避免挤占
@@ -603,45 +648,143 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
                 Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
-            Span::styled("  ·  输入消息开始对话", Style::default().fg(theme::dim())),
+            Span::styled(
+                "  ·  极境智能体运行平台 · 输入消息开始对话",
+                Style::default().fg(theme::dim()),
+            ),
         ]));
         return;
     }
 
-    let content_max = width.saturating_sub(10);
+    let border_w = width.saturating_sub(2).min(72);
+    let content_max = border_w.saturating_sub(2).max(8);
     let mut hero: Vec<Line> = Vec::new();
 
-    // 品牌行：名称 + 版本 + 定位标语
+    // 品牌行：名称 + 版本 + tagline
     hero.push(Line::from(vec![
         Span::styled(
             "◈ AirymaxRT",
             Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
-        Span::styled("  ·  极境智能体运行平台", Style::default().fg(theme::dim())),
+        Span::styled("   ·   极境智能体运行平台", Style::default().fg(theme::dim())),
     ]));
     hero.push(Line::raw(""));
 
-    // 项目上下文行
-    let proj_disp: String = proj.chars().take(content_max.saturating_sub(2)).collect();
+    // 运行时状态：连接灯 + 在线 daemon 计数 + 在线 Agent
+    let (light, label, color) = if app.connected {
+        ("●", "ONLINE", theme::SUCCESS)
+    } else if app.loading {
+        ("◐", "WAITING", theme::WARNING)
+    } else {
+        ("●", "OFFLINE", theme::DANGER)
+    };
+    // 在线 daemon 计数：无持久状态时显示占位（/daemons 可查 16 个 daemon）
+    let agents = app.hall_board.as_ref().map(|b| b.agents.len()).unwrap_or(0);
     hero.push(Line::from(vec![
-        Span::styled("项目  ", Style::default().fg(theme::dim())),
+        Span::styled("  ", Style::default()),
+        Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {label}"), Style::default().fg(color)),
+        Span::styled(
+            format!(
+                "   ·   daemon 在线 —   ·   在线 Agent {}",
+                if agents > 0 {
+                    agents.to_string()
+                } else {
+                    "—".to_string()
+                }
+            ),
+            Style::default().fg(theme::dim()),
+        ),
+        Span::styled(
+            "   ·   （/daemons 查看）",
+            Style::default().fg(theme::faint()),
+        ),
+    ]));
+
+    // 核心链路 chips：llm · think · agent · tool
+    let chain = [
+        ("llm", theme::ACCENT),
+        ("think", theme::WARNING),
+        ("agent", theme::SUCCESS),
+        ("tool", theme::MAGENTA),
+    ];
+    let mut chain_spans: Vec<Span> =
+        vec![Span::styled("  核心链路  ", Style::default().fg(theme::dim()))];
+    for (i, (name, c)) in chain.iter().enumerate() {
+        if i > 0 {
+            chain_spans.push(Span::styled(" · ", Style::default().fg(theme::faint())));
+        }
+        chain_spans.push(Span::styled(
+            *name,
+            Style::default().fg(*c).add_modifier(Modifier::BOLD),
+        ));
+    }
+    hero.push(Line::from(chain_spans));
+    hero.push(Line::raw(""));
+
+    // 会话信息：会话数 / 模型 / token / 成本 / 记忆
+    let model_text = if app.model.is_empty() {
+        "默认模型".to_string()
+    } else {
+        app.model.clone()
+    };
+    let model_disp: String = model_text.chars().take(24).collect();
+    hero.push(Line::from(vec![
+        Span::styled("  会话  ", Style::default().fg(theme::faint())),
+        Span::styled(format!("{}", app.tab_count()), Style::default().fg(theme::text())),
+        Span::styled("  ·  模型  ", Style::default().fg(theme::faint())),
+        Span::styled(
+            model_disp,
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ·  ", Style::default().fg(theme::faint())),
+        Span::styled(format!("{} tok", app.tokens), Style::default().fg(theme::dim())),
+        Span::styled("  ·  ", Style::default().fg(theme::faint())),
+        Span::styled(format!("${:.4}", app.cost), Style::default().fg(theme::dim())),
+        Span::styled("  ·  记忆  ", Style::default().fg(theme::faint())),
+        Span::styled(
+            format!("{}", app.memory.len()),
+            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // 硬件快照：架构 / 内存 / 加速器（数据探测失败显示占位）
+    let (mem_total, mem_avail) = crate::panels::config::mem_snapshot();
+    let hw = format!(
+        "{} · 内存 {} / {} · 加速器 {}",
+        crate::panels::config::arch_snapshot(),
+        mem_total,
+        mem_avail,
+        crate::panels::config::accelerator_snapshot(),
+    );
+    let hw_disp: String = hw.chars().take(content_max.saturating_sub(6)).collect();
+    hero.push(Line::from(vec![
+        Span::styled("  硬件  ", Style::default().fg(theme::faint())),
+        Span::styled(hw_disp, Style::default().fg(theme::dim())),
+    ]));
+
+    // 项目上下文行（未加载时给出引导）
+    let proj_disp: String = proj.chars().take(content_max.saturating_sub(6)).collect();
+    hero.push(Line::from(vec![
+        Span::styled("  项目  ", Style::default().fg(theme::faint())),
         Span::styled(proj_disp, Style::default().fg(theme::text())),
     ]));
     hero.push(Line::raw(""));
 
-    // 快捷键引导
+    // 快捷键提示行
+    let hint = "输入消息 Enter 发送 · F1 帮助 · F2 配置 · F3 日志 · F4 记忆 · F5 插件 · F6 看板 · F7 事件 · F8 CLI · Ctrl+C 退出";
+    let hint_disp: String = hint.chars().take(content_max.saturating_sub(2)).collect();
     hero.push(Line::from(vec![
-        Span::styled("输入消息 Enter 发送 · ", Style::default().fg(theme::dim())),
-        Span::styled("F1 帮助 · F2 配置 · F3 日志 · F4 记忆 · F6 看板 · F8 切换 CLI",
-                     Style::default().fg(theme::faint())),
+        Span::styled("  ", Style::default()),
+        Span::styled(hint_disp, Style::default().fg(theme::faint())),
     ]));
 
-    // 顶部对齐：先输出 1 行呼吸空间，不再垂直居中
+    // 顶部对齐：先输出 1 行呼吸空间，不垂直居中
     lines.push(Line::raw(""));
 
     // 边框（上下线 + 左右竖线），主题色为晶蓝
-    let border = if width >= 44 { "─".repeat(width.saturating_sub(2).min(72)) } else { String::new() };
+    let border = "─".repeat(border_w);
     if width >= 44 {
         lines.push(Line::from(vec![
             Span::styled("╭", Style::default().fg(theme::PRIMARY)),
@@ -761,7 +904,7 @@ mod tests {
                 content: content.to_string(),
                 timestamp: "00:00:00".to_string(),
             };
-            append_message(&mut lines, &msg, 80);
+            append_message(&mut lines, &msg, 80, false);
             assert!(
                 !lines.is_empty(),
                 "role {:?}: 应至少渲染头部行",
@@ -788,7 +931,7 @@ mod tests {
             content: String::new(),
             timestamp: "00:00:00".to_string(),
         };
-        append_message(&mut lines, &msg, 80);
+        append_message(&mut lines, &msg, 80, false);
         assert!(lines[0].to_string().starts_with("[Sub exec Agent]"));
     }
 
@@ -802,7 +945,7 @@ mod tests {
             content: "very_long_tool_name_that_exceeds_budget args".to_string(),
             timestamp: "00:00:00".to_string(),
         };
-        append_message(&mut lines, &msg, 80);
+        append_message(&mut lines, &msg, 80, false);
         assert!(lines[0].to_string().starts_with("[Sub very_long_to Agent]"));
     }
 
