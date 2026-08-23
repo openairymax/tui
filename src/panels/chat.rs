@@ -582,53 +582,45 @@ fn append_message(lines: &mut Vec<Line>, msg: &crate::app::ChatMessage, width: u
     lines.push(Line::raw(""));
 }
 
-/// 欢迎页英雄区（无消息时，垂直+水平居中，随终端大小自适应）。
-/// 2.2.1.5.2：升级为完整英雄区——品牌 + 实时状态（连接/模型/计费）+ 项目
-/// 上下文 + 快捷键引导，晶蓝主题边框；不再是最简四行文字。
+/// 欢迎页英雄区（无消息时，顶部对齐，随终端大小自适应）。
+/// 2.2.1.5.2 改进（2026-08-23）：与顶部英雄区明确分工——顶部负责实时
+/// 运行状态（连接/模型/计费/会话统计），本区为「空态引导卡」：品牌 +
+/// 项目上下文 + 快捷键引导，顶部对齐不再垂直居中（原实现居中导致
+/// "英雄区卡在页面中间"），信息不与顶部重复，视觉轻量清晰。
 fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, app: &'a App) {
     let ver = env!("CARGO_PKG_VERSION");
-    let online = app.connected;
-    let model = if app.model.is_empty() { "default" } else { &app.model };
     let proj = if app.project_context.is_empty() {
-        "未加载项目上下文"
+        "未加载项目上下文（F2 配置 / /project 加载）"
     } else {
         app.project_context.lines().next().unwrap_or("已加载项目上下文")
     };
 
-    let content_max = width.saturating_sub(8);
+    // 高度过小（<8 行）：仅输出精简品牌行，不画边框，避免挤占
+    if height < 8 {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "◈ AirymaxRT",
+                Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
+            Span::styled("  ·  输入消息开始对话", Style::default().fg(theme::dim())),
+        ]));
+        return;
+    }
+
+    let content_max = width.saturating_sub(10);
     let mut hero: Vec<Line> = Vec::new();
 
-    // 标题行：品牌 + 版本
+    // 品牌行：名称 + 版本 + 定位标语
     hero.push(Line::from(vec![
         Span::styled(
             "◈ AirymaxRT",
             Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
+        Span::styled("  ·  极境智能体运行平台", Style::default().fg(theme::dim())),
     ]));
     hero.push(Line::raw(""));
-
-    // 实时状态行
-    let status = if online {
-        Span::styled("● ONLINE", Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD))
-    } else {
-        Span::styled("○ OFFLINE", Style::default().fg(theme::DANGER).add_modifier(Modifier::BOLD))
-    };
-    hero.push(Line::from(vec![
-        Span::styled("状态  ", Style::default().fg(theme::dim())),
-        status,
-        Span::styled("   模型  ", Style::default().fg(theme::dim())),
-        Span::styled(model, Style::default().fg(theme::ACCENT)),
-    ]));
-
-    // 计费/轮次行（token 与成本随会话实时累计）
-    hero.push(Line::from(vec![
-        Span::styled("计费  ", Style::default().fg(theme::dim())),
-        Span::styled(
-            format!("{} tokens · ${:.4} · {} 轮", app.tokens, app.cost, app.turn),
-            Style::default().fg(theme::text()),
-        ),
-    ]));
 
     // 项目上下文行
     let proj_disp: String = proj.chars().take(content_max.saturating_sub(2)).collect();
@@ -645,11 +637,8 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
                      Style::default().fg(theme::faint())),
     ]));
 
-    // 垂直居中
-    let pad = (height as usize).saturating_sub(hero.len() + 2) / 2;
-    for _ in 0..pad {
-        lines.push(Line::raw(""));
-    }
+    // 顶部对齐：先输出 1 行呼吸空间，不再垂直居中
+    lines.push(Line::raw(""));
 
     // 边框（上下线 + 左右竖线），主题色为晶蓝
     let border = if width >= 44 { "─".repeat(width.saturating_sub(2).min(72)) } else { String::new() };
