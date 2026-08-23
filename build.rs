@@ -85,14 +85,66 @@ fn main() {
                 return;
             }
             let dir = lib.parent().expect("lib path has parent dir");
-            println!("cargo:rustc-link-search=native={}", dir.display());
-            println!("cargo:rustc-link-lib=static=airy_common");
-            println!("cargo:rustc-cfg=ime_linked");
-            println!("cargo:warning=ime: linked libairy_common.a ({})", lib.display());
+            // rust-lld 对静态库按出现位置惰性提取：-lairy_common 位于所有
+            // rlib 之前且带 --as-needed，airy_ime.o 会被整库跳过（undefined
+            // symbol: airy_ime_*）。修复：把 airy_ime 成员抽出为独立
+            // libairy_ime.a，用 +whole-archive 强制提取；airy_common 紧随
+            // 其后作为辅助符号（memory_alloc 等）的兜底来源。
+            if let Some(ime_a) = extract_ime_member(&lib) {
+                let ime_dir = ime_a.parent().expect("libairy_ime.a has parent dir");
+                println!("cargo:rustc-link-search=native={}", ime_dir.display());
+                println!("cargo:rustc-link-search=native={}", dir.display());
+                println!("cargo:rustc-link-lib=static:+whole-archive=airy_ime");
+                println!("cargo:rustc-link-lib=static=airy_common");
+                println!("cargo:rustc-cfg=ime_linked");
+                println!(
+                    "cargo:warning=ime: linked airy_ime.o from {} via libairy_ime.a ({})",
+                    lib.display(),
+                    ime_a.display()
+                );
+            } else {
+                println!("cargo:warning=ime: libairy_common.a has no extractable airy_ime member; IME disabled (F10 unavailable)");
+            }
         } else {
             println!("cargo:warning=ime: libairy_common.a not found, builtin pinyin IME disabled (F10 unavailable)");
         }
     }
+}
+
+/// 从 libairy_common.a 中抽出 airy_ime 成员并打包为独立 libairy_ime.a
+/// （OUT_DIR 下），供 IME FFI 以 +whole-archive 方式强制链接。
+/// 返回 libairy_ime.a 路径；失败返回 None（IME 降级禁用）。
+#[cfg(feature = "ime")]
+fn extract_ime_member(lib: &Path) -> Option<PathBuf> {
+    let out = PathBuf::from(env::var("OUT_DIR").ok()?);
+    let ar = env::var("AR").unwrap_or_else(|_| "ar".to_owned());
+    // 1. 列出归档成员，找 airy_ime 成员（cmake 命名为 airy_ime.c.o）
+    let list = Command::new(&ar).arg("t").arg(lib).output().ok()?;
+    let member = String::from_utf8_lossy(&list.stdout)
+        .lines()
+        .find(|l| l.contains("airy_ime"))?
+        .to_owned();
+    // 2. 解压到 OUT_DIR（成员名不含路径分隔符时落在 OUT_DIR 下）
+    let status = Command::new(&ar)
+        .current_dir(&out)
+        .args(["x", lib.to_str()?, &member])
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    // 3. 重新打包为 libairy_ime.a（+whole-archive 按库名链接）
+    let ime_a = out.join("libairy_ime.a");
+    let _ = std::fs::remove_file(&ime_a);
+    let status = Command::new(&ar)
+        .current_dir(&out)
+        .args(["rcs", ime_a.to_str()?, &member])
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    Some(ime_a)
 }
 
 /// 按优先级定位 libagentrt_memoryrovol.a：
