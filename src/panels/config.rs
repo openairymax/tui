@@ -191,6 +191,10 @@ fn host_env_lines() -> Vec<Line<'static>> {
 
     vec![
         Line::raw(""),
+        Line::from(Span::styled(
+            "  ── 宿主机信息 ──",
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        )),
         Line::from(vec![
             Span::styled("  架构      ", Style::default().fg(theme::faint())),
             Span::styled(h.arch.clone(), Style::default().fg(theme::text())),
@@ -228,24 +232,31 @@ fn host_env_lines() -> Vec<Line<'static>> {
 
 /// 宿主机信息快照（采集一次后缓存）。
 #[derive(Debug)]
-struct HostInfo {
+pub(crate) struct HostInfo {
     /// 架构（uname -m，失败回退编译期常量）
-    arch: String,
+    pub(crate) arch: String,
     /// 操作系统（/etc/os-release PRETTY_NAME 优先，其次 uname -sr）
-    os: String,
+    pub(crate) os: String,
     /// 内存总量（GiB，1 位小数）
-    mem_total: String,
+    pub(crate) mem_total: String,
     /// 内存可用（GiB，1 位小数）
-    mem_avail: String,
+    pub(crate) mem_avail: String,
     /// CPU 型号（/proc/cpuinfo model name）
-    cpu_model: String,
+    pub(crate) cpu_model: String,
     /// CPU 逻辑核数
-    cpu_cores: usize,
+    pub(crate) cpu_cores: usize,
     /// GPU / 加速器描述
-    gpu: String,
+    pub(crate) gpu: String,
 }
 
-fn host_info() -> &'static HostInfo {
+impl HostInfo {
+    /// 欢迎墙硬件摘要（单行，窄屏可容纳）：`架构 · N 逻辑核 · 内存总量`
+    pub(crate) fn summary_line(&self) -> String {
+        format!("{} · {} 逻辑核 · {}", self.arch, self.cpu_cores, self.mem_total)
+    }
+}
+
+pub(crate) fn host_info() -> &'static HostInfo {
     static INFO: std::sync::OnceLock<HostInfo> = std::sync::OnceLock::new();
     INFO.get_or_init(probe_host)
 }

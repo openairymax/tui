@@ -84,10 +84,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .split(hero_area);
     render_hero(f, hero_split[0], app);
     // 状态条下方主色细分隔线：1 行内容与主内容区视觉分层（Claude Code
-    // 顶部细线风格）。surface 背景 + 主色 BOTTOM 边框即细线，不占内容。
+    // 顶部细线风格）。bar 底色 + 主色 BOTTOM 边框即细线，不占内容。
     f.render_widget(
         Block::default()
-            .style(Style::default().bg(theme::surface()))
+            .style(Style::default().bg(theme::bar()))
             .borders(ratatui::widgets::Borders::BOTTOM)
             .border_style(Style::default().fg(theme::PRIMARY)),
         hero_split[1],
@@ -273,29 +273,28 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
             format!(" {} {} ", i + 1, title),
             Style::default()
                 .fg(if active { theme::ON_COLOR } else { theme::dim() })
-                .bg(if active { theme::PRIMARY } else { theme::surface_active() })
+                .bg(if active { theme::PRIMARY } else { theme::surface_3() })
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("  ", Style::default()));
     }
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::surface())),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::surface_2())),
         area,
     );
 }
 
-/// 系统状态条（顶部 1 行，2026-08-23 重设计）。
+/// 系统状态条（顶部 1 行，2.0 重设计）。
 ///
-/// 2.2.1.5.1 曾把英雄区做成 4 行晶蓝 box，与 chat 空态欢迎墙
-/// （append_welcome 的 ╭─╮ 大框）内容重叠（品牌/状态/模型/记忆重复），
-/// 视觉上"两个头叠罗汉"。全新设计：顶部收敛为**单行紧凑状态条**
-/// （实时运行状态：连接灯 + 时间 + 模型 + token + 成本 +
-/// 阶段徽章），品牌/能力/硬件等静态展示移交 chat 空态欢迎墙独占，
-/// 两区域职责分离、无重叠。窄屏自动收起冗余段。
+/// 新视觉：品牌徽记块（PRIMARY 反色底 " ◈ AirymaxRT " + 版本号）锚定最左，
+/// 其后依次是 连接灯+时间 → 模型 → token/成本 → 阶段徽章 → 任务控制，
+/// 各段用主色细分隔符 "│" 连接——状态条成为分层"品牌头"（底色 theme::bar()），
+/// 与内容区 surface 拉开纵深。窄屏（<72 列）自动收起右侧运行数据段，
+/// 仅保留 品牌徽记 + 连接 + 时间，保证任何宽度下清晰不溢出。
 ///
-/// 0.1.3 Claude 风格降噪：去掉会话耗时段，状态条保持安静克制，
-/// 信息密度让位于对话主体。
+/// 品牌/能力/硬件等静态展示移交 chat 空态欢迎墙独占，职责分离无重叠。
 fn render_hero(f: &mut Frame, area: Rect, app: &App) {
+    let bar_bg = theme::bar();
     // 状态灯
     let (light, label, color) = if app.connected {
         ("●", "ONLINE", theme::SUCCESS)
@@ -310,23 +309,33 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         .clone()
         .unwrap_or_else(|| env!("AIRY_RT_VERSION").to_string());
 
+    // 左锚：品牌徽记块（主色底反白）+ 版本号（bar 底灰显）
     let mut spans: Vec<Span> = vec![
-        Span::styled(" ◈ ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
-        Span::styled("AirymaxRT", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" v{ver}"), Style::default().fg(theme::faint())),
-        Span::styled("   ", Style::default()),
-        Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {label}"), Style::default().fg(color)),
-        Span::styled(format!("  {now}"), Style::default().fg(theme::dim())),
+        Span::styled(
+            " ◈ AirymaxRT ",
+            Style::default()
+                .fg(theme::ON_COLOR)
+                .bg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" v{ver} "), Style::default().fg(theme::faint())),
     ];
-    // 窄屏（<72 列）只保留左段（品牌 + 连接 + 时间），右侧运行数据收起
+    // 连接灯 + 时间（窄屏也保留）
+    spans.push(Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(
+        format!(" {label}"),
+        Style::default().fg(color),
+    ));
+    spans.push(Span::styled(format!("  {now}"), Style::default().fg(theme::dim())));
+
+    // 宽屏（≥72 列）展开右侧运行数据段（分段分隔符连接）
     if area.width >= 72 {
         let model_text = if app.model.is_empty() {
             "默认模型".to_string()
         } else {
             app.model.clone()
         };
-        spans.push(Span::styled("   ", Style::default()));
+        spans.push(seg());
         spans.push(Span::styled(
             model_text,
             Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
@@ -340,10 +349,7 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
             FlowPhase::GccpRound(_) => format!(" 任务事实确认 {}/5 ", app.gccp.answered()),
             _ => badge,
         };
-        spans.push(Span::styled(
-            "  ",
-            Style::default(),
-        ));
+        spans.push(seg());
         spans.push(Span::styled(
             badge_text,
             Style::default()
@@ -370,9 +376,17 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::surface())),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(bar_bg)),
         area,
     );
+}
+
+/// 状态条分段分隔符（" │ "，主色弱化细竖线）
+fn seg() -> Span<'static> {
+    Span::styled(
+        "  │  ",
+        Style::default().fg(theme::separator()),
+    )
 }
 
 /// 阶段徽章配色（对话 / 任务事实确认 / 目标澄清 / 任务流程图确认 / 任务集）

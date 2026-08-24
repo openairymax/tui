@@ -3,12 +3,15 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// AirymaxRT TUI 统一设计令牌（"极简蓝晶"主题）。
+// AirymaxRT TUI 统一设计令牌（"蓝晶深空/晨光" 2.0 主题）。
 //
 // 设计语言：
 //   - 单一主色：晶蓝 RGB(56,102,250)，所有交互焦点/品牌元素统一使用；
+//   - 分层表面体系：bg → surface → surface_2 → surface_3（顶部状态条
+//     底色 bar 为品牌色深调，与内容区拉开纵深）；
 //   - 语义色仅用于状态（成功/警告/危险），不做装饰性堆叠；
-//   - 双主题适配：深色（默认）/ 浅色（适配浅色终端背景），中性色随主题切换。
+//   - 双主题适配：深色（默认，"蓝晶深空"）/ 浅色（"蓝晶晨光"，适配
+//     浅色终端背景），中性色随主题切换。
 //
 // 主题选择优先级（init_from_env）：
 //   1. AIRY_TUI_THEME=dark|light 显式指定；
@@ -158,5 +161,40 @@ pub fn faint() -> Color {
     match ThemeMode::current() {
         ThemeMode::Dark => Color::Rgb(88, 95, 112),
         ThemeMode::Light => Color::Rgb(156, 163, 175),
+    }
+}
+
+// ─────────────────────── 2.0 分层表面体系（随主题切换） ───────────────────────
+
+/// 顶部状态条底色：品牌色深调，与内容区分层（深空=深蓝黑 / 晨光=淡蓝白）。
+/// 让系统状态条成为"品牌头"，内容区 surface 承接主体，纵深清晰。
+pub fn bar() -> Color {
+    match ThemeMode::current() {
+        ThemeMode::Dark => Color::Rgb(10, 13, 26),
+        ThemeMode::Light => Color::Rgb(236, 241, 255),
+    }
+}
+
+/// 次级表面（卡片/信息块，比 surface 再亮一档，用于会话 tab、chips 底）
+pub fn surface_2() -> Color {
+    match ThemeMode::current() {
+        ThemeMode::Dark => Color::Rgb(21, 26, 38),
+        ThemeMode::Light => Color::Rgb(230, 235, 247),
+    }
+}
+
+/// 三级表面（最高亮层：激活胶囊、悬浮块）
+pub fn surface_3() -> Color {
+    match ThemeMode::current() {
+        ThemeMode::Dark => Color::Rgb(31, 37, 54),
+        ThemeMode::Light => Color::Rgb(219, 226, 242),
+    }
+}
+
+/// 状态条分段分隔符（细竖线）：主色弱化，比 border 更贴近品牌
+pub fn separator() -> Color {
+    match ThemeMode::current() {
+        ThemeMode::Dark => Color::Rgb(52, 66, 110),
+        ThemeMode::Light => Color::Rgb(165, 185, 232),
     }
 }
