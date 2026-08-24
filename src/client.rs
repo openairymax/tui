@@ -27,7 +27,7 @@ impl GatewayClient {
     pub fn new(base_url: &str) -> Result<Self> {
         let http = HttpClient::builder()
             .timeout(Duration::from_secs(60))
-            .user_agent(format!("agentrt-tui/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("agentrt-tui/{}", env!("AIRY_RT_VERSION")))
             .build()
             .context("Failed to create HTTP client")?;
 
@@ -474,7 +474,7 @@ impl GatewayClient {
         let base = self.base_url.clone();
         tokio::spawn(async move {
             let client = match HttpClient::builder()
-                .user_agent(format!("agentrt-tui-watch/{}", env!("CARGO_PKG_VERSION")))
+                .user_agent(format!("agentrt-tui-watch/{}", env!("AIRY_RT_VERSION")))
                 .build()
             {
                 Ok(c) => c,

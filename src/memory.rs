@@ -156,6 +156,14 @@ impl ConversationMemory for JsonlMemory {
                     if r.tags.to_lowercase().contains(&lt) {
                         score += 0.5;
                     }
+                    /* 缺口 #8 修复：思考链（reasoning）参与召回打分——此前
+                     * 只匹配 content/tags，思考链"只存档不可用"。权重低于
+                     * content（思考链是内部推导，非直接事实表述）。 */
+                    if let Some(rz) = r.reasoning.as_ref() {
+                        if rz.to_lowercase().contains(&lt) {
+                            score += 0.3;
+                        }
+                    }
                 }
                 if score <= 0.0 {
                     return None;

@@ -60,7 +60,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // 顶部：1 行系统状态条（实时状态，紧凑不占屏；品牌/能力墙在
     // chat 空态欢迎区，避免与系统头重叠——2026-08-23 重设计）
     let mut constraints = vec![
-        Constraint::Length(1), // System status bar
+        Constraint::Length(2), // System status bar + 主色细分隔线
         Constraint::Min(3),    // Main content（自适应）
     ];
     // 有未决议的工具审批时，在输入栏上方插入审批提示条（Claude Code 风格）
@@ -77,7 +77,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .constraints(constraints)
         .split(area);
 
-    render_hero(f, main_layout[0], app);
+    let hero_area = main_layout[0];
+    let hero_split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(hero_area);
+    render_hero(f, hero_split[0], app);
+    // 状态条下方主色细分隔线：1 行内容与主内容区视觉分层（Claude Code
+    // 顶部细线风格）。surface 背景 + 主色 BOTTOM 边框即细线，不占内容。
+    f.render_widget(
+        Block::default()
+            .style(Style::default().bg(theme::surface()))
+            .borders(ratatui::widgets::Borders::BOTTOM)
+            .border_style(Style::default().fg(theme::PRIMARY)),
+        hero_split[1],
+    );
     // 多会话 tab 栏（Chat 面板顶部一行；仅存在多会话时渲染）
     if app.active_panel == ActivePanel::Chat && app.tab_count() > 1 {
         let tab_layout = Layout::default()
@@ -294,7 +308,7 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
     let ver = app
         .gateway_version
         .clone()
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        .unwrap_or_else(|| env!("AIRY_RT_VERSION").to_string());
 
     let mut spans: Vec<Span> = vec![
         Span::styled(" ◈ ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
@@ -552,15 +566,38 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
     }
-    if area.width >= 52 {
+    /* 0.1.3 美化：快捷键分组——导航组（F1-F8）与任务控制/退出组之间
+     * 用主色竖线分隔，避免"一排灰字"失去节奏；窄屏自动收起分组。 */
+    if area.width >= 80 {
+        spans.push(Span::styled("  ", Style::default()));
         spans.push(Span::styled(
-            "   Ctrl+Z 暂停 · Ctrl+X 中止",
+            "┃",
+            Style::default().fg(theme::PRIMARY),
+        ));
+        spans.push(Span::styled(
+            "  输入  Enter 发送 · Alt+Enter 换行 · ↑/↓ 历史",
+            Style::default().fg(theme::faint()),
+        ));
+    }
+    if area.width >= 52 {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            "┃",
+            Style::default().fg(theme::PRIMARY),
+        ));
+        spans.push(Span::styled(
+            "  控制  Ctrl+Z 暂停 · Ctrl+X 中止",
             Style::default().fg(theme::faint()),
         ));
     }
     if area.width >= 40 {
+        spans.push(Span::styled("  ", Style::default()));
         spans.push(Span::styled(
-            " · Ctrl+C 退出",
+            "┃",
+            Style::default().fg(theme::PRIMARY),
+        ));
+        spans.push(Span::styled(
+            "  Ctrl+C 退出",
             Style::default().fg(theme::faint()),
         ));
     }

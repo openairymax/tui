@@ -25,6 +25,19 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(mr_linked)");
     println!("cargo:rustc-check-cfg=cfg(ime_linked)");
 
+    // 版本号 SSoT（2.6.2 Unify Design）：单一来源为 agentrt/VERSION 文件
+    // （本 crate 位于 sdk/tui，上溯两级到 agent-workload 后进入 agentrt/）。
+    // 读取失败时降级为 CARGO_PKG_VERSION（独立发布/源码缺失场景）。
+    let version = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../agentrt/VERSION"),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    println!("cargo:rerun-if-changed=../../agentrt/VERSION");
+    println!("cargo:rustc-env=AIRY_RT_VERSION={version}");
+
     #[cfg(feature = "memoryrovol")]
     {
         println!("cargo:rerun-if-env-changed=MEMORYROVOL_LIB");
