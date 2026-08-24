@@ -16,6 +16,7 @@ use ratatui::{
 
 use crate::app::{App, MessageRole};
 use crate::gccp::FlowPhase;
+use crate::panels::config::host_info;
 use crate::theme;
 
 /// 思考动效帧（Braille spinner，Claude 风格轻量旋转；0.1s 一帧）。
@@ -619,10 +620,17 @@ fn append_message(
     }
 }
 
-/// 空态欢迎（无消息时，Claude Code 风格极简式，0.1.3 重设计）。
-/// 去掉此前 ╭─╮ 大边框英雄区：静态品牌只保留一行 tagline，能力提示
-/// 一行，引导一行，垂直居中——把屏幕让给对话本体，克制优雅。
-/// 运行数据（连接灯/模型/token/成本/阶段）由顶部系统状态条独占。
+/// 空态欢迎（无消息时，2.0 分层品牌卡重设计）。
+///
+/// 视觉结构（自上而下，垂直居中）：
+///   1. 品牌行：◈ AirymaxRT（主色粗体）+ 版本徽章（主色底反白）+ tagline（灰）；
+///   2. 主题细线（主色弱化，半宽居中）——与顶部状态条呼应；
+///   3. 核心链路能力矩阵（胶囊 chips，次级表面底 + 语义色文字）；
+///   4. 硬件摘要行（复用配置面板宿主机探测，静态展示独占欢迎墙）；
+///   5. 引导行 + 项目上下文行。
+///
+/// 运行数据（连接灯/模型/token/成本/阶段）由顶部系统状态条独占，
+/// 两区域职责分离、无重叠。极窄屏（<44 列）降级为单行精简品牌。
 fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, app: &'a App) {
     let ver = env!("AIRY_RT_VERSION");
     let proj = if app.project_context.is_empty() {
@@ -654,28 +662,50 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
     let content_max = width.saturating_sub(4).max(16);
     let mut hero: Vec<Line> = Vec::new();
 
-    // 品牌行：◈ AirymaxRT v0.1.3 —— 极境智能体运行平台（居中）
+    // 1. 品牌行：徽标 + 版本徽章 + tagline
     let brand = Line::from(vec![
         Span::styled(
             "◈ AirymaxRT",
             Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" v{ver}"), Style::default().fg(theme::faint())),
-        Span::styled(" — 极境智能体运行平台", Style::default().fg(theme::dim())),
+        Span::styled(
+            format!(" v{ver} "),
+            Style::default()
+                .fg(theme::ON_COLOR)
+                .bg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  极境智能体运行平台", Style::default().fg(theme::dim())),
     ]);
-    // 手动水平居中（Claude 空态：品牌一行居中，能力提示靠左低对比）
     let pad = content_max.saturating_sub(2).saturating_sub(brand.width()) / 2;
     let mut centered: Vec<Span> = vec![Span::raw(" ".repeat(pad))];
     centered.extend(brand.spans.clone());
     hero.push(Line::from(centered));
+
+    // 2. 主题细线（主色弱化，半宽居中）——"我思故我在"式收敛分隔
+    let line_w = (content_max / 3).clamp(6, 24);
+    let mut tag = String::new();
+    for i in 0..line_w {
+        if i == line_w / 2 {
+            tag.push('◆');
+        } else {
+            tag.push('─');
+        }
+    }
+    let tag_pad = content_max.saturating_sub(unicode_width::UnicodeWidthStr::width(tag.as_str())) / 2;
+    hero.push(Line::from(vec![
+        Span::raw(" ".repeat(tag_pad)),
+        Span::styled(tag, Style::default().fg(theme::separator())),
+    ]));
     hero.push(Line::raw(""));
 
-    // 能力提示（核心链路 chips，低对比，一行）
+    // 3. 核心链路能力矩阵（胶囊 chips，语义色）
     let chain = [
         ("llm", theme::ACCENT),
         ("think", theme::WARNING),
         ("agent", theme::SUCCESS),
         ("tool", theme::MAGENTA),
+        ("board", theme::PRIMARY),
     ];
     let mut caps_line = Line::from(vec![
         Span::styled("核心链路  ", Style::default().fg(theme::faint())),
@@ -683,28 +713,42 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
     for (i, (name, c)) in chain.iter().enumerate() {
         if i > 0 {
             caps_line.spans.push(Span::styled(
-                "  ",
+                " ",
                 Style::default().fg(theme::faint()),
             ));
         }
-        /* 0.1.3 美化：chips 胶囊化——surface_active 底 + 语义色文字，
-         * 与纯彩色文字相比层次更清晰（空态不再是"一行花字"）。 */
         caps_line.spans.push(Span::styled(
             format!(" {} ", name),
             Style::default()
                 .fg(*c)
-                .bg(theme::surface_active())
+                .bg(theme::surface_2())
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    hero.push(caps_line);
+    let caps_pad = content_max.saturating_sub(2).saturating_sub(caps_line.width()) / 2;
+    let mut padded_caps = caps_line.spans.clone();
+    padded_caps.insert(0, Span::raw(" ".repeat(caps_pad)));
+    hero.push(Line::from(padded_caps));
     hero.push(Line::raw(""));
 
-    // 引导行（低对比）：输入消息 + 常用键
-    let proj_disp: String = proj.chars().take(content_max.saturating_sub(4)).collect();
+    // 4. 硬件摘要行（复用配置面板宿主机探测，静态展示独占欢迎墙）
+    let hw = host_info().summary_line();
+    let mut hw_line = Line::from(vec![
+        Span::styled("硬件  ", Style::default().fg(theme::faint())),
+        Span::styled(hw, Style::default().fg(theme::dim())),
+    ]);
+    if hw_line.width() + 2 < content_max {
+        let hw_pad = content_max.saturating_sub(hw_line.width()) / 2;
+        hw_line.spans.insert(0, Span::raw(" ".repeat(hw_pad)));
+        hero.push(hw_line);
+        hero.push(Line::raw(""));
+    }
+
+    // 5. 引导行 + 项目上下文行
     hero.push(Line::from(vec![
         Span::styled("输入消息开始对话 · F1 帮助 · F2 配置 · F10 输入法", Style::default().fg(theme::faint())),
     ]));
+    let proj_disp: String = proj.chars().take(content_max.saturating_sub(4)).collect();
     if !proj_disp.is_empty() {
         hero.push(Line::from(vec![
             Span::styled("项目  ", Style::default().fg(theme::faint())),
