@@ -434,7 +434,7 @@ fn persist(lang: &str, configured: bool, provider: &str, model: &str) {
         } else {
             "skipped".to_string()
         },
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: env!("AIRY_RT_VERSION").to_string(),
         provider: provider.to_string(),
         model: model.to_string(),
     };
@@ -506,7 +506,7 @@ fn build_step1(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
     lines.push(Line::raw(""));
     lines.push(Line::raw(""));
     lines.push(centered(
-        &format!("欢迎使用 AirymaxRT v{}", env!("CARGO_PKG_VERSION")),
+        &format!("欢迎使用 AirymaxRT v{}", env!("AIRY_RT_VERSION")),
         width,
     ));
     lines.push(centered("AI Agent 运行时平台 · AI Agent Runtime Platform", width));

@@ -624,7 +624,7 @@ fn append_message(
 /// 一行，引导一行，垂直居中——把屏幕让给对话本体，克制优雅。
 /// 运行数据（连接灯/模型/token/成本/阶段）由顶部系统状态条独占。
 fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, app: &'a App) {
-    let ver = env!("CARGO_PKG_VERSION");
+    let ver = env!("AIRY_RT_VERSION");
     let proj = if app.project_context.is_empty() {
         "未加载项目上下文（F2 配置 / /project 加载）".to_string()
     } else {
@@ -670,7 +670,7 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
     hero.push(Line::from(centered));
     hero.push(Line::raw(""));
 
-    // 能力提示（核心链路 chips 内联，低对比，一行）
+    // 能力提示（核心链路 chips，低对比，一行）
     let chain = [
         ("llm", theme::ACCENT),
         ("think", theme::WARNING),
@@ -683,13 +683,18 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
     for (i, (name, c)) in chain.iter().enumerate() {
         if i > 0 {
             caps_line.spans.push(Span::styled(
-                " · ",
+                "  ",
                 Style::default().fg(theme::faint()),
             ));
         }
+        /* 0.1.3 美化：chips 胶囊化——surface_active 底 + 语义色文字，
+         * 与纯彩色文字相比层次更清晰（空态不再是"一行花字"）。 */
         caps_line.spans.push(Span::styled(
-            *name,
-            Style::default().fg(*c).add_modifier(Modifier::BOLD),
+            format!(" {} ", name),
+            Style::default()
+                .fg(*c)
+                .bg(theme::surface_active())
+                .add_modifier(Modifier::BOLD),
         ));
     }
     hero.push(caps_line);

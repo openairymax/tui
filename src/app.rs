@@ -465,7 +465,21 @@ impl App {
                 "assistant" => MessageRole::Agent,
                 _ => continue,
             };
+            let is_agent = matches!(role, MessageRole::Agent);
             self.add_message(role, rec.content.clone());
+            /* 缺口 #7 修复：恢复 assistant 记录时还原其思考链（reasoning
+             * 字段已随 JSONL 持久化，但此前恢复只取 content，恢复后的
+             * 会话看不到历史思考链）。以系统消息形式注入，标注 [Dual Think]。 */
+            if is_agent {
+                if let Some(rz) = rec.reasoning.as_ref() {
+                    if !rz.trim().is_empty() {
+                        self.add_message(
+                            MessageRole::System,
+                            format!("[Dual Think] 上轮思考链：{}", rz),
+                        );
+                    }
+                }
+            }
             count += 1;
         }
         self.add_message(
@@ -3207,7 +3221,7 @@ impl App {
             Ok(health) => {
                 self.connected = true;
                 self.gateway_version = health.version.clone();
-                let ver = health.version.as_deref().unwrap_or(env!("CARGO_PKG_VERSION"));
+                let ver = health.version.as_deref().unwrap_or(env!("AIRY_RT_VERSION"));
                 self.status_message = format!("Connected to AgentRT v{ver}");
                 self.add_log("INFO", format!("已连接网关 v{ver}"));
             }
@@ -3362,7 +3376,7 @@ fn load_saved_model() -> Option<String> {
 fn persist_model(model: &str) {
     let cfg = TuiConfig {
         model: model.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: env!("AIRY_RT_VERSION").to_string(),
     };
     if let Some(parent) = config_path().parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {

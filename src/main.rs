@@ -49,7 +49,7 @@ use crate::gccp::TaskControl;
 #[derive(Parser)]
 #[command(
     name = "agentrt-tui",
-    version = env!("CARGO_PKG_VERSION"),
+    version = env!("AIRY_RT_VERSION"),
     about = "AgentRT Terminal User Interface",
 )]
 struct Cli {
@@ -88,7 +88,7 @@ async fn main() {
     theme::init_from_env();
 
     info!("══════════════════════════════════════════");
-    info!("  AgentRT TUI v{} starting", env!("CARGO_PKG_VERSION"));
+    info!("  AgentRT TUI v{} starting", env!("AIRY_RT_VERSION"));
     info!("══════════════════════════════════════════");
 
     let cli = Cli::parse();
