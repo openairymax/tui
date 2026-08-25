@@ -26,7 +26,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 插件 / 技能库 ",
-            Style::default().fg(theme::MAGENTA).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ));
 
     let skills = app.skills.list();

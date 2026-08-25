@@ -151,7 +151,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 事件流 ",
-            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ));
 
     let total = app.hall_events.len();
