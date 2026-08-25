@@ -36,7 +36,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 记忆库 ",
-            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
         ));
 
     let total = app.memory.len();
