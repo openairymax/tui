@@ -222,6 +222,9 @@ pub struct WizardState {
     /// 字段光标 / 编辑态
     pub cfg_cursor: usize,
     pub editing: bool,
+    /// 编辑态插入点（字符索引）：支持 ← → 移动，在长文本（API Key /
+    /// base_url）中精确定位修改，渲染时窗口跟随插入点滚动。
+    edit_pos: usize,
     /// 文本字段是否被用户手动编辑过（预设自动填充不置位；防预设覆盖手改）
     touched: Vec<bool>,
     /// 向导完成结果（None = 未完成）
@@ -245,6 +248,7 @@ impl WizardState {
             model_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
+            edit_pos: 0,
             touched: vec![false; 7],
             result: None,
         }
@@ -274,6 +278,7 @@ impl WizardState {
         };
         self.cfg_cursor = 0;
         self.editing = false;
+        self.edit_pos = 0;
         self.touched = vec![false; 7];
         self.model_fields = Vec::new();
         self.result = None;
@@ -291,17 +296,46 @@ impl WizardState {
             return false;
         }
         match key.code {
-            // 编辑态：字符插入优先于一切快捷键（含数字 1/2/3）
+            // 编辑态：字符插入优先于一切快捷键（含数字 1/2/3），
+            // 插入位置跟随 edit_pos（支持 ← → 移动后继续输入）
             KeyCode::Char(c) if self.editing => {
-                self.cfg_fields[self.cfg_cursor].push(c);
-                self.mark_touched(self.cfg_cursor);
+                let f = self.cfg_cursor;
+                if f < self.cfg_fields.len() {
+                    let pos = self.edit_pos.min(self.cfg_fields[f].len());
+                    self.cfg_fields[f].insert(pos, c);
+                    self.edit_pos = pos + 1;
+                    self.mark_touched(f);
+                }
             }
             KeyCode::Backspace if self.editing => {
-                self.cfg_fields[self.cfg_cursor].pop();
+                let f = self.cfg_cursor;
+                if f < self.cfg_fields.len() && self.edit_pos > 0 {
+                    self.edit_pos -= 1;
+                    self.cfg_fields[f].remove(self.edit_pos);
+                    self.mark_touched(f);
+                }
+            }
+            KeyCode::Left if self.editing => {
+                self.edit_pos = self.edit_pos.saturating_sub(1);
+            }
+            KeyCode::Right if self.editing => {
+                let f = self.cfg_cursor;
+                if f < self.cfg_fields.len() {
+                    let max = self.cfg_fields[f].len();
+                    self.edit_pos = (self.edit_pos + 1).min(max);
+                }
+            }
+            KeyCode::Home if self.editing => self.edit_pos = 0,
+            KeyCode::End if self.editing => {
+                let f = self.cfg_cursor;
+                if f < self.cfg_fields.len() {
+                    self.edit_pos = self.cfg_fields[f].len();
+                }
             }
             KeyCode::Enter if self.editing => {
                 // 结束编辑 → 光标下移（文本字段）；提供商字段结束编辑后应用预设
                 self.editing = false;
+                self.edit_pos = 0;
                 let f = self.cfg_cursor;
                 self.step_after_field_edit(f);
             }
@@ -313,6 +347,7 @@ impl WizardState {
                 if self.step >= 3 && self.step <= 5 {
                     if self.editing {
                         self.editing = false;
+                        self.edit_pos = 0;
                     } else if self.step > 3 {
                         self.step -= 1;
                         self.enter_step_form(self.step);
@@ -340,8 +375,14 @@ impl WizardState {
             .chars()
             .filter(|c| !matches!(c, '\n' | '\r'))
             .collect();
-        self.cfg_fields[self.cfg_cursor].push_str(&cleaned);
-        self.mark_touched(self.cfg_cursor);
+        let f = self.cfg_cursor;
+        if f >= self.cfg_fields.len() {
+            return;
+        }
+        let pos = self.edit_pos.min(self.cfg_fields[f].len());
+        self.cfg_fields[f].insert_str(pos, &cleaned);
+        self.edit_pos = pos + cleaned.chars().count();
+        self.mark_touched(f);
     }
 
     /// 文本字段结束编辑后的动作：提供商字段应用预设；其余下移光标。
@@ -416,6 +457,8 @@ impl WizardState {
                         self.cycle_field();
                     } else {
                         self.editing = true;
+                        // 进入编辑：插入点默认在末尾（长 Key / URL 输入可见尾部）
+                        self.edit_pos = self.cfg_fields[self.cfg_cursor].len();
                         self.mark_touched(self.cfg_cursor);
                     }
                     false
@@ -441,6 +484,7 @@ impl WizardState {
     fn enter_step_form(&mut self, step: u8) {
         self.cfg_cursor = 0;
         self.editing = false;
+        self.edit_pos = 0;
         let m = models_cfg::read_model_yaml();
         match step {
             4 => {
@@ -1206,7 +1250,26 @@ fn form_field_line(
     };
     let raw = w.cfg_fields.get(idx).cloned().unwrap_or_default();
     let value = if editing {
-        format!("{}▍", raw)
+        // 编辑态：窗口跟随插入点滚动——长文本（API Key / base_url）不截断，
+        // 始终可见光标附近内容；窗口内以 ▍ 标示插入点。
+        let max_vis = 48usize;
+        let len = raw.chars().count();
+        let pos = w.edit_pos.min(len);
+        let mut prefix_ell = false;
+        let mut start = pos.saturating_sub(max_vis / 2);
+        if start > 0 {
+            start = pos.saturating_sub(max_vis - 3);
+            prefix_ell = true;
+        }
+        let vis: String = raw.chars().skip(start).take(max_vis).collect();
+        let inner_pos = pos.saturating_sub(start);
+        let head = &vis[..char_boundary(&vis, inner_pos)];
+        let tail = &vis[char_boundary(&vis, inner_pos)..];
+        if prefix_ell {
+            format!("…{}▍{}", head, tail)
+        } else {
+            format!("{}▍{}", head, tail)
+        }
     } else if idx == 6 && !raw.is_empty() {
         // API Key 掩码：非编辑态仅显示尾 4 位
         if raw.len() > 4 {
@@ -1244,17 +1307,29 @@ fn push_footer(lines: &mut Vec<Line>, step: u8, width: usize) {
     lines.push(Line::raw(""));
     if step >= 3 {
         lines.push(centered(
-            "↑↓ 选择字段 · Enter 编辑/切换 · Tab 循环预设/选项 · 支持粘贴 · Esc 返回",
+            "↑↓ 选择字段 · Enter 编辑/切换 · ←→ 移动插入点 · Tab 循环 · 支持粘贴 · Esc 返回",
             width,
         ));
         lines.push(centered(
-            "↑↓ Select · Enter Edit/Toggle · Tab Cycles presets · Paste supported · Esc Back",
+            "↑↓ Select · Enter Edit/Toggle · ←→ Move cursor · Tab Cycles · Paste ok · Esc Back",
             width,
         ));
     } else {
         lines.push(centered("↑↓ 移动 · 1-3 直达 · Enter 确认 · Esc 跳过", width));
         lines.push(centered("↑↓ Move · 1-3 Select · Enter Confirm · Esc Skip", width));
     }
+}
+
+/// 字符位置 → 字节边界（防止多字节字符切片 panic；越界返回 len）。
+fn char_boundary(s: &str, char_idx: usize) -> usize {
+    let mut b = 0;
+    for (i, ch) in s.char_indices() {
+        if i == char_idx {
+            return b;
+        }
+        b = i + ch.len_utf8();
+    }
+    s.len()
 }
 
 /// 水平居中（按 unicode 显示宽度补空格）
@@ -1332,6 +1407,7 @@ mod tests {
             model_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
+            edit_pos: 0,
             touched: vec![false; 7],
             result: None,
         };
@@ -1380,6 +1456,7 @@ mod tests {
             model_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
+            edit_pos: 0,
             touched: vec![false; 7],
             result: None,
         };
@@ -1449,6 +1526,7 @@ mod tests {
             model_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
+            edit_pos: 0,
             touched: vec![false; 7],
             result: None,
         };

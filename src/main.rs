@@ -34,8 +34,7 @@ use clap::Parser;
 use crossterm::{
     cursor::{Hide, MoveTo},
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
-        EnableMouseCapture, Event, KeyCode, KeyEventKind,
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
     },
     execute,
     terminal::{Clear, disable_raw_mode, enable_raw_mode, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
@@ -196,7 +195,6 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     execute!(
         stdout,
         EnterAlternateScreen,
-        EnableMouseCapture,
         EnableBracketedPaste,
         Hide
     )
@@ -247,7 +245,6 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture,
         DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
