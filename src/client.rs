@@ -333,7 +333,15 @@ impl GatewayClient {
             }
         }
         info!("POST {} (stream, msgs_len={})", url, params["messages"].as_array().map(|a| a.len()).unwrap_or(0));
-        let mut resp = self.http.post(&url).json(&params).send().await?;
+        // 流式请求使用独立无总超时 client：gateway 工具循环（最多 8 轮 ×
+        // 每轮 30s）可远超 60s，共享 client 的总超时会在长任务中途截断
+        // SSE（表现为"回复为空/卡住"）。无总超时 + 连接阶段 10s 兜底。
+        let stream_client = HttpClient::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .user_agent(format!("agentrt-tui-stream/{}", env!("AIRY_RT_VERSION")))
+            .build()
+            .context("Failed to create stream HTTP client")?;
+        let mut resp = stream_client.post(&url).json(&params).send().await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await?;
