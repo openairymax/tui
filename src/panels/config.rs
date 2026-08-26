@@ -23,6 +23,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::models_cfg;
 use crate::secrets;
 use crate::theme;
 
@@ -54,33 +55,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(theme::dim()),
         )),
         Line::from(Span::styled(
-            "  查看当前：/model",
+            "  配置向导：/hiairy（重开 5 步向导，可随时修改模型与双思考）",
             Style::default().fg(theme::dim()),
-        )),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "  模型默认配置（model.yaml 用户覆盖，可自由增删 provider 与模型）：",
-            Style::default().fg(theme::faint()),
-        )),
-        Line::from(Span::styled(
-            format!("    {}", app.config_file),
-            Style::default().fg(theme::text()),
-        )),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "  回落优先级：请求 model 参数 → env AIRY_AGENT_MODEL →",
-            Style::default().fg(theme::faint()),
-        )),
-        Line::from(Span::styled(
-            "  $AIRY_HOME/config/model.yaml global.default_model → 内置默认",
-            Style::default().fg(theme::faint()),
         )),
     ];
 
-    // (a) 模型 API Key 便捷配置节
+    // (a) 模型连接表（v2：最多 3 个，与 secrets.env MODEL_N_API_KEY 对应）
+    lines.extend(model_table_lines());
+    // (b) 双思考系统
+    lines.extend(think_section_lines());
+    // (c) 模型 API Key 便捷配置节
     lines.extend(api_key_lines());
-
-    // (b) 宿主机实时信息节
+    // (d) 宿主机实时信息节
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  ── 宿主机实时信息 ──",
@@ -89,6 +75,124 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     lines.extend(host_env_lines());
 
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// 模型连接表（读 model.yaml v2 表格，展示每行模型的关键字段与 Key 状态）。
+fn model_table_lines() -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  ── 模型连接表（model.yaml，最多 3 个） ──",
+        Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+    )));
+
+    let m = models_cfg::read_model_yaml();
+    let pairs = secrets::read_all();
+    if m.rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  未配置模型（/hiairy 打开配置向导）",
+            Style::default().fg(theme::faint()),
+        )));
+        return lines;
+    }
+
+    for (i, r) in m.rows.iter().enumerate() {
+        let mode_zh = match r.mode.as_str() {
+            "local" => "本地",
+            _ => "API",
+        };
+        let fmt_zh = match r.api_format.as_str() {
+            "anthropic" => "Anthropic",
+            _ => "OpenAI",
+        };
+        let key_set = if r.api_key_env.is_empty() {
+            "本地免 Key".to_string()
+        } else {
+            match pairs.iter().find(|(k, v)| k == &r.api_key_env && !v.is_empty()) {
+                Some((k, v)) => format!("{} · {}", k, secrets::mask(v)),
+                None => format!("{} · 未配置", r.api_key_env),
+            }
+        };
+        let (dot, dot_color) = if r.api_key_env.is_empty() || key_set.contains("未配置") {
+            ("○", theme::faint())
+        } else {
+            ("●", theme::SUCCESS)
+        };
+        let key_color = if key_set.contains("未配置") {
+            theme::WARNING
+        } else {
+            theme::SUCCESS
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  [{}] ", i + 1), Style::default().fg(theme::dim())),
+            Span::styled(dot, Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {} ", r.name), Style::default().fg(theme::text()).add_modifier(Modifier::BOLD)),
+            Span::styled(mode_zh, Style::default().fg(theme::PRIMARY)),
+            Span::styled(" · ", Style::default().fg(theme::faint())),
+            Span::styled(fmt_zh, Style::default().fg(theme::dim())),
+            Span::styled(" · ", Style::default().fg(theme::faint())),
+            Span::styled(key_set, Style::default().fg(key_color)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("       ", Style::default()),
+            Span::styled("ID: ", Style::default().fg(theme::faint())),
+            Span::styled(r.model_id.clone(), Style::default().fg(theme::text())),
+            Span::styled("   ·   ", Style::default().fg(theme::faint())),
+            Span::styled("URL: ", Style::default().fg(theme::faint())),
+            Span::styled(r.base_url.clone(), Style::default().fg(theme::dim())),
+        ]));
+    }
+    lines
+}
+
+/// 双思考系统配置展示（think 段）。
+fn think_section_lines() -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    let m = models_cfg::read_model_yaml();
+    let (enabled, slow, fast, prof) = match &m.think {
+        Some(t) => (
+            t.enabled.unwrap_or(true),
+            t.slow_model.clone(),
+            t.fast_model.clone(),
+            t.prof_model.clone(),
+        ),
+        None => (true, String::new(), String::new(), String::new()),
+    };
+    let d = if m.default_model.is_empty() {
+        "默认模型".to_string()
+    } else {
+        m.default_model.clone()
+    };
+    let (st, sc) = if enabled {
+        ("开启", theme::SUCCESS)
+    } else {
+        ("关闭", theme::faint())
+    };
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  ── 双思考系统（think） ──",
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  [{}]", st), Style::default().fg(sc).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  慢思考 t2    ", Style::default().fg(theme::faint())),
+        Span::styled(if slow.is_empty() { d.clone() } else { slow }, Style::default().fg(theme::text())),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  快思考 t1-f  ", Style::default().fg(theme::faint())),
+        Span::styled(if fast.is_empty() { d.clone() } else { fast }, Style::default().fg(theme::text())),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  专业思考 t1-p ", Style::default().fg(theme::faint())),
+        Span::styled(if prof.is_empty() { d } else { prof }, Style::default().fg(theme::text())),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "  修改：/hiairy 向导步骤 5",
+        Style::default().fg(theme::dim()),
+    )));
+    lines
 }
 
 /// 模型 API Key 便捷配置节：列出 secrets.env 中已知 Key（值脱敏后 4 位），

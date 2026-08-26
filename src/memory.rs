@@ -141,11 +141,30 @@ impl ConversationMemory for JsonlMemory {
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
             .filter(|t| t.len() >= 2)
             .collect();
+        // 防自我回灌（2026-08-26，与 CLI cli_chat.c 同语义）：当前输入在
+        // 发起对话前刚被 push 为 user 记录，query 又是这条输入本身，直接
+        // 命中率最高。把该记录注入上下文会形成"模型读到自己刚收到的输入
+        // 的记忆"的回声，污染当前问题的理解。跳过与 query 相同/带「用户: 」
+        // 前缀的记录。
+        let q = query.trim();
         let now = chrono::Utc::now().timestamp();
         let mut hits: Vec<MemoryHit> = self
             .records
             .iter()
             .filter(|r| r.role != "system") // 系统提示不召回
+            .filter(|r| {
+                let c = r.content.trim();
+                if c.eq_ignore_ascii_case(q) {
+                    return false;
+                }
+                // 「用户: <input>」前缀形式（旧格式记忆）
+                if let Some(stripped) = c.strip_prefix("用户: ") {
+                    if stripped.trim() == q {
+                        return false;
+                    }
+                }
+                true
+            })
             .map(|r| {
                 let mut score = 0.0f32;
                 for t in &tokens {
@@ -523,9 +542,47 @@ mod tests {
     }
 
     #[test]
+    fn recall_excludes_self_feed() {
+        // 防自我回灌（2026-08-26）：当前输入刚 push 后 recall 同 query，
+        // 不得把该输入自身作为"相关记忆"回灌（与 CLI cli_chat.c 同语义）。
+        let (_d, mut m) = temp_memory();
+        m.push("user", "性能监控优化方案", "chat").expect("push"); // 旧记录
+        m.push("user", "性能监控", "chat").expect("push"); // 当前输入（应被排除）
+        let hits = m.recall("性能监控", 5);
+        assert!(
+            !hits.iter().any(|h| h.content == "性能监控"),
+            "self-feed echo must be excluded"
+        );
+        assert!(
+            hits.iter().any(|h| h.content == "性能监控优化方案"),
+            "related older memory should still be recalled"
+        );
+    }
+
+    #[test]
     fn parse_mode_marker_works() {
         assert_eq!(crate::app::parse_mode_marker("[MODE:TASK] 执行任务"), (true, "执行任务".into()));
         assert_eq!(crate::app::parse_mode_marker("[MODE:CHAT]\n闲聊"), (false, "闲聊".into()));
         assert_eq!(crate::app::parse_mode_marker("普通回复"), (false, "普通回复".into()));
+    }
+
+    #[test]
+    fn parse_mode_detail_tolerates_leading_text() {
+        // 容错（2026-08-26）：LLM 输出带简短前导（「好的，」等）时仍能识别
+        // 模式标记；正文提及 [MODE:CHAT]（超 64 字符窗口）不误判。
+        assert_eq!(
+            crate::app::parse_mode_detail("好的，[MODE:TASK]\n开始执行任务"),
+            (crate::app::ModeMarker::Task, "开始执行任务".into())
+        );
+        assert_eq!(
+            crate::app::parse_mode_detail("好的 [MODE:CHAT] 我们聊聊"),
+            (crate::app::ModeMarker::Chat, "我们聊聊".into())
+        );
+        // 正文中（64 字符后）出现的标记样式文字不应触发模式切换
+        let body = format!("这是一段很长的普通对话内容，{}", "x".repeat(80));
+        assert_eq!(
+            crate::app::parse_mode_detail(&body),
+            (crate::app::ModeMarker::Chat, body)
+        );
     }
 }

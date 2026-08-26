@@ -515,6 +515,13 @@ impl App {
                 format!("向导配置：API Key 已写入 secrets.env（provider={}）", r.provider),
             );
         }
+        self.add_log(
+            "INFO",
+            format!(
+                "向导配置：双思考系统{}（模型见 model.yaml think 段）",
+                if r.think_enabled { "已启用" } else { "已关闭" }
+            ),
+        );
     }
 
     /// 记录一条运行时日志（F3 面板展示，不依赖网关 HTTP 端点）。
@@ -1942,22 +1949,26 @@ impl App {
                 // 可能只输出 reasoning_content，或 provider 异常）时给出明确提示，
                 // 避免对话中出现"空返回"却无任何说明。
                 if cleaned.trim().is_empty() {
+                    // 丢弃本轮思考链，避免残留给下一轮记录
+                    self.pending_reasoning.take();
                     self.add_message(
                         MessageRole::Agent,
                         "（未产生回复：模型可能仅生成了思考内容，请重试）".to_string(),
                     );
                 } else {
                     self.add_message(MessageRole::Agent, cleaned.clone());
-                }
-                // 记忆：持久化助手响应（2.1.1.6：思考链随记录落盘保留）
-                let reasoning = self.pending_reasoning.take();
-                if let Err(e) = self.memory.push_with_reasoning(
-                    "assistant",
-                    &cleaned,
-                    reasoning.as_deref(),
-                    "chat",
-                ) {
-                    log::warn!("memory push(assistant) failed: {}", e);
+                    // 记忆：持久化助手响应（2.1.1.6：思考链随记录落盘保留）。
+                    // 空回复不写记忆——空记录是记忆污染源（无内容可召回，
+                    // 却混入 recent() 蒸馏/上下文，拉低记忆信噪比）。
+                    let reasoning = self.pending_reasoning.take();
+                    if let Err(e) = self.memory.push_with_reasoning(
+                        "assistant",
+                        &cleaned,
+                        reasoning.as_deref(),
+                        "chat",
+                    ) {
+                        log::warn!("memory push(assistant) failed: {}", e);
+                    }
                 }
 
                 // 执行阶段 LLM 自报 [TASK:DONE] → 自动沉淀技能
@@ -3004,6 +3015,29 @@ impl App {
         self.add_log("INFO", "任务已人工中止（Ctrl+X）".to_string());
     }
 
+    /// 空闲态退出任务集（Ctrl+X 二次按下 / 空闲时 Ctrl+X）。
+    ///
+    /// 与 abort_task 的区别：abort 取消的是"在途请求"，任务集状态保留
+    /// （可继续输入指令或宣告完成）；exit_task_mode 直接复位任务集状态
+    /// 回到普通对话（task_mode=false / Chat / 清理 DAG），供用户在不
+    /// 想继续任务时一键退出——此前任务集一旦进入只能通过「完成」收尾，
+    /// 没有快捷键出口。
+    pub fn exit_task_mode(&mut self) {
+        if !self.task_mode {
+            return;
+        }
+        self.task_mode = false;
+        self.set_flow_phase(FlowPhase::Chat);
+        self.set_task_control(TaskControl::Running);
+        self.gccp.dag = None;
+        self.gccp.grad_plan.clear();
+        self.add_message(
+            MessageRole::System,
+            "已退出任务集，回到普通对话。".to_string(),
+        );
+        self.add_log("INFO", "已退出任务集（Ctrl+X 空闲态）".to_string());
+    }
+
     /// 暂停后台请求轮询（Ctrl+Z）：冻结等待渲染，请求继续在网关执行。
     pub fn pause_task(&mut self) {
         if self.pending.is_some() {
@@ -3148,6 +3182,13 @@ impl App {
 
         // 记忆上下文：召回与本次输入相关的历史记忆
         let hits = self.memory.recall(input, 5);
+        // 防自我回灌（MemoryRovol 后端在 C 库内检索，无法在 recall 层排除；
+        // 此处统一过滤与当前输入相同的命中，避免"模型读到自己刚收到的输入
+        // 的记忆"的回声污染，与 JsonlMemory::recall 的排除语义对齐）。
+        let hits: Vec<_> = hits
+            .into_iter()
+            .filter(|h| !h.content.trim().eq_ignore_ascii_case(input.trim()))
+            .collect();
         if !hits.is_empty() {
             ctx.push_str("【相关记忆】\n");
             for h in hits {
@@ -3484,18 +3525,31 @@ pub fn parse_mode_marker(resp: &str) -> (bool, String) {
 }
 
 /// 解析 LLM 返回的模式标记详情（区分普通任务集与大任务集 GCCP）。
+///
+/// 容错（2026-08-26 修复）：此前要求响应严格以 `[MODE:XXX]` 开头，LLM 输出
+/// 「好的，[MODE:TASK]…」等带前导文本时判定失败，任务集无法进入。现在只在
+/// 响应开头 64 字符窗口内定位 `[MODE:` 标记（前导文本被 trim 后仍可能残留
+/// 简短客套语），避免正文中提及标记造成的误判。
 pub fn parse_mode_detail(resp: &str) -> (ModeMarker, String) {
     let t = resp.trim_start();
-    if let Some(idx) = t.find(']') {
-        let head = &t[..=idx];
-        let marker = match head {
-            "[MODE:TASK:GCCP]" => ModeMarker::TaskGccp,
-            "[MODE:TASK]" => ModeMarker::Task,
-            "[MODE:CHAT]" => ModeMarker::Chat,
-            _ => return (ModeMarker::Chat, resp.to_string()),
-        };
-        let rest = t[idx + 1..].trim_start().to_string();
-        return (marker, rest);
+    if t.is_empty() {
+        return (ModeMarker::Chat, resp.to_string());
+    }
+    let win = t.len().min(64);
+    let head = &t[..win];
+    if let Some(idx) = head.find("[MODE:") {
+        if let Some(end_rel) = head[idx..].find(']') {
+            let end = idx + end_rel;
+            let marker = &head[idx..=end];
+            let mode = match marker {
+                "[MODE:TASK:GCCP]" => ModeMarker::TaskGccp,
+                "[MODE:TASK]" => ModeMarker::Task,
+                "[MODE:CHAT]" => ModeMarker::Chat,
+                _ => return (ModeMarker::Chat, resp.to_string()),
+            };
+            let rest = t[end + 1..].trim_start().to_string();
+            return (mode, rest);
+        }
     }
     (ModeMarker::Chat, resp.to_string())
 }

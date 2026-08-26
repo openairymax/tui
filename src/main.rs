@@ -21,6 +21,7 @@ mod gccp;
 mod ime;
 mod markdown;
 mod memory;
+mod models_cfg;
 mod panels;
 mod secrets;
 mod skills;
@@ -32,7 +33,10 @@ use anyhow::Result;
 use clap::Parser;
 use crossterm::{
     cursor::{Hide, MoveTo},
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEventKind,
+    },
     execute,
     terminal::{Clear, disable_raw_mode, enable_raw_mode, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -189,11 +193,17 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
         })?;
 
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide)
-        .map_err(|e| {
-            error!("Failed to enter alternate screen: {}", e);
-            e
-        })?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        Hide
+    )
+    .map_err(|e| {
+        error!("Failed to enter alternate screen: {}", e);
+        e
+    })?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)
@@ -237,7 +247,8 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
     /* 2.2.1.2 修复：F8 切 CLI 前必须清空主屏。退出 alt screen 后主屏
@@ -308,11 +319,21 @@ async fn run_app<B: Backend>(
             continue;
         }
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
+        match event::read()? {
+            Event::Paste(text) => {
+                // bracketed paste（2026-08-26）：向导编辑态插入字段；
+                // 对话态在光标处插入输入框（API Key / 长文本粘贴可用）
+                if app.wizard.active {
+                    app.wizard.handle_paste(&text);
+                } else {
+                    app.input_insert_text(&text);
+                }
                 continue;
             }
-
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
             match key.code {
                 KeyCode::Char('c') | KeyCode::Char('C')
                     if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
@@ -326,6 +347,10 @@ async fn run_app<B: Backend>(
                         if app.is_busy() {
                             info!("User pressed Ctrl+X, aborting pending request");
                             app.abort_task();
+                        } else if app.task_mode {
+                            // 空闲态且处于任务集：Ctrl+X 退出任务集（回到普通对话）
+                            info!("User pressed Ctrl+X, exiting task mode");
+                            app.exit_task_mode();
                         }
                     }
                 // Ctrl+Z：暂停/恢复后台请求等待（请求继续在网关执行）
@@ -477,8 +502,13 @@ async fn run_app<B: Backend>(
                             // 等待期间轮询按键：Ctrl+X 中止、Ctrl+Z 暂停/恢复、审批决议、
                             // 任务执行中输入文本（Enter 提交 → 插入对话队列，任务不打断）
                             if event::poll(Duration::ZERO)? {
-                                if let Event::Key(key) = event::read()? {
-                                    if key.kind == KeyEventKind::Press {
+                                match event::read()? {
+                                    Event::Paste(text) => {
+                                        // busy 期间粘贴 → 插入输入框（Enter 提交为插入对话）
+                                        app.input_insert_text(&text);
+                                    }
+                                    Event::Key(key) => {
+                                        if key.kind == KeyEventKind::Press {
                                         match key.code {
                                             KeyCode::Char('x') | KeyCode::Char('X')
                                                 if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
@@ -575,7 +605,9 @@ async fn run_app<B: Backend>(
                                             }
                                             _ => {}
                                         }
+                                        }
                                     }
+                                    _ => {}
                                 }
                             }
                             app.poll_pending();
@@ -749,6 +781,8 @@ async fn run_app<B: Backend>(
                 }
                 _ => {}
             }
+            }
+            _ => {}
         }
     }
 }

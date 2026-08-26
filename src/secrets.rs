@@ -24,18 +24,12 @@ pub fn secrets_path() -> PathBuf {
     PathBuf::from(".airymaxrt").join("config").join("secrets.env")
 }
 
-/// 已知模型 API Key 变量名（与 model.yaml providers[].api_key_env / wizard 对齐）。
-/// 展示顺序即 F2 配置面板列表顺序。
-pub const KNOWN_KEYS: [(&str, &str); 9] = [
-    ("DEEPSEEK_API_KEY", "DeepSeek"),
-    ("OPENAI_API_KEY", "OpenAI"),
-    ("ANTHROPIC_API_KEY", "Anthropic / Claude"),
-    ("GLM_API_KEY", "GLM / 智谱"),
-    ("DASHSCOPE_API_KEY", "Qwen / 通义"),
-    ("MOONSHOT_API_KEY", "Moonshot / Kimi"),
-    ("SILICONFLOW_API_KEY", "SiliconFlow"),
-    ("SPARK_API_KEY", "Spark / 讯飞"),
-    ("CUSTOM_LLM_API_KEY", "Custom LLM"),
+/// 已知模型 API Key 变量名（v2 表格形式：统一 MODEL_N_API_KEY，与 model.yaml
+/// models 表 / wizard 对齐）。展示顺序即 F2 配置面板列表顺序。
+pub const KNOWN_KEYS: [(&str, &str); 3] = [
+    ("MODEL_1_API_KEY", "模型 1（默认）"),
+    ("MODEL_2_API_KEY", "模型 2"),
+    ("MODEL_3_API_KEY", "模型 3"),
 ];
 
 /// 读取 secrets.env 全部键值对（KEY=VALUE；跳过空行与 # 注释；容忍 export 前缀与引号）。
