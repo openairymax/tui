@@ -509,6 +509,280 @@ upsert_profile_var() { # <KEY> <值>
     chmod 600 "$PROFILE_ENV" 2>/dev/null || true
 }
 
+# ── 自更新器：airymaxrt update ──────────────────────────────────────────────
+# 协议（与 tools/scripts/ci/release/publish-release.sh 对称）：
+#   1. 读 install.env 当前版本/通道
+#   2. 下载通道 manifest（latest/manifest.<channel>.json）→ GPG 验签
+#   3. 版本比较 → 下载当前平台 tarball → sha256 校验 → 架构自检
+#   4. 备份 bin/lib/include/share 到 .rollback/ → 热替换 → 更新 install.env
+#   5. 替换后自检；--rollback 手动恢复上次备份
+# 官方制品仓库：atomgit.com/openairymax/agentrt（releases 附件 + latest/ 固定入口）
+# 通道：stable / beta（tag 含 -beta./-rc. 归 beta）。
+AIRY_GPG_PUBKEY='-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEao7uahYJKwYBBAHaRw8BAQdAk8Ou1tA2EfX5xZT4ET79YJESeqINPyFF86MK
+cpPAQDO0NEFnZW50UlQgUmVsZWFzZSBTaWduaW5nIDxyZWxlYXNlQGFnZW50cnQu
+YWlyeW1heC5pbz6IkwQTFgoAOxYhBIbDf3xc3cxA57s+YuQ19/HMJP+EBQJqju5q
+AhsDBQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEOQ19/HMJP+EepEBANYY
+xAN1mQL4gulwMvH3xjiL6aEVm1PFjus33MXJrDmKAQDEck2sowTfLa1WneqUY93D
+QpegwKdM5Y9YiANOL8FODQ==
+=EPz8
+-----END PGP PUBLIC KEY BLOCK-----'
+
+# 版本比较（SemVer 简化：点分数字 + -beta.N/-rc.N 后缀）：输出 -1|0|1
+ver_cmp() { # <a> <b>
+    local a="$1" b="$2" apr="" bpr=""
+    a="${a#v}"; b="${b#v}"
+    case "$a" in *-*) apr="${a#*-}"; a="${a%%-*}";; esac
+    case "$b" in *-*) bpr="${b#*-}"; b="${b%%-*}";; esac
+    local -a av bv
+    IFS='.' read -r -a av <<< "$a"
+    IFS='.' read -r -a bv <<< "$b"
+    local n=$(( ${#av[@]} > ${#bv[@]} ? ${#av[@]} : ${#bv[@]} )) i x y
+    for ((i=0; i<n; i++)); do
+        x="${av[$i]:-0}"; y="${bv[$i]:-0}"
+        (( x > y )) && { echo 1; return; }
+        (( x < y )) && { echo -1; return; }
+    done
+    if [ -z "$apr" ] && [ -z "$bpr" ]; then echo 0; return; fi
+    if [ -z "$apr" ]; then echo 1; return; fi   # 正式版 > prerelease
+    if [ -z "$bpr" ]; then echo -1; return; fi
+    local an="${apr##*.}" bn="${bpr##*.}"
+    (( an > bn )) && echo 1 || { (( an < bn )) && echo -1 || echo 0; }
+}
+
+# 当前平台键（manifest artifacts 键名，与打包命名对齐）：linux-x86_64 / macos-arm64
+runtime_platform() {
+    local os arch
+    case "$(uname -s 2>/dev/null)" in
+        Darwin) os="macos"; arch="$(uname -m 2>/dev/null)" ;;   # arm64 / x86_64
+        *)      os="linux"; arch="$(detect_arch)" ;;
+    esac
+    echo "${os}-${arch}"
+}
+
+# manifest 字段提取（python3 优先，回退 grep 顶层键）
+manifest_get() { # <manifest> <latest|artifact:<platform>>
+    local f="$1" mode="$2"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$f" "$mode" <<'PYEOF'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+mode = sys.argv[2]
+if mode == "latest":
+    print(m.get("latest", ""))
+elif mode.startswith("artifact:"):
+    plat = mode.split(":", 1)[1]
+    rel = m.get("releases", {}).get(m.get("latest", ""), {})
+    art = rel.get("artifacts", {}).get(plat, {})
+    print(art.get("url", ""))
+    print(art.get("sha256", ""))
+PYEOF
+        return 0
+    fi
+    # 回退：仅顶层 latest / 单行 artifact 提取
+    case "$mode" in
+        latest) sed -n 's/.*"latest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1 ;;
+        artifact:*) : ;;
+    esac
+}
+
+# GPG 验签（独立 homedir，不污染用户 keyring；签名缺失拒绝——fail-closed
+# 防供应链攻击。公钥优先级：发布源 latest/keys/ 在线拉取（支持轮换）→
+# 本地 $AIRY_HOME/keys/ → 内置公钥（首次引导兜底））。
+verify_gpg_sig() { # <file> <sig.asc>
+    local f="$1" sig="$2"
+    [ -s "$sig" ] || { log warn "缺少签名文件（fail-closed），拒绝更新"; return 1; }
+    local GNUPG="$AIRY_HOME/tmp/gnupg-update"
+    mkdir -p "$GNUPG"
+    chmod 700 "$GNUPG"
+    local KEYF="$GNUPG/agentrt.asc"
+    if [ -z "${AIRY_NO_NETWORK:-}" ]; then
+        curl -fsSL --max-time 30 -o "$KEYF" \
+            "https://raw.atomgit.com/${AIRY_RELEASE_OWNER:-openairymax/agentrt}/raw/main/latest/keys/agentrt.asc" >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$KEYF" ] && [ -f "$AIRY_HOME/keys/agentrt.asc" ]; then
+        cp -f "$AIRY_HOME/keys/agentrt.asc" "$KEYF" 2>/dev/null || true
+    fi
+    [ -s "$KEYF" ] || printf '%s\n' "$AIRY_GPG_PUBKEY" > "$KEYF"
+    gpg --batch --quiet --no-tty --homedir "$GNUPG" --import "$KEYF" >/dev/null 2>&1 || return 1
+    gpg --batch --no-tty --homedir "$GNUPG" --verify "$sig" "$f" >/dev/null 2>&1
+}
+
+# 替换包体：sha256 强制校验 → 备份 → 热替换 → 自检 → 失败自动回滚 →
+# 更新 install.env。期望校验值由调用方传入（manifest 或 --sha256/相邻 .sha256），
+# 缺期望值直接拒绝（问题 12：离线包/远程包统一防绕过验签口径）。
+apply_package() { # <tarball> [expect_sha]
+    local tarball="$1" expect_sha="$2" arch="$(detect_arch)"
+    local TMPD="$AIRY_HOME/tmp/apply.$$"
+    rm -rf "$TMPD"; mkdir -p "$TMPD"
+    # sha256 强制校验（fail-closed）
+    if [ -n "$expect_sha" ]; then
+        if ! echo "${expect_sha}  ${tarball}" | sha256sum -c - >/dev/null 2>&1; then
+            log error "sha256 校验失败，拒绝安装"; rm -rf "$TMPD"; return 1
+        fi
+        log ok "sha256 校验通过"
+    else
+        log error "缺少 sha256 期望值，拒绝安装（防供应链绕过）"; rm -rf "$TMPD"; return 1
+    fi
+    # 架构自检（同 install.sh install_binary 口径）
+    if tar -tzf "$tarball" 2>/dev/null | grep -q "platform-${arch}"; then
+        log info "架构校验通过（${arch}）"
+    elif tar -tzf "$tarball" 2>/dev/null | grep -qE 'platform-(x86_64|aarch64|armv7l|riscv64)'; then
+        log error "制品架构与当前主机（${arch}）不匹配，拒绝更新"
+        rm -rf "$TMPD"; return 1
+    fi
+    tar -xzf "$tarball" -C "$TMPD" || { log error "解压失败"; rm -rf "$TMPD"; return 1; }
+    local extracted="$(find "$TMPD" -maxdepth 1 -type d -name 'agentrt-*' | head -1)"
+    [ -n "$extracted" ] || { log error "包结构异常（缺 agentrt-* 顶层目录）"; rm -rf "$TMPD"; return 1; }
+    local new_ver="$(basename "$extracted" | sed 's/^agentrt-//')"
+    # 备份当前版本
+    local cur_ver="$(sed -n 's/^AIRY_VERSION=//p' "$AIRY_HOME/config/install.env" 2>/dev/null | head -1)"
+    local bkup="$AIRY_HOME/.rollback/${cur_ver:-pre-update}"
+    rm -rf "$bkup"; mkdir -p "$bkup"
+    for d in bin lib include share; do
+        [ -d "$AIRY_HOME/$d" ] && cp -r "$AIRY_HOME/$d" "$bkup/" 2>/dev/null || true
+    done
+    log info "已备份当前版本: .rollback/（${cur_ver:-pre-update}）"
+    # 热替换（保留 config 用户配置/data/run/logs）
+    [ -d "$extracted/bin" ]     && cp -f "$extracted"/bin/*     "$AIRY_HOME/bin/"    2>/dev/null || true
+    [ -d "$extracted/lib" ]     && cp -f "$extracted"/lib/*     "$AIRY_HOME/lib/"    2>/dev/null || true
+    [ -d "$extracted/include" ] && cp -rf "$extracted"/include/* "$AIRY_HOME/include/" 2>/dev/null || true
+    [ -d "$extracted/share" ]   && cp -rf "$extracted"/share/*   "$AIRY_HOME/share/"   2>/dev/null || true
+    if [ -d "$extracted/config" ]; then
+        for f in "$extracted"/config/*; do
+            [ -f "$f" ] || continue
+            b="$(basename "$f")"
+            case "$b" in
+                secrets.env) continue ;;   # 用户敏感配置绝不覆盖
+                *) [ -f "$AIRY_HOME/config/$b" ] || cp -f "$f" "$AIRY_HOME/config/" 2>/dev/null || true ;;
+            esac
+        done
+    fi
+    # 同步签名公钥（新包自带时）
+    [ -f "$extracted/keys/agentrt.asc" ] && cp -f "$extracted/keys/agentrt.asc" "$AIRY_HOME/keys/" 2>/dev/null || true
+    # 自检：关键二进制存在（防止不完整包静默替换导致 daemon 群起不来）
+    if [ ! -x "$AIRY_HOME/bin/airy_cli" ] && [ ! -x "$AIRY_HOME/bin/agentrt-bootstrap.sh" ]; then
+        log error "热替换自检失败（bin/ 关键组件缺失），自动回滚…"
+        for d in bin lib include share; do
+            [ -d "$bkup/$d" ] && cp -rf "$bkup/$d"/* "$AIRY_HOME/$d/" 2>/dev/null || true
+        done
+        rm -rf "$TMPD"
+        return 1
+    fi
+    # 固化新版本到 install.env
+    if [ -f "$AIRY_HOME/config/install.env" ]; then
+        sed -i "s|^AIRY_VERSION=.*|AIRY_VERSION=v${new_ver}|" "$AIRY_HOME/config/install.env" 2>/dev/null || \
+            printf 'AIRY_VERSION=v%s\n' "$new_ver" >> "$AIRY_HOME/config/install.env"
+    fi
+    rm -rf "$TMPD"
+    # 回滚备份只保留最近 3 份（问题 11：rollback 目录无限膨胀清理）
+    ls -1d "$AIRY_HOME"/.rollback/*/ 2>/dev/null | sort -r | tail -n +4 | while read -r old; do
+        rm -rf "$old"
+    done
+    log ok "更新完成: v${new_ver}（重跑 airymaxrt 生效）"
+    return 0
+}
+
+airymaxrt_update() { # update [--check] [--yes] [--channel stable|beta|rc] [--rollback] [--file <tarball>] [--sha256 <hash>]
+    local CHECK=0 CHANNEL="" ROLLBACK=0 FILE="" SHA256="" inst_env="$AIRY_HOME/config/install.env"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --check|-c) CHECK=1 ;;
+            --channel) CHANNEL="${2:-}"; shift ;;
+            --rollback) ROLLBACK=1 ;;
+            --file|-f) FILE="${2:-}"; shift ;;
+            --sha256) SHA256="${2:-}"; shift ;;
+            --yes|-y) : ;;   # 幂等：非交互本就默认继续
+            *) log error "未知参数: $1（--check/--channel/--rollback/--file/--sha256）"; return 2 ;;
+        esac
+        shift
+    done
+    # 当前版本/通道（install.env 固化，安装信息只读）
+    local cur_ver="" cur_ch="stable"
+    if [ -f "$inst_env" ]; then
+        cur_ver="$(sed -n 's/^AIRY_VERSION=//p' "$inst_env" | head -1)"
+        cur_ch="$(sed -n 's/^AIRY_CHANNEL=//p' "$inst_env" | head -1)"
+    fi
+    CHANNEL="${CHANNEL:-${cur_ch:-stable}}"
+    case "$CHANNEL" in stable|beta|rc) ;; *) log error "通道无效: $CHANNEL（stable|beta|rc）"; return 2 ;; esac
+
+    # 回滚
+    if [ "$ROLLBACK" = "1" ]; then
+        local rb="$(ls -1d "$AIRY_HOME"/.rollback/*/ 2>/dev/null | sort -r | head -1)"
+        [ -n "$rb" ] || { log error "无可用回滚备份（.rollback/ 为空）"; return 1; }
+        log info "回滚到: $(basename "$rb")…"
+        for d in bin lib include share; do
+            [ -d "$rb/$d" ] && cp -rf "$rb/$d"/* "$AIRY_HOME/$d/" 2>/dev/null || true
+        done
+        # 恢复版本号（备份目录名即被回滚版本的 AIRY_VERSION）
+        if [ -f "$inst_env" ]; then
+            local rb_ver="$(basename "$rb")"
+            if [ "$rb_ver" != "pre-update" ]; then
+                sed -i "s|^AIRY_VERSION=.*|AIRY_VERSION=${rb_ver}|" "$inst_env" 2>/dev/null || \
+                    printf 'AIRY_VERSION=%s\n' "$rb_ver" >> "$inst_env"
+            fi
+        fi
+        log ok "回滚完成（重新运行 airymaxrt 生效）"
+        return 0
+    fi
+
+    # 本地离线包更新（需 sha256 强制校验：--sha256 <hash> 或相邻 .sha256 文件，
+    # 缺期望值拒绝 —— 问题 12：离线包不得绕过验签）
+    if [ -n "$FILE" ]; then
+        [ -f "$FILE" ] || { log error "本地包不存在: $FILE"; return 1; }
+        local expect_sha="$SHA256"
+        if [ -z "$expect_sha" ] && [ -f "${FILE}.sha256" ]; then
+            expect_sha="$(cut -d' ' -f1 "${FILE}.sha256" 2>/dev/null)"
+        fi
+        if [ -z "$expect_sha" ]; then
+            log error "离线包必须提供校验值：--sha256 <hash> 或相邻 ${FILE}.sha256（防供应链绕过）"
+            return 1
+        fi
+        log info "应用本地离线包: $(basename "$FILE")（sha256 强制校验）…"
+        apply_package "$FILE" "$expect_sha"
+        return $?
+    fi
+
+    # 远程通道更新
+    local base="https://raw.atomgit.com/openairymax/agentrt/raw/main/latest"
+    local man_url="$base/manifest.${CHANNEL}.json"
+    local TMPD="$AIRY_HOME/tmp/update.$$"
+    rm -rf "$TMPD"; mkdir -p "$TMPD"
+    log info "检查更新（通道: ${CHANNEL}，当前: ${cur_ver:-<未安装>}）…"
+    curl -fsSL --max-time 60 -o "$TMPD/manifest.json" "$man_url" || { log error "manifest 下载失败: ${man_url}"; rm -rf "$TMPD"; return 1; }
+    curl -fsSL --max-time 60 -o "$TMPD/manifest.json.asc" "${man_url}.asc" >/dev/null 2>&1 || true
+    verify_gpg_sig "$TMPD/manifest.json" "$TMPD/manifest.json.asc" || { log error "manifest 验签失败（GPG），拒绝更新"; rm -rf "$TMPD"; return 1; }
+    log info "manifest 验签通过（GPG）"
+    local latest="$(manifest_get "$TMPD/manifest.json" latest)"
+    [ -n "$latest" ] || { log error "manifest 解析失败"; rm -rf "$TMPD"; return 1; }
+    local cmp="$(ver_cmp "${cur_ver:-0.0.0}" "$latest")"
+    if [ "$cmp" = "0" ] || [ "$cmp" = "1" ]; then
+        log info "已是最新: ${cur_ver:-<未安装>}（最新 ${latest}）"
+        rm -rf "$TMPD"
+        return 0
+    fi
+    log info "发现新版本: ${cur_ver:-<未安装>} → ${latest}（${CHANNEL}）"
+    [ "$CHECK" = "1" ] && { log info "仅检查模式：更新可用"; rm -rf "$TMPD"; return 0; }
+    # 当前平台制品
+    local plat="$(runtime_platform)"
+    local art_url art_sha
+    art_url="$(manifest_get "$TMPD/manifest.json" "artifact:${plat}" | sed -n 1p)"
+    art_sha="$(manifest_get "$TMPD/manifest.json" "artifact:${plat}" | sed -n 2p)"
+    [ -n "$art_url" ] || { log error "当前平台 ${plat} 无可用制品"; rm -rf "$TMPD"; return 1; }
+    local tarball="$TMPD/$(basename "${art_url%%\?*}")"
+    log info "下载制品: ${art_url}"
+    curl -fsSL --max-time 600 -o "$tarball" "$art_url" || { log error "制品下载失败"; rm -rf "$TMPD"; return 1; }
+    # sha256 校验收敛到 apply_package（fail-closed：manifest 缺 sha256 拒绝）
+    apply_package "$tarball" "$art_sha"
+    local rc=$?
+    rm -rf "$TMPD"
+    return $rc
+}
+
 # ── 子命令：help / status / doctor / uninstall ──────────────────────────────
 # 86：CLI/TUI 随时转换——`cli` 子命令不直接 exec（否则跳过 daemon 群启动，
 # CLI 直连 socket 时群未拉起会报"目标不存在"），而是置 FORCE_CLI 标记后
@@ -525,6 +799,9 @@ case "$CMD" in
         echo "                        （monitor --daemon 后台常驻 / --stop 停止）"
         echo "      airymaxrt status      查看运行时状态"
         echo "      airymaxrt doctor      组件健康检查"
+        echo "      airymaxrt update      自更新（--check 仅检查 / --channel stable|beta|rc"
+        echo "                            切通道 / --rollback 回滚 / --file 离线包"
+        echo "                            （离线包需 --sha256 或相邻 .sha256））"
         echo "      airymaxrt uninstall   一键卸载（--keep-data 保留记忆数据）"
         exit 0
         ;;
@@ -779,6 +1056,12 @@ case "$CMD" in
             log warn "未找到安装器脚本，请手动删除: $AIRY_HOME"
             exit 1
         fi
+        ;;
+    update)
+        # 自更新器：检查/执行官方通道更新（stable|beta），GPG 验签 + sha256 校验
+        shift
+        airymaxrt_update "$@"
+        exit $?
         ;;
 esac
 # 正常启动：透传剩余参数给 TUI
