@@ -41,8 +41,21 @@ fn main() {
     #[cfg(feature = "memoryrovol")]
     {
         println!("cargo:rerun-if-env-changed=MEMORYROVOL_LIB");
+        println!("cargo:rerun-if-env-changed=MEMORYROVOL_OSS_LIB");
         println!("cargo:rerun-if-env-changed=AIRY_HOME");
         println!("cargo:rerun-if-changed=build.rs");
+        // 库文件出现/变化必须重跑本脚本：首次构建时 OSS 库尚未部署（仅
+        // PRO 库存在）会选择 PRO 库，之后 OSS 库补建时若无此指令，cargo
+        // 沿用缓存链接 PRO 库 → airy_thread_* 未定义（TUI 独立二进制
+        // 无法链接依赖 agentrt 运行时符号的 PRO 库）。
+        if let Ok(home) = env::var("AIRY_HOME") {
+            for name in ["libagentrt_memoryrovol_oss.a", "libagentrt_memoryrovol.a"] {
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    Path::new(&home).join("lib").join(name).display()
+                );
+            }
+        }
 
         if let Some(lib) = locate_lib() {
             if is_asan_instrumented(&lib) {
