@@ -83,7 +83,9 @@ fi
 AIRY_HOME="${AIRY_HOME:-$HOME/.airymaxrt}"
 # 导出给子进程（TUI / airy_cli / daemon 群统一运行时根，避免默认 $HOME 分叉）
 export AIRY_HOME
-RUNTIME_DIR="${AIRY_RUNTIME_DIR:-$AIRY_HOME/run}"
+# 0.1.6c 系统性修复：AIRY_HOME 为权威运行根，RUNTIME_DIR 一律从最终
+# AIRY_HOME 派生（父环境残留的旧 AIRY_RUNTIME_DIR 会使 socket 探测分叉）。
+RUNTIME_DIR="${AIRY_HOME}/run"
 GATEWAY_PORT="${AIRY_GATEWAY_PORT:-8080}"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
 
@@ -332,7 +334,7 @@ if [ -f "$AIRY_HOME/bin/agentrt-env.sh" ]; then
     . "$AIRY_HOME/bin/agentrt-env.sh"
     AIRY_HOME="$_AIRY_HOME_RESOLVED"
     export AIRY_HOME
-    RUNTIME_DIR="${AIRY_RUNTIME_DIR:-$AIRY_HOME/run}"
+    RUNTIME_DIR="${AIRY_HOME}/run"
     log debug "agentrt-env.sh 注入后恢复 AIRY_HOME=$AIRY_HOME RUNTIME_DIR=$RUNTIME_DIR"
 fi
 
