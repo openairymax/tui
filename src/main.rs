@@ -551,14 +551,26 @@ async fn run_app<B: Backend>(
                                                 }
                                             }
                                             // 工具级权限审批（Claude Code 风格 permission prompt）
-                                            KeyCode::Char('a') | KeyCode::Char('y') => {
+                                            // 0.1.7：仅当存在待审批请求时生效——此前无条件拦截
+                                            // a/y/n/d/A，busy 期间输入含这些字母的文本会被吞字并
+                                            // 向对话区插入"没有待决议的权限请求"污染聊天。
+                                            KeyCode::Char('a') | KeyCode::Char('y')
+                                                if !app.approvals.is_empty()
+                                                    && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                            {
                                                 app.approve_request("allow");
                                             }
-                                            KeyCode::Char('A') => {
+                                            KeyCode::Char('A')
+                                                if !app.approvals.is_empty()
+                                                    && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                            {
                                                 app.approve_request("always");
                                             }
                                             KeyCode::Char('n') | KeyCode::Char('N')
-                                                | KeyCode::Char('d') | KeyCode::Char('D') => {
+                                                | KeyCode::Char('d') | KeyCode::Char('D')
+                                                if !app.approvals.is_empty()
+                                                    && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                            {
                                                 app.approve_request("deny");
                                             }
                                             // ── 2.3.13：等待回复（busy）期间 F6/F7 可切换看板/事件流 ──
@@ -578,6 +590,31 @@ async fn run_app<B: Backend>(
                                             // F10：内置拼音输入法切换（busy 插入对话场景同样可用）
                                             KeyCode::F(10) => {
                                                 app.ime_toggle();
+                                            }
+                                            // 0.1.7：busy 期间（LLM 生成可达数十秒）允许滚动阅读旧
+                                            // 消息与展开/折叠思考链——此前落入 _ => {} 被吞，长生成
+                                            // 期间用户无法回看上下文。
+                                            KeyCode::Up if app.ime_visible() => {
+                                                app.ime_move_sel(-1);
+                                            }
+                                            KeyCode::Down if app.ime_visible() => {
+                                                app.ime_move_sel(1);
+                                            }
+                                            KeyCode::Up => app.scroll_up(),
+                                            KeyCode::Down => app.scroll_down(),
+                                            KeyCode::PageUp if app.ime_visible() => {
+                                                app.ime_page_flip(-1);
+                                            }
+                                            KeyCode::PageDown if app.ime_visible() => {
+                                                app.ime_page_flip(1);
+                                            }
+                                            KeyCode::PageUp => app.scroll_page_up(),
+                                            KeyCode::PageDown => app.scroll_page_down(),
+                                            KeyCode::Char('e') | KeyCode::Char('E')
+                                                if key.modifiers.contains(event::KeyModifiers::ALT)
+                                                    && !app.ime_visible() =>
+                                            {
+                                                app.browse_expanded = !app.browse_expanded;
                                             }
                                             // IME 拼音态：Esc 取消拼音（微信语义）
                                             KeyCode::Esc if app.ime_visible() => {
@@ -623,7 +660,13 @@ async fn run_app<B: Backend>(
                                             KeyCode::End => {
                                                 app.cursor_end();
                                             }
-                                            KeyCode::Char(c) => {
+                                            // 0.1.7：带修饰键的字符（Alt+E 展开/折叠、Ctrl+E 光标到行尾、
+                                            // Alt+1..9 切换标签）不能落入普通字符插入——此前 busy 期间
+                                            // 按 Alt+E/Ctrl+E 被当 'e' 插入输入框，交互动作静默丢失。
+                                            KeyCode::Char(c)
+                                                if key.modifiers.is_empty()
+                                                    || key.modifiers == event::KeyModifiers::SHIFT =>
+                                            {
                                                 if !app.ime_input_char(c) {
                                                     // 普通字符插入输入框（光标感知；IME 拼音态已消费时跳过）
                                                     app.input_insert_char(c);

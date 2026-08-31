@@ -404,8 +404,14 @@ fn build_minimal_yaml(row: &ModelRow, think: &ThinkCfg) -> String {
     let mut s = String::new();
     s.push_str("# AgentRT 大语言模型配置（由 TUI 向导生成）\n");
     s.push_str("models:\n");
+    // name 单独成行一次（此前在循环内重复写 `- name:`，生成 N 个碎片
+    // 模型项，read_model_yaml 取 rows.first() 读到空 context_window，
+    // 向导高级选项配置静默丢失——0.1.8 修复）
+    s.push_str(&format!("  - name: {}\n", row.name));
     for (k, v) in row_pairs(row) {
-        s.push_str(&format!("  - name: {}\n", row.name));
+        if k == "name" {
+            continue;
+        }
         s.push_str(&format!("    {}: {}\n", k, v));
     }
     s.push('\n');

@@ -6,7 +6,7 @@
 // AirymaxRT TUI 主渲染：统一布局与主题（极简自适应）。
 
 // Layout structure（主内容区随终端大小弹性伸缩）:
-// ┌─ ◈ AirymaxRT v0.1.2 ───────────── ● ONLINE  22:45:33 ─┐
+// ┌─ ◈ AirymaxRT v0.1.8 ───────────── ● ONLINE  22:45:33 ─┐
 // │ 对话 2 · 技能 3 · 记忆 128     模型 deepseek-v4-flash  │
 // │ 12,345 tok · $0.0080 · [对话]                         │
 // └──────────────────────────────────────────────────────┘  ← 英雄区
@@ -589,7 +589,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(theme::primary()),
         ));
         spans.push(Span::styled(
-            "  输入  Enter 发送 · Alt+Enter 换行 · ↑/↓ 历史",
+            "  输入  Enter 发送 · Alt+Enter 换行 · Alt+↑/↓ 历史",
             Style::default().fg(theme::faint()),
         ));
     }

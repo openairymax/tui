@@ -219,6 +219,11 @@ pub struct WizardState {
     /// 步骤 3 模型基本字段快照（进入步骤 4 时保存，finish 写 model.yaml 用；
     /// 步骤 5 时 cfg_fields 已被双思考字段覆盖，不能丢失模型连接配置）
     model_fields: Vec<String>,
+    /// 步骤 4 高级选项快照（进入步骤 5 时保存，finish 写 model.yaml 用；
+    /// 步骤 5 时 cfg_fields 已被双思考字段覆盖，不能丢失高级选项编辑——
+    /// 0.1.7 修复：此前 adv_values() 在 step=5 时 cfg_fields.len()==4 回落
+    /// 默认值，用户在步骤 4 编辑的上下文窗口/最大输出等被静默覆盖）
+    adv_fields: Vec<String>,
     /// 字段光标 / 编辑态
     pub cfg_cursor: usize,
     pub editing: bool,
@@ -246,6 +251,7 @@ impl WizardState {
             effective_lang: Lang::detect(),
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
+            adv_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -281,6 +287,7 @@ impl WizardState {
         self.edit_pos = 0;
         self.touched = vec![false; 7];
         self.model_fields = Vec::new();
+        self.adv_fields = Vec::new();
         self.result = None;
         log::info!("wizard: reopened via /hiairy");
     }
@@ -485,6 +492,11 @@ impl WizardState {
                         if self.step == 3 {
                             // 离开步骤 3 前快照模型基本字段（finish 写 model.yaml 用）
                             self.model_fields = self.cfg_fields.clone();
+                        } else if self.step == 4 {
+                            // 0.1.7：离开步骤 4 前快照高级选项（finish 写
+                            // model.yaml 用；进入步骤 5 后 cfg_fields 被双思考
+                            // 字段覆盖，此前 adv_values() 因此回落默认值）
+                            self.adv_fields = self.cfg_fields.clone();
                         }
                         self.step += 1;
                         self.enter_step_form(self.step);
@@ -528,7 +540,12 @@ impl WizardState {
                 self.touched = vec![false; 7];
             }
             4 => {
-                self.cfg_fields = if let Some(r) = m.rows.first() {
+                // 0.1.7：从步骤 5 返回步骤 4 时恢复高级选项快照（此前
+                // enter_step_form(4) 重读 model.yaml，本轮编辑丢失）；
+                // 无快照（首次进入）则读现有 model.yaml 回填。
+                self.cfg_fields = if self.adv_fields.len() == 5 {
+                    self.adv_fields.clone()
+                } else if let Some(r) = m.rows.first() {
                     vec![
                         if r.context_window.is_empty() { "128k".into() } else { r.context_window.clone() },
                         if r.max_output.is_empty() { "16k".into() } else { r.max_output.clone() },
@@ -760,19 +777,27 @@ impl WizardState {
         true
     }
 
-    /// 步骤 4 高级选项值（未进入步骤 4 时用默认）。
+    /// 步骤 4 高级选项值（未进入步骤 4 时用默认；0.1.7：优先读步骤 4
+    /// 快照——finish 时 step=5、cfg_fields 已被双思考字段覆盖，此前
+    /// len==5 判断失效导致编辑静默丢失，回落默认值）。
     fn adv_values(&self) -> (String, String, String, String, String) {
         let d = default_adv_fields();
-        if self.step >= 4 && self.cfg_fields.len() == 5 {
-            (
-                self.cfg_fields[0].clone(),
-                self.cfg_fields[1].clone(),
-                self.cfg_fields[2].clone(),
-                self.cfg_fields[3].clone(),
-                self.cfg_fields[4].clone(),
-            )
+        let src: Option<&Vec<String>> = if self.adv_fields.len() == 5 {
+            Some(&self.adv_fields)
+        } else if self.cfg_fields.len() == 5 {
+            Some(&self.cfg_fields)
         } else {
-            (d[0].clone(), d[1].clone(), d[2].clone(), d[3].clone(), d[4].clone())
+            None
+        };
+        match src {
+            Some(f) => (
+                f[0].clone(),
+                f[1].clone(),
+                f[2].clone(),
+                f[3].clone(),
+                f[4].clone(),
+            ),
+            None => (d[0].clone(), d[1].clone(), d[2].clone(), d[3].clone(), d[4].clone()),
         }
     }
 
@@ -1445,6 +1470,7 @@ mod tests {
             effective_lang: Lang::Chinese,
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
+            adv_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1494,6 +1520,7 @@ mod tests {
             effective_lang: Lang::Chinese,
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
+            adv_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1564,6 +1591,7 @@ mod tests {
             effective_lang: Lang::English,
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
+            adv_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1585,6 +1613,7 @@ mod tests {
             effective_lang: Lang::Auto,
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
+            adv_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1613,6 +1642,7 @@ mod tests {
             effective_lang: Lang::Chinese,
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
+            adv_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1632,5 +1662,53 @@ mod tests {
         assert_eq!(w.cfg_fields.len(), 7, "返回步骤 3 恢复 7 字段");
         assert!(w.cfg_fields[4].contains("dashscope"), "base_url 保留");
         assert_eq!(w.cfg_fields[5], "qwen-max", "model_id 保留");
+    }
+
+    /// 0.1.7：步骤 4 高级选项编辑必须在 finish 时保留（此前 finish 时
+    /// cfg_fields 已被步骤 5 双思考字段覆盖，adv_values() 回落默认值，
+    /// 上下文窗口/最大输出等编辑被静默丢失）。
+    #[test]
+    fn step4_adv_fields_survive_finish() {
+        let tmp = std::env::temp_dir().join(format!("airymaxrt-wiz-adv-{}", std::process::id()));
+        std::env::set_var("AIRY_HOME", &tmp);
+        let _ = std::fs::create_dir_all(tmp.join("config"));
+        let _ = std::fs::create_dir_all(tmp.join("tui"));
+
+        let mut w = WizardState {
+            active: true,
+            step: 3,
+            lang_cursor: 0,
+            config_cursor: 0,
+            effective_lang: Lang::Chinese,
+            cfg_fields: default_model_fields(),
+            model_fields: Vec::new(),
+            adv_fields: Vec::new(),
+            cfg_cursor: 0,
+            editing: false,
+            edit_pos: 0,
+            touched: vec![false; 7],
+            result: None,
+        };
+        // 步骤 3 → 4（快照模型基本字段）
+        w.cfg_cursor = 7;
+        assert!(!w.handle_key(&k(KeyCode::Enter)));
+        assert_eq!(w.step, 4);
+        // 步骤 4：编辑高级选项（上下文窗口 32k、最大输出 4k、工具轮数 50）
+        w.cfg_fields[0] = "32k".to_string();
+        w.cfg_fields[1] = "4k".to_string();
+        w.cfg_fields[2] = "50".to_string();
+        // 下一步到 5（快照步骤 4 字段）
+        w.cfg_cursor = 5;
+        assert!(!w.handle_key(&k(KeyCode::Enter)));
+        assert_eq!(w.step, 5);
+        assert_eq!(w.cfg_fields.len(), 4, "步骤 5 双思考字段 4 项");
+        // 再下一步 → finish，写回 model.yaml
+        w.cfg_cursor = 4;
+        assert!(w.handle_key(&k(KeyCode::Enter)));
+        let m = models_cfg::read_model_yaml();
+        let r = m.rows.first().expect("应写入模型行");
+        assert_eq!(r.context_window, "32k", "上下文窗口编辑保留");
+        assert_eq!(r.max_output, "4k", "最大输出编辑保留");
+        assert_eq!(r.tool_rounds, "50", "工具轮数编辑保留");
     }
 }

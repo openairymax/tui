@@ -56,8 +56,9 @@ fn dual_think_label(model: &str) -> &'static str {
     "[Dual Think]"
 }
 
-/// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：最新 Agent 回复渲染
-/// 行数超过 FOLD_MAX_LINES 时，live 视口只显示前 FOLD_KEEP_LINES 行 +
+/// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：折叠仅作用于 System
+/// 思考链消息（Agent 最终答复不折叠，完整展示——chat.rs:append_message）。
+/// 渲染行数超过 FOLD_MAX_LINES 时，live 视口只显示前 FOLD_KEEP_LINES 行 +
 /// 折叠尾；Alt+E 浏览展开（0.1.7：不再"一滚就展开"——展开会改变内容
 /// 总行数，让滚动位置凭空跳变，社区反馈"滚动反人性"）。
 /// 阈值与 C 版 CLI_REPLY_FOLD_MAX=6 保持一致（节省屏幕空间，适配端侧小屏）。
@@ -149,8 +150,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // 流式思考链状态行（SSE __airy_evt:reasoning 事件 → stream_reasoning）：
     // thinking 模型先思考后回答。思考内容为模型内部推理碎片，逐块上屏
     // 无展示价值（用户反馈"看不懂、没有价值"）——流式期间仅显示一行
-    // 状态（字数 + 耗时进度），完整思考链落定后折叠为摘要行，浏览（↑）
-    // 时展开全量。标签按模型轨区分（2.3.14）：t2/t1-f/t1-p → [Dual
+    // 状态（字数 + 耗时进度），完整思考链落定后折叠为摘要行，Alt+E
+    // 展开全量。标签按模型轨区分（2.3.14）：t2/t1-f/t1-p → [Dual
     // Slow/Fast/Prof Think]。正文首片到达（streaming_text 非空）即隐藏，
     // 与 C 版 CLI 的思考进度行竞态门控对齐（2026-08-19）。
     if app.loading
@@ -776,7 +777,7 @@ mod tests {
     use crate::markdown::wrap_line;
     use ratatui::text::Line;
 
-    /// 长回复折叠：超阈值折叠为 KEEP 行 + 折叠尾；展开态（Ctrl+E）显示全量。
+    /// 长回复折叠：超阈值折叠为 KEEP 行 + 折叠尾；展开态（Alt+E）显示全量。
     #[test]
     fn fold_view_collapses_long_reply() {
         let mut lines: Vec<Line> = Vec::new();
@@ -803,7 +804,7 @@ mod tests {
         }
         // 未超阈值：不折叠
         assert!(build_fold_view(&lines, 0, 6, false, 3).is_none(), "短回复不折叠");
-        // 展开态（Ctrl+E）：显示全量
+        // 展开态（Alt+E）：显示全量
         let mut long: Vec<Line> = Vec::new();
         for i in 0..20 {
             long.push(Line::raw(format!("line {i}")));
