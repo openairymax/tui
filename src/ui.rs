@@ -89,7 +89,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Block::default()
             .style(Style::default().bg(theme::bar()))
             .borders(ratatui::widgets::Borders::BOTTOM)
-            .border_style(Style::default().fg(theme::PRIMARY)),
+            .border_style(Style::default().fg(theme::primary())),
         hero_split[1],
     );
     // 多会话 tab 栏（Chat 面板顶部一行；仅存在多会话时渲染）
@@ -135,8 +135,8 @@ fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             "[中]",
             Style::default()
-                .fg(theme::ON_COLOR)
-                .bg(theme::PRIMARY)
+                .fg(theme::on_color())
+                .bg(theme::primary())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -150,8 +150,8 @@ fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(
             format!(" {} ", app.ime_buf),
             Style::default()
-                .fg(theme::ON_COLOR)
-                .bg(theme::PRIMARY)
+                .fg(theme::on_color())
+                .bg(theme::primary())
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
@@ -164,8 +164,8 @@ fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
                 spans.push(Span::styled(
                     tag,
                     Style::default()
-                        .fg(theme::ON_COLOR)
-                        .bg(theme::PRIMARY)
+                        .fg(theme::on_color())
+                        .bg(theme::primary())
                         .add_modifier(Modifier::BOLD),
                 ));
             } else {
@@ -205,11 +205,11 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
     let line1 = Line::from(vec![
         Span::styled(
             " ⚠ ",
-            Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "工具审批请求",
-            Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  ·  主体: {}", if a.agent_id.is_empty() { "unknown" } else { &a.agent_id }),
@@ -217,7 +217,7 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(
             format!("  ·  工具: {}", a.tool),
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(
@@ -236,17 +236,17 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         Span::styled(
             "[a] 允许本次",
-            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::success()).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             "[A] 始终允许",
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             "[n] 拒绝",
-            Style::default().fg(theme::DANGER).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::danger()).add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(
@@ -272,8 +272,8 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(
             format!(" {} {} ", i + 1, title),
             Style::default()
-                .fg(if active { theme::ON_COLOR } else { theme::dim() })
-                .bg(if active { theme::PRIMARY } else { theme::surface_3() })
+                .fg(if active { theme::on_color() } else { theme::dim() })
+                .bg(if active { theme::primary() } else { theme::surface_3() })
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("  ", Style::default()));
@@ -297,11 +297,11 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
     let bar_bg = theme::bar();
     // 状态灯
     let (light, label, color) = if app.connected {
-        ("●", "ONLINE", theme::SUCCESS)
+        ("●", "ONLINE", theme::success())
     } else if app.loading {
-        ("◐", "WAITING", theme::WARNING)
+        ("◐", "WAITING", theme::warning())
     } else {
-        ("●", "OFFLINE", theme::DANGER)
+        ("●", "OFFLINE", theme::danger())
     };
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
     let ver = app
@@ -314,8 +314,8 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             " ◈ AirymaxRT ",
             Style::default()
-                .fg(theme::ON_COLOR)
-                .bg(theme::PRIMARY)
+                .fg(theme::on_color())
+                .bg(theme::primary())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!(" v{ver} "), Style::default().fg(theme::faint())),
@@ -338,7 +338,7 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         spans.push(seg());
         spans.push(Span::styled(
             model_text,
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             format!("  {} tok · ${:.4}", app.tokens, app.cost),
@@ -353,7 +353,7 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(
             badge_text,
             Style::default()
-                .fg(theme::ON_COLOR)
+                .fg(theme::on_color())
                 .bg(badge_color)
                 .add_modifier(Modifier::BOLD),
         ));
@@ -361,16 +361,16 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
             spans.push(Span::styled(
                 "  ⏸ 已暂停 ",
                 Style::default()
-                    .fg(theme::ON_COLOR)
-                    .bg(theme::PRIMARY)
+                    .fg(theme::on_color())
+                    .bg(theme::primary())
                     .add_modifier(Modifier::BOLD),
             ));
         } else if let crate::gccp::TaskControl::Aborted = app.task_control {
             spans.push(Span::styled(
                 "  ✕ 已中止 ",
                 Style::default()
-                    .fg(theme::ON_COLOR)
-                    .bg(theme::DANGER)
+                    .fg(theme::on_color())
+                    .bg(theme::danger())
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -392,11 +392,11 @@ fn seg() -> Span<'static> {
 /// 阶段徽章配色（对话 / 任务事实确认 / 目标澄清 / 任务流程图确认 / 任务集）
 fn phase_badge(phase: FlowPhase) -> (String, ratatui::style::Color) {
     match phase {
-        FlowPhase::Chat => (" 对话 ".into(), theme::SUCCESS),
-        FlowPhase::GccpRound(_) => (" 任务事实确认 ".into(), theme::PRIMARY),
-        FlowPhase::GccpClarify => (" 目标澄清 ".into(), theme::PRIMARY),
-        FlowPhase::GradConfirm => (" 任务流程图确认 ".into(), theme::MAGENTA),
-        FlowPhase::Executing => (" 任务集 ".into(), theme::WARNING),
+        FlowPhase::Chat => (" 对话 ".into(), theme::success()),
+        FlowPhase::GccpRound(_) => (" 任务事实确认 ".into(), theme::primary()),
+        FlowPhase::GccpClarify => (" 目标澄清 ".into(), theme::primary()),
+        FlowPhase::GradConfirm => (" 任务流程图确认 ".into(), theme::magenta()),
+        FlowPhase::Executing => (" 任务集 ".into(), theme::warning()),
     }
 }
 
@@ -472,14 +472,14 @@ fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
     };
 
     // IME 模式指示：激活时 [中] 高亮（晶蓝底），未激活 [英] 灰显
-    let mut spans = vec![Span::styled(" ❯ ", Style::default().fg(theme::PRIMARY))];
+    let mut spans = vec![Span::styled(" ❯ ", Style::default().fg(theme::primary()))];
     if app.ime_engine.is_some() {
         if app.ime_active {
             spans.push(Span::styled(
                 "[中] ",
                 Style::default()
-                    .fg(theme::ON_COLOR)
-                    .bg(theme::PRIMARY)
+                    .fg(theme::on_color())
+                    .bg(theme::primary())
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
@@ -571,12 +571,12 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         let active = app.active_panel == panel;
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::default().fg(if active { theme::PRIMARY } else { theme::dim() }),
+            Style::default().fg(if active { theme::primary() } else { theme::dim() }),
         ));
         if !compact {
             spans.push(Span::styled(
                 format!("{label} "),
-                Style::default().fg(if active { theme::PRIMARY } else { theme::faint() }),
+                Style::default().fg(if active { theme::primary() } else { theme::faint() }),
             ));
         }
     }
@@ -586,7 +586,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled("  ", Style::default()));
         spans.push(Span::styled(
             "┃",
-            Style::default().fg(theme::PRIMARY),
+            Style::default().fg(theme::primary()),
         ));
         spans.push(Span::styled(
             "  输入  Enter 发送 · Alt+Enter 换行 · ↑/↓ 历史",
@@ -597,7 +597,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled("  ", Style::default()));
         spans.push(Span::styled(
             "┃",
-            Style::default().fg(theme::PRIMARY),
+            Style::default().fg(theme::primary()),
         ));
         spans.push(Span::styled(
             "  控制  Ctrl+Z 暂停 · Ctrl+X 中止",
@@ -608,7 +608,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled("  ", Style::default()));
         spans.push(Span::styled(
             "┃",
-            Style::default().fg(theme::PRIMARY),
+            Style::default().fg(theme::primary()),
         ));
         spans.push(Span::styled(
             "  Ctrl+C 退出",

@@ -34,9 +34,9 @@ fn state_icon(state: &str) -> &'static str {
 /// 状态语义色（与 C 版 cli_panel_state_color 对齐）
 fn state_color(state: &str) -> Color {
     match state {
-        "completed" => theme::SUCCESS,
-        "failed" | "canceled" => theme::DANGER,
-        "running" | "pending" | "scheduled" => theme::WARNING,
+        "completed" => theme::success(),
+        "failed" | "canceled" => theme::danger(),
+        "running" | "pending" | "scheduled" => theme::warning(),
         _ => theme::dim(),
     }
 }
@@ -91,7 +91,7 @@ fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
         ),
         Span::styled(
             format!(" {} ", mini_bar(e.progress)),
-            base.fg(theme::ACCENT),
+            base.fg(theme::accent()),
         ),
         Span::styled(
             format!("{:>3}%", (e.progress * 100.0).round() as u64),
@@ -124,7 +124,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 任务看板 ",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
     let mut lines: Vec<Line> = Vec::new();
@@ -150,12 +150,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(
             filter_tip,
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             if app.connected { "  ● ONLINE" } else { "  ● OFFLINE" },
             Style::default()
-                .fg(if app.connected { theme::SUCCESS } else { theme::DANGER })
+                .fg(if app.connected { theme::success() } else { theme::danger() })
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -177,13 +177,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         }
         lines.push(Line::from(vec![
             Span::styled("  概览 ", Style::default().fg(theme::faint())),
-            Span::styled(format!("▶ 执行中 {}", n_run), Style::default().fg(theme::WARNING)),
+            Span::styled(format!("▶ 执行中 {}", n_run), Style::default().fg(theme::warning())),
             Span::styled("   ", Style::default().fg(theme::faint())),
-            Span::styled(format!("○ 待处理 {}", n_wait), Style::default().fg(theme::CYAN)),
+            Span::styled(format!("○ 待处理 {}", n_wait), Style::default().fg(theme::cyan())),
             Span::styled("   ", Style::default().fg(theme::faint())),
-            Span::styled(format!("✓ 完成 {}", n_done), Style::default().fg(theme::SUCCESS)),
+            Span::styled(format!("✓ 完成 {}", n_done), Style::default().fg(theme::success())),
             Span::styled("   ", Style::default().fg(theme::faint())),
-            Span::styled(format!("✗ 失败/取消 {}", n_bad), Style::default().fg(theme::DANGER)),
+            Span::styled(format!("✗ 失败/取消 {}", n_bad), Style::default().fg(theme::danger())),
         ]));
     }
     lines.push(Line::raw(""));
@@ -224,7 +224,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             )));
             for a in board.agents.iter().take(8) {
                 lines.push(Line::from(vec![
-                    Span::styled("   ● ", Style::default().fg(theme::SUCCESS)),
+                    Span::styled("   ● ", Style::default().fg(theme::success())),
                     Span::styled(a.clone(), Style::default().fg(theme::text())),
                 ]));
             }

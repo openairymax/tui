@@ -63,7 +63,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
                         Span::styled(
                             format!("  {}  ", code_lang),
                             Style::default()
-                                .fg(theme::ACCENT)
+                                .fg(theme::accent())
                                 .bg(theme::surface_active())
                                 .add_modifier(Modifier::BOLD),
                         ),
@@ -99,9 +99,9 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
             }
             // 大标题加粗主色，小节用次强调色（Claude 的层次化排版）
             let color = if level == 1 {
-                theme::PRIMARY
+                theme::primary()
             } else if level == 2 {
-                theme::ACCENT
+                theme::accent()
             } else {
                 theme::text()
             };
@@ -237,7 +237,7 @@ fn inline_styles(s: &str, base: Style) -> Line<'static> {
             }
             spans.push(Span::styled(
                 format!(" {code} "),
-                base.fg(theme::ACCENT).bg(theme::surface_active()),
+                base.fg(theme::accent()).bg(theme::surface_active()),
             ));
             continue;
         }
