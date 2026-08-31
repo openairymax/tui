@@ -93,6 +93,9 @@ pub struct App {
     pub active_panel: ActivePanel,
     /// Scroll position in chat
     pub scroll_offset: u16,
+    /// 浏览态是否展开全部折叠（思考链/长回复）。0.1.7：折叠与滚动解耦——
+    /// 滚动基于稳定的折叠视图，不再"一滚就展开导致视口跳变"；Ctrl+E 切换。
+    pub browse_expanded: bool,
     /// Gateway client
     pub gateway: GatewayClient,
     /// Connected status
@@ -330,6 +333,7 @@ impl App {
             cursor: 0,
             active_panel: ActivePanel::Chat,
             scroll_offset: 0,
+            browse_expanded: false,
             gateway,
             connected: false,
             gateway_version: None,

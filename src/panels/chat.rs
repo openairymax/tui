@@ -58,23 +58,24 @@ fn dual_think_label(model: &str) -> &'static str {
 
 /// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：最新 Agent 回复渲染
 /// 行数超过 FOLD_MAX_LINES 时，live 视口只显示前 FOLD_KEEP_LINES 行 +
-/// 折叠尾；向上滚动（↑）浏览时显示全量。
+/// 折叠尾；Alt+E 浏览展开（0.1.7：不再"一滚就展开"——展开会改变内容
+/// 总行数，让滚动位置凭空跳变，社区反馈"滚动反人性"）。
 /// 阈值与 C 版 CLI_REPLY_FOLD_MAX=6 保持一致（节省屏幕空间，适配端侧小屏）。
 const FOLD_MAX_LINES: usize = 6;
 const FOLD_KEEP_LINES: usize = 3;
 
 /// 构建折叠视图（纯函数，可测）：把 [start, end) 行区间折叠为前
 /// `keep` 行 + 折叠尾。以下情况返回 None（不折叠）：
-///   - 正在浏览（scroll_offset > 0）：滚动时显示全量，可看完整回复
+///   - 展开态（Alt+E 浏览：显示全量，可看完整回复/思考链）
 ///   - 区间为空或行数未超阈值（短回复无折叠开销）
 fn build_fold_view<'a>(
     lines: &[Line<'a>],
     start: usize,
     end: usize,
-    scroll_offset: u16,
+    expanded: bool,
     keep: usize,
 ) -> Option<Vec<Line<'a>>> {
-    if scroll_offset > 0 || end <= start || end - start <= FOLD_MAX_LINES {
+    if expanded || end <= start || end - start <= FOLD_MAX_LINES {
         return None;
     }
     let more = end - start - keep;
@@ -82,7 +83,7 @@ fn build_fold_view<'a>(
     v.extend(lines.iter().take(start).cloned());
     v.extend(lines.iter().skip(start).take(keep).cloned());
     v.push(Line::from(Span::styled(
-        format!("  └ … {more} more lines · ↑ 浏览展开"),
+        format!("  └ … {more} more lines · Alt+E 展开"),
         Style::default().fg(theme::faint()),
     )));
     v.extend(lines.iter().skip(end).cloned());
@@ -167,7 +168,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(
                 format!(
-                    "  思考中… {} 字 · {:.1}s（↑ 浏览查看思考链）",
+                    "  思考中… {} 字 · {:.1}s（Alt+E 查看思考链）",
                     app.stream_reasoning.chars().count(),
                     secs
                 ),
@@ -213,15 +214,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     // 思考链折叠（live 视口）：全部 System（[Dual Think]）消息渲染行数
     // 超阈值 → 折叠视图只保留头部行（角色名 + 时间戳）+ 折叠尾，思考链
-    // 碎片正文不上屏（用户反馈"看不懂、没有价值"）；浏览（scroll_offset
-    // > 0）时回退全量，滚动可看完整思考链。最终答复（Agent）不折叠，
-    // 完整展示（用户诉求「折叠思考链，完整展示结果」）。
+    // 碎片正文不上屏（用户反馈"看不懂、没有价值"）；Alt+E 浏览展开
+    // （0.1.7：与滚动解耦，视口高度稳定不跳变）。最终答复（Agent）不
+    // 折叠，完整展示（用户诉求「折叠思考链，完整展示结果」）。
     // 从后往前逐个折叠（行号由后向前替换保持稳定），任一区间成功折叠
     // 即用折叠视图渲染。
     let mut folded_lines: Vec<Line> = lines.clone();
     let mut any_fold = false;
     for &(s, e) in fold_spans.iter().rev() {
-        if let Some(sub) = build_fold_view(&folded_lines, s, e, app.scroll_offset, FOLD_KEEP_LINES) {
+        if let Some(sub) = build_fold_view(&folded_lines, s, e, app.browse_expanded, FOLD_KEEP_LINES) {
             folded_lines = sub;
             any_fold = true;
         }
@@ -775,42 +776,42 @@ mod tests {
     use crate::markdown::wrap_line;
     use ratatui::text::Line;
 
-    /// 长回复折叠：超阈值折叠为 KEEP 行 + 折叠尾；浏览（↑）时展开全量。
+    /// 长回复折叠：超阈值折叠为 KEEP 行 + 折叠尾；展开态（Ctrl+E）显示全量。
     #[test]
     fn fold_view_collapses_long_reply() {
         let mut lines: Vec<Line> = Vec::new();
         for i in 0..20 {
             lines.push(Line::raw(format!("line {i}")));
         }
-        let folded = build_fold_view(&lines, 2, 20, 0, FOLD_KEEP_LINES).expect("long reply folds");
+        let folded = build_fold_view(&lines, 2, 20, false, FOLD_KEEP_LINES).expect("long reply folds");
         // 保留：前 2 行 + KEEP 行 + 折叠尾 1 行 = 2 + 3 + 1 = 6 行
         assert_eq!(folded.len(), 2 + FOLD_KEEP_LINES + 1, "折叠后行数");
-        assert!(folded.iter().any(|l| l.to_string().contains("浏览展开")), "折叠尾存在");
+        assert!(folded.iter().any(|l| l.to_string().contains("展开")), "折叠尾存在");
         let tail = folded.last().unwrap().to_string();
         assert!(tail.contains("more lines"), "折叠尾含行数提示: {tail}");
         // 思考链折叠（keep=1）：只保留头部行 + 折叠尾
-        let think_folded = build_fold_view(&lines, 2, 20, 0, 1).expect("think fold");
+        let think_folded = build_fold_view(&lines, 2, 20, false, 1).expect("think fold");
         assert_eq!(think_folded.len(), 2 + 1 + 1, "思考链折叠后行数（头部+折叠尾）");
         assert!(think_folded.iter().any(|l| l.to_string().contains("more lines")), "思考链折叠尾");
     }
 
     #[test]
-    fn fold_view_keeps_short_reply_and_browse_mode() {
+    fn fold_view_keeps_short_reply_and_expanded_mode() {
         let mut lines: Vec<Line> = Vec::new();
         for i in 0..6 {
             lines.push(Line::raw(format!("line {i}")));
         }
         // 未超阈值：不折叠
-        assert!(build_fold_view(&lines, 0, 6, 0, 3).is_none(), "短回复不折叠");
-        // 超阈值但正在浏览：展开全量（滚动可看完整回复）
+        assert!(build_fold_view(&lines, 0, 6, false, 3).is_none(), "短回复不折叠");
+        // 展开态（Ctrl+E）：显示全量
         let mut long: Vec<Line> = Vec::new();
         for i in 0..20 {
             long.push(Line::raw(format!("line {i}")));
         }
-        assert!(build_fold_view(&long, 0, 20, 5, 3).is_none(), "浏览时不折叠");
+        assert!(build_fold_view(&long, 0, 20, true, 3).is_none(), "展开态不折叠");
         // 空区间 / 非法区间：不折叠
-        assert!(build_fold_view(&long, 5, 5, 0, 3).is_none(), "空区间不折叠");
-        assert!(build_fold_view(&long, 8, 5, 0, 3).is_none(), "非法区间不折叠");
+        assert!(build_fold_view(&long, 5, 5, false, 3).is_none(), "空区间不折叠");
+        assert!(build_fold_view(&long, 8, 5, false, 3).is_none(), "非法区间不折叠");
     }
 
     #[test]

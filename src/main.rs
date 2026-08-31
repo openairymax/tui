@@ -733,6 +733,13 @@ async fn run_app<B: Backend>(
                 {
                     app.switch_tab((c as u8 - b'0') as usize);
                 }
+                // Alt+E：展开/折叠全部思考链与长回复（0.1.7：折叠与滚动解耦，
+                // 滚动基于稳定折叠视图；Ctrl+E 保留光标到行尾的 readline 惯例）
+                KeyCode::Char('e') | KeyCode::Char('E')
+                    if key.modifiers.contains(event::KeyModifiers::ALT) =>
+                {
+                    app.browse_expanded = !app.browse_expanded;
+                }
                 KeyCode::Char(c) if app.active_panel == ActivePanel::Board => {
                     // F6 看板：0=全部 · 1-6=状态过滤（completed/running/pending/scheduled/failed/canceled）
                     match c {
