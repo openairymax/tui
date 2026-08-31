@@ -343,6 +343,23 @@ impl WizardState {
             KeyCode::Down => self.cursor_move(1),
             KeyCode::Enter => return self.confirm(),
             KeyCode::Tab => self.cycle_field(),
+            // 0.1.7 修复：底部提示"1-3 直达"此前未实现——步骤 1/2 按数字
+            // 直接选中并确认（步骤 1：1=自动检测/2=English/3=简体中文；
+            // 步骤 2：1=快速配置模型/2=跳过）。
+            KeyCode::Char(c)
+                if !self.editing && self.step <= 2 && c.is_ascii_digit() && c != '0' =>
+            {
+                let n = (c as u8 - b'0') as usize;
+                if self.step == 1 {
+                    if n <= 3 {
+                        self.lang_cursor = n - 1;
+                        return self.confirm();
+                    }
+                } else if n <= 2 {
+                    self.config_cursor = n - 1;
+                    return self.confirm();
+                }
+            }
             KeyCode::Esc => {
                 if self.step >= 3 && self.step <= 5 {
                     if self.editing {
@@ -487,6 +504,29 @@ impl WizardState {
         self.edit_pos = 0;
         let m = models_cfg::read_model_yaml();
         match step {
+            3 => {
+                // 0.1.7 修复：从步骤 4/5 返回步骤 3 时，恢复步骤 3 的模型
+                // 基本字段快照（此前 enter_step_form(3) 空操作，cfg_fields
+                // 仍残留高级/双思考字段 → 步骤 3 渲染 7 行但值错乱/为空，
+                // 社区反馈"返回上一步后有乱码"）。无快照（直接进入）则
+                // 读现有 model.yaml 回填。
+                self.cfg_fields = if self.model_fields.len() == 7 {
+                    self.model_fields.clone()
+                } else if let Some(r) = m.rows.first() {
+                    vec![
+                        provider_from_base_url(&r.base_url).to_string(),
+                        r.name.clone(),
+                        r.mode.clone(),
+                        r.api_format.clone(),
+                        r.base_url.clone(),
+                        r.model_id.clone(),
+                        String::new(),
+                    ]
+                } else {
+                    default_model_fields()
+                };
+                self.touched = vec![false; 7];
+            }
             4 => {
                 self.cfg_fields = if let Some(r) = m.rows.first() {
                     vec![
@@ -1532,5 +1572,65 @@ mod tests {
         };
         assert!(w.handle_key(&k(KeyCode::Esc)));
         assert!(!w.active);
+    }
+
+    /// 0.1.7：数字直达（步骤 1 按 2 → English；步骤 2 按 1 → 快速配置）。
+    #[test]
+    fn digit_shortcut_steps_1_and_2() {
+        let mut w = WizardState {
+            active: true,
+            step: 1,
+            lang_cursor: 0,
+            config_cursor: 0,
+            effective_lang: Lang::Auto,
+            cfg_fields: default_model_fields(),
+            model_fields: Vec::new(),
+            cfg_cursor: 0,
+            editing: false,
+            edit_pos: 0,
+            touched: vec![false; 7],
+            result: None,
+        };
+        // 步骤 1：按 2 → English 并进入步骤 2
+        assert!(!w.handle_key(&k(KeyCode::Char('2'))));
+        assert_eq!(w.effective_lang, Lang::English, "数字 2 选 English");
+        assert_eq!(w.step, 2, "直达后进入步骤 2");
+        // 步骤 2：按 1 → 快速配置模型 → 步骤 3
+        assert!(!w.handle_key(&k(KeyCode::Char('1'))));
+        assert_eq!(w.step, 3, "数字 1 选快速配置");
+        assert_eq!(w.cfg_fields.len(), 7, "步骤 3 字段齐备");
+    }
+
+    /// 0.1.7：从步骤 4 返回步骤 3，模型基本字段必须恢复（此前残留高级
+    /// 字段导致渲染错乱/空值——"返回上一步后有乱码"根因）。
+    #[test]
+    fn back_to_step3_restores_model_fields() {
+        let mut w = WizardState {
+            active: true,
+            step: 3,
+            lang_cursor: 0,
+            config_cursor: 0,
+            effective_lang: Lang::Chinese,
+            cfg_fields: default_model_fields(),
+            model_fields: Vec::new(),
+            cfg_cursor: 0,
+            editing: false,
+            edit_pos: 0,
+            touched: vec![false; 7],
+            result: None,
+        };
+        // 步骤 3：设置提供商 qwen（自动填充地址/模型），然后下一步到 4
+        w.cfg_fields[0] = "qwen".to_string();
+        w.apply_provider_preset();
+        w.cfg_cursor = 7;
+        assert!(!w.handle_key(&k(KeyCode::Enter))); // 下一步：高级选项
+        assert_eq!(w.step, 4);
+        assert_eq!(w.cfg_fields.len(), 5, "步骤 4 字段 5 项");
+        // 返回步骤 3
+        assert!(!w.handle_key(&k(KeyCode::Esc)));
+        assert_eq!(w.step, 3);
+        assert_eq!(w.cfg_fields.len(), 7, "返回步骤 3 恢复 7 字段");
+        assert!(w.cfg_fields[4].contains("dashscope"), "base_url 保留");
+        assert_eq!(w.cfg_fields[5], "qwen-max", "model_id 保留");
     }
 }

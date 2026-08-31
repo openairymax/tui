@@ -28,12 +28,37 @@ use crate::theme;
 ///
 /// `indent` 为内容整体左缩进（列数，UTF-8 空格按显示宽度对齐）。
 /// `width` 为内容可用宽度。`base` 为普通文本样式（角色/工具消息沿用）。
+///
+/// 0.1.7 段落重排：连续普通文本行（源内无空行分隔）合并为一个段落，
+/// 段落间自动留白——此前逐行直出导致长回复"文字挤在一起"，阅读困难。
 pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
     let mut code_lang: String = String::new();
     // 表格块缓冲：连续以 | 开头的行（表头+分隔+数据）收集后统一对齐渲染
     let mut table: Vec<String> = Vec::new();
+    // 段落缓冲：连续普通文本行（软换行）合并为一段
+    let mut para: Vec<String> = Vec::new();
+
+    let flush_para = |out: &mut Vec<Line<'static>>, para: &mut Vec<String>| {
+        if para.is_empty() {
+            return;
+        }
+        let text = para.join(" ");
+        para.clear();
+        let content_width = width.saturating_sub(indent).max(8);
+        let mut pieces = wrap_line(&text, content_width);
+        if pieces.is_empty() {
+            pieces.push(String::new());
+        }
+        for piece in pieces {
+            let mut spans = vec![Span::styled(" ".repeat(indent), Style::default())];
+            spans.extend(inline_styles(&piece, base).spans);
+            out.push(Line::from(spans));
+        }
+        // 段落间留白（阅读呼吸感；消息间另有整体留白）
+        out.push(Line::raw(""));
+    };
 
     let push_table = |out: &mut Vec<Line<'static>>, table: &mut Vec<String>| {
         if !table.is_empty() {
@@ -47,6 +72,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
         let trimmed = raw.trim();
         // ── 代码块 fence ──
         if trimmed.starts_with("```") {
+            flush_para(&mut out, &mut para);
             push_table(&mut out, &mut table);
             if in_code {
                 // 闭合 fence → 空行留白
@@ -84,6 +110,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
         }
         // ── 表格块：收集连续 | 行 ──
         if trimmed.starts_with('|') {
+            flush_para(&mut out, &mut para);
             table.push(trimmed.to_string());
             continue;
         }
@@ -92,6 +119,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
         }
         // ── 标题（# ~ ######） ──
         if let Some(level) = heading_level(trimmed) {
+            flush_para(&mut out, &mut para);
             let text = trimmed[level..].trim();
             if text.is_empty() {
                 out.push(Line::raw(""));
@@ -114,10 +142,22 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
                     ),
                 ]));
             }
+            out.push(Line::raw(""));
+            continue;
+        }
+        // ── 分隔线（--- / *** / ___，≥3 个） ──
+        if is_hr(trimmed) {
+            flush_para(&mut out, &mut para);
+            let n = width.saturating_sub(indent).clamp(6, 40);
+            out.push(Line::from(vec![
+                Span::styled(" ".repeat(indent), Style::default()),
+                Span::styled("─".repeat(n), base.fg(theme::separator())),
+            ]));
             continue;
         }
         // ── 列表（- / * / + / 1. 及嵌套缩进） ──
         if let Some((mark, body)) = list_item(trimmed) {
+            flush_para(&mut out, &mut para);
             // 列表正文的缩进 = 整体缩进 + 符号宽度（"• " 与 "12. " 对齐）
             let body_indent = indent + mark.width() + 2;
             let content_width = width.saturating_sub(body_indent).max(8);
@@ -135,6 +175,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
         }
         // ── 引用（> 行） ──
         if trimmed.starts_with('>') {
+            flush_para(&mut out, &mut para);
             let body = trimmed.trim_start_matches('>').trim();
             if body.is_empty() {
                 out.push(Line::raw(""));
@@ -151,20 +192,23 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
             }
             continue;
         }
-        // ── 普通段落：行内样式 + 换行 ──
+        // ── 普通段落：软换行合并 + 段落间留白（0.1.7） ──
         if trimmed.is_empty() {
-            out.push(Line::raw(""));
+            flush_para(&mut out, &mut para);
         } else {
-            for piece in wrap_line(trimmed, width.saturating_sub(indent).max(8)) {
-                let mut spans = vec![Span::styled(" ".repeat(indent), Style::default())];
-                spans.extend(inline_styles(&piece, base).spans);
-                out.push(Line::from(spans));
-            }
+            para.push(trimmed.to_string());
         }
     }
-    // 收尾：清空残留表格块
+    // 收尾：清空残留段落与表格块
+    flush_para(&mut out, &mut para);
     push_table(&mut out, &mut table);
     out
+}
+
+/// 分隔线判定：全为 - / * / _ 且长度 ≥3。
+fn is_hr(s: &str) -> bool {
+    let c: Vec<char> = s.chars().collect();
+    c.len() >= 3 && c.iter().all(|ch| matches!(ch, '-' | '*' | '_'))
 }
 
 /// 识别标题行：返回 # 的数量（1-6），非标题返回 None。
@@ -216,7 +260,7 @@ fn list_item(s: &str) -> Option<(String, &str)> {
     }
 }
 
-/// 行内样式：**粗体** 与 `行内代码`（其余原样）。
+/// 行内样式：**粗体** / `行内代码` / [链接](url) / ~~删除线~~（其余原样）。
 fn inline_styles(s: &str, base: Style) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
@@ -240,6 +284,34 @@ fn inline_styles(s: &str, base: Style) -> Line<'static> {
                 base.fg(theme::accent()).bg(theme::surface_active()),
             ));
             continue;
+        }
+        // 图片 ![alt](url)：终端不可渲染，降级为弱化占位
+        if chars[i] == '!' && i + 1 < chars.len() && chars[i + 1] == '[' {
+            if let Some(consumed) = try_link(&chars, i + 1) {
+                flush_plain(&mut spans, &mut buf, base);
+                let (text, url) = consumed;
+                spans.push(Span::styled(
+                    format!("[图片: {text}]"),
+                    base.fg(theme::faint()),
+                ));
+                // 整个 token = '!' + [text](url)
+                i += 1 + text.chars().count() + url.chars().count() + 4;
+                continue;
+            }
+        }
+        // 链接 [text](url)：text 下划线 + 强调色
+        if chars[i] == '[' {
+            if let Some((text, url)) = try_link(&chars, i) {
+                flush_plain(&mut spans, &mut buf, base);
+                let text_len = text.chars().count();
+                let url_len = url.chars().count();
+                spans.push(Span::styled(
+                    text,
+                    base.fg(theme::accent()).add_modifier(Modifier::UNDERLINED),
+                ));
+                i += text_len + url_len + 4; // [text](url)
+                continue;
+            }
         }
         // **粗体**
         if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
@@ -268,11 +340,65 @@ fn inline_styles(s: &str, base: Style) -> Line<'static> {
             }
             continue;
         }
+        // ~~删除线~~
+        if chars[i] == '~' && i + 1 < chars.len() && chars[i + 1] == '~' {
+            flush_plain(&mut spans, &mut buf, base);
+            let mut strike = String::new();
+            i += 2;
+            let mut closed = false;
+            while i + 1 < chars.len() {
+                if chars[i] == '~' && chars[i + 1] == '~' {
+                    closed = true;
+                    i += 2;
+                    break;
+                }
+                strike.push(chars[i]);
+                i += 1;
+            }
+            if !closed {
+                buf.push_str("~~");
+                buf.push_str(&strike);
+            } else {
+                spans.push(Span::styled(
+                    strike,
+                    base.add_modifier(Modifier::CROSSED_OUT),
+                ));
+            }
+            continue;
+        }
         buf.push(chars[i]);
         i += 1;
     }
     flush_plain(&mut spans, &mut buf, base);
     Line::from(spans)
+}
+
+/// 尝试在 `chars[start] == '['` 处解析 `[text](url)`；成功返回 (text, url)
+/// 与 text/url 长度（供调用方跳过）。失败返回 None（按普通字符处理）。
+fn try_link(chars: &[char], start: usize) -> Option<(String, String)> {
+    if chars.get(start) != Some(&'[') {
+        return None;
+    }
+    let mut close = start + 1;
+    while close < chars.len() && chars[close] != ']' {
+        close += 1;
+    }
+    if close >= chars.len() || close + 1 >= chars.len() || chars[close + 1] != '(' {
+        return None;
+    }
+    let mut paren = close + 2;
+    while paren < chars.len() && chars[paren] != ')' {
+        paren += 1;
+    }
+    if paren >= chars.len() {
+        return None;
+    }
+    let text: String = chars[start + 1..close].iter().collect();
+    let url: String = chars[close + 2..paren].iter().collect();
+    if text.is_empty() || url.is_empty() {
+        return None;
+    }
+    Some((text, url))
 }
 
 fn flush_plain(spans: &mut Vec<Span<'static>>, buf: &mut String, base: Style) {
