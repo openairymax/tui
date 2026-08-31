@@ -26,7 +26,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 插件 / 技能库 ",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
     let skills = app.skills.list();
@@ -45,14 +45,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("  技能条数  ", Style::default().fg(theme::faint())),
-            Span::styled(format!("{}", skills.len()), Style::default().fg(theme::MAGENTA).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}", skills.len()), Style::default().fg(theme::magenta()).add_modifier(Modifier::BOLD)),
         ]),
         Line::raw(""),
     ];
 
     for skill in skills.iter().take(10) {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", skill.name), Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {} ", skill.name), Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
             Span::styled(format!("[{}] ", skill.category), Style::default().fg(theme::faint())),
             Span::styled(format!("复用 {} 次", skill.success_count), Style::default().fg(theme::dim())),
         ]));

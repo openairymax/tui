@@ -36,7 +36,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 记忆库 ",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
     let total = app.memory.len();
@@ -47,12 +47,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("  记忆条数  ", Style::default().fg(theme::faint())),
             Span::styled(
                 format!("{}", total),
-                Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::success()).add_modifier(Modifier::BOLD),
             ),
             Span::styled("  ·  后端  ", Style::default().fg(theme::faint())),
             Span::styled(
                 backend,
-                Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
@@ -90,7 +90,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("  ", Style::default()),
             Span::styled(
                 format!("── 来源：{}（{} 条） ──", src, entries.len()),
-                Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
             ),
         ]));
         let n = entries.len();
@@ -111,7 +111,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or(false);
             lines.push(Line::from(vec![
                 Span::styled(format!("  {} ", stem), Style::default().fg(theme::border())),
-                Span::styled(format!("[{}]", speaker), Style::default().fg(theme::ACCENT)),
+                Span::styled(format!("[{}]", speaker), Style::default().fg(theme::accent())),
                 Span::styled(format!(" {} ", hhmm), Style::default().fg(theme::faint())),
                 Span::styled(content, Style::default().fg(theme::text())),
                 Span::styled(
@@ -162,7 +162,7 @@ fn render_empty(lines: &mut Vec<Line>) {
     if std::env::var("AIRY_HOME").is_err() {
         lines.push(Line::from(Span::styled(
             "  提示：未设置 AIRY_HOME，记忆将存入 ~/.airymaxrt/data/agentrt/tui/。",
-            Style::default().fg(theme::WARNING),
+            Style::default().fg(theme::warning()),
         )));
     }
 }

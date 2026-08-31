@@ -56,9 +56,10 @@ use crate::gccp::TaskControl;
     about = "AgentRT Terminal User Interface",
 )]
 struct Cli {
-    /// Gateway API base URL
-    #[arg(long, env = "AGENTRT_GATEWAY_URL", default_value = "http://localhost:8080")]
-    gateway_url: String,
+    /// Gateway API base URL（缺省：读取 $AIRY_HOME/run/gateway.port 实际端口，
+    /// 再回退 http://127.0.0.1:8080）
+    #[arg(long, env = "AGENTRT_GATEWAY_URL")]
+    gateway_url: Option<String>,
 
     /// Agent definition file
     #[arg(short, long, default_value = "agents/main.agent.yaml")]
@@ -71,6 +72,23 @@ struct Cli {
     /// 项目根目录（查找 AGENTS.md/CLAUDE.md 项目上下文；默认当前工作目录）
     #[arg(long)]
     project: Option<String>,
+}
+
+/// 0.1.6h：gateway 实际端口兜底。完整启动器在端口漂移后把实际端口
+/// 固化到 $AIRY_HOME/run/gateway.port；此处读取之（仅数字），缺省 8080。
+/// 固定 127.0.0.1：localhost 可能解析到 ::1，而 gateway 只绑 IPv4，
+/// 新安装"网关拉取不到"的常见根因。
+fn default_gateway_url() -> String {
+    let home = std::env::var("AIRY_HOME").unwrap_or_else(|_| {
+        let h = std::env::var("HOME").unwrap_or_default();
+        format!("{h}/.airymaxrt")
+    });
+    let port = std::fs::read_to_string(format!("{home}/run/gateway.port"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or_else(|| "8080".to_string());
+    format!("http://127.0.0.1:{port}")
 }
 
 #[tokio::main]
@@ -95,8 +113,15 @@ async fn main() {
     info!("══════════════════════════════════════════");
 
     let cli = Cli::parse();
+    // 0.1.6h 修复：gateway 实际端口从 run/gateway.port 读取（完整启动器在
+    // 端口漂移后固化；缺省 8080），并固定 127.0.0.1（localhost 可能解析
+    // 到 ::1，而 gateway 只绑 IPv4 → 新安装"网关拉取不到"根因之一）。
+    let gateway_url = cli
+        .gateway_url
+        .clone()
+        .unwrap_or_else(default_gateway_url);
     info!("CLI args parsed:");
-    info!("  gateway_url = {}", cli.gateway_url);
+    info!("  gateway_url = {}", gateway_url);
     info!("  agent_file  = {}", cli.agent_file);
     info!("  resume      = {}", cli.resume);
     info!("  project     = {:?}", cli.project);
@@ -113,16 +138,16 @@ async fn main() {
     // ── Phase 2: Gateway client ──
     // 连接探测在 run_tui 内统一完成（health_check 2s 快速失败），
     // 避免启动阶段重复检查、离线时阻塞 UI 首帧。
-    info!("Connecting to gateway at {}...", cli.gateway_url);
-    let gateway = match GatewayClient::new(&cli.gateway_url) {
+    info!("Connecting to gateway at {}...", gateway_url);
+    let gateway = match GatewayClient::new(&gateway_url) {
         Ok(gw) => {
-            info!("HTTP client initialized (base={})", cli.gateway_url);
+            info!("HTTP client initialized (base={})", gateway_url);
             gw
         }
         Err(e) => {
             error!("Failed to create HTTP client: {}", e);
-            error!("  → Check that gateway_url is valid: '{}'", cli.gateway_url);
-            error!("  → Hint: is the gateway running? Try: docker compose up -d");
+            error!("  → Check that gateway_url is valid: '{}'", gateway_url);
+            error!("  → Hint: is the gateway running? Try: airymaxrt start");
             eprintln!("\n❌ Cannot create HTTP client: {}\n", e);
             std::process::exit(1);
         }
@@ -452,6 +477,10 @@ async fn run_app<B: Backend>(
                 }
                 // F10：内置拼音输入法 中/英 切换（词典缺失时无效果）
                 KeyCode::F(10) => {
+                    app.ime_toggle();
+                }
+                // F9：IME 备键（与 C CLI tui_ime.c 对齐，F10 被终端占用时可用）
+                KeyCode::F(9) => {
                     app.ime_toggle();
                 }
                 KeyCode::Enter => {

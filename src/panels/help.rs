@@ -23,7 +23,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 帮助 ",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
     let mut lines: Vec<Line> = Vec::new();
@@ -39,7 +39,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled("  ", Style::default()),
                 Span::styled(
                     t.to_string(),
-                    Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
                 ),
             ]));
             continue;
@@ -52,7 +52,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled("    ", Style::default()),
                     Span::styled(
                         format!("{key}"),
-                        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                        Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(rest, Style::default().fg(theme::dim())),
                 ]));

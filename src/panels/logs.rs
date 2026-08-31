@@ -23,7 +23,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 运行时日志 ",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
     if app.logs.is_empty() {
@@ -49,9 +49,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     for entry in app.logs.iter().rev().take(area.height as usize) {
         let level_style = match entry.level.as_str() {
-            "ERROR" => Style::default().fg(theme::DANGER).add_modifier(Modifier::BOLD),
-            "WARN" => Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
-            "INFO" => Style::default().fg(theme::ACCENT),
+            "ERROR" => Style::default().fg(theme::danger()).add_modifier(Modifier::BOLD),
+            "WARN" => Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
+            "INFO" => Style::default().fg(theme::accent()),
             _ => Style::default().fg(theme::text()),
         };
         let daemon_span = entry

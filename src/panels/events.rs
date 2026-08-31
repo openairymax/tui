@@ -35,13 +35,13 @@ pub fn category_label(cat: &str) -> &'static str {
 
 fn category_color(cat: &str) -> Color {
     match cat {
-        "blueprint" => theme::PRIMARY,
-        "command" => theme::CYAN,
-        "progress" => theme::WARNING,
-        "result" => theme::SUCCESS,
-        "issue" => theme::DANGER,
-        "verify" => theme::MAGENTA,
-        "chain" => theme::ACCENT,
+        "blueprint" => theme::primary(),
+        "command" => theme::cyan(),
+        "progress" => theme::warning(),
+        "result" => theme::success(),
+        "issue" => theme::danger(),
+        "verify" => theme::magenta(),
+        "chain" => theme::accent(),
         _ => theme::dim(),
     }
 }
@@ -139,7 +139,7 @@ fn event_row(e: &HallEvent, selected: bool) -> Line<'static> {
             format!(" {} [{}:{}]", marker, label, e.gseq),
             base.fg(category_color(&e.category)).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {} ", task), base.fg(theme::ACCENT)),
+        Span::styled(format!(" {} ", task), base.fg(theme::accent())),
         Span::styled(content_summary(e), base.fg(theme::text())),
     ])
 }
@@ -151,7 +151,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 事件流 ",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
     let total = app.hall_events.len();
@@ -169,12 +169,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("过滤: ", Style::default().fg(theme::faint())),
         Span::styled(
             filter_tip,
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             if app.connected { "  ● ONLINE" } else { "  ● OFFLINE" },
             Style::default()
-                .fg(if app.connected { theme::SUCCESS } else { theme::DANGER })
+                .fg(if app.connected { theme::success() } else { theme::danger() })
                 .add_modifier(Modifier::BOLD),
         ),
     ])];

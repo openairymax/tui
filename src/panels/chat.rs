@@ -141,7 +141,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     for evt_line in app.stream_tool_events.iter() {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(evt_line.as_str(), Style::default().fg(theme::TOOL_FG)),
+            Span::styled(evt_line.as_str(), Style::default().fg(theme::tool_fg())),
         ]));
     }
 
@@ -163,7 +163,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(
                 dual_think_label(&app.stream_reasoning_model).to_string(),
-                Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(
@@ -255,7 +255,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let sb = Scrollbar::default()
             .orientation(ScrollbarOrientation::VerticalRight)
             .thumb_symbol("█")
-            .thumb_style(Style::default().fg(theme::PRIMARY))
+            .thumb_style(Style::default().fg(theme::primary()))
             .track_symbol(Some("│"))
             .track_style(Style::default().fg(theme::faint()));
         f.render_stateful_widget(sb, sb_area, &mut state);
@@ -282,9 +282,9 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                 .collect();
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::styled("任务事实确认", Style::default().fg(theme::PRIMARY)),
+                Span::styled("任务事实确认", Style::default().fg(theme::primary())),
                 Span::styled(" ", Style::default()),
-                Span::styled(dots, Style::default().fg(theme::PRIMARY)),
+                Span::styled(dots, Style::default().fg(theme::primary())),
                 Span::styled(format!("  {answered}/5"), Style::default().fg(theme::faint())),
             ]));
             lines.push(Line::raw(""));
@@ -296,7 +296,7 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                 Span::styled("  ", Style::default()),
                 Span::styled(
                     "目标澄清",
-                    Style::default().fg(theme::PRIMARY),
+                    Style::default().fg(theme::primary()),
                 ),
                 Span::styled(
                     "  请回答以下问题（逐行作答，或输入「跳过」放弃本轮问答）",
@@ -310,11 +310,11 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                     let marker = if done { "●" } else { "○" };
                     let mut spans = vec![Span::styled(
                         format!("  {marker} "),
-                        Style::default().fg(theme::PRIMARY),
+                        Style::default().fg(theme::primary()),
                     )];
                     spans.push(Span::styled(
                         format!("{}. {}", i + 1, q.question),
-                        Style::default().fg(if done { theme::faint() } else { theme::ACCENT }),
+                        Style::default().fg(if done { theme::faint() } else { theme::accent() }),
                     ));
                     if !q.hint.is_empty() {
                         spans.push(Span::styled(
@@ -332,7 +332,7 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                 Span::styled("  ", Style::default()),
                 Span::styled(
                     "任务流程图确认",
-                    Style::default().fg(theme::MAGENTA).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::magenta()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("  输入「确认」开始执行，或输入修改意见", Style::default().fg(theme::dim())),
             ]));
@@ -343,7 +343,7 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                 for line in crate::gccp::render_dag_lines(dag, dag_width) {
                     lines.push(Line::from(vec![
                         Span::styled("  ", Style::default()),
-                        Span::styled(line, Style::default().fg(theme::ACCENT)),
+                        Span::styled(line, Style::default().fg(theme::accent())),
                     ]));
                 }
                 lines.push(Line::raw(""));
@@ -368,7 +368,7 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                 Span::styled(
                     format!("任务集执行中{node_hint}"),
                     // 苹果轻量字重风格：无粗体，暖黄
-                    Style::default().fg(theme::WARNING),
+                    Style::default().fg(theme::warning()),
                 ),
                 Span::styled(control_hint, Style::default().fg(theme::dim())),
             ]));
@@ -392,11 +392,11 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                     let bar = gantt_bar(done, n, bar_w);
                     lines.push(Line::from(vec![
                         Span::styled("    ", Style::default()),
-                        Span::styled("进度", Style::default().fg(theme::PRIMARY)),
+                        Span::styled("进度", Style::default().fg(theme::primary())),
                         Span::styled(" ", Style::default()),
                         Span::styled(
                             bar.clone(),
-                            Style::default().fg(if done == n { theme::SUCCESS } else { theme::WARNING }),
+                            Style::default().fg(if done == n { theme::success() } else { theme::warning() }),
                         ),
                         Span::styled(
                             format!("  {done}/{n}"),
@@ -419,9 +419,9 @@ fn render_flow_header(lines: &mut Vec<Line>, app: &App, width: usize) {
                         };
                         let (mark, color) = match state {
                             crate::gccp::NodeState::Pending => ("○", theme::faint()),
-                            crate::gccp::NodeState::Running => (spin, theme::WARNING),
-                            crate::gccp::NodeState::Done => ("●", theme::SUCCESS),
-                            crate::gccp::NodeState::Failed => ("✕", theme::DANGER),
+                            crate::gccp::NodeState::Running => (spin, theme::warning()),
+                            crate::gccp::NodeState::Done => ("●", theme::success()),
+                            crate::gccp::NodeState::Failed => ("✕", theme::danger()),
                         };
                         // 分支符号：首节点 ├，末节点 └，中间 │（层级先导）
                         let branch = if i == n - 1 { "└─" } else { "├─" };
@@ -516,8 +516,8 @@ fn append_message(
     compact: bool,
 ) {
     let (name, color) = match msg.role {
-        MessageRole::User => ("[For Thee]".to_string(), theme::PRIMARY),
-        MessageRole::Agent => ("[Super Agent]".to_string(), theme::SUCCESS),
+        MessageRole::User => ("[For Thee]".to_string(), theme::primary()),
+        MessageRole::Agent => ("[Super Agent]".to_string(), theme::success()),
         MessageRole::System => ("[Dual Think]".to_string(), theme::dim()),
         MessageRole::ToolCall | MessageRole::ToolResult => {
             // [Sub <tag> Agent]：tag 取工具名（ToolCall 首 token）；ToolResult
@@ -529,9 +529,9 @@ fn append_message(
             let tag: String = tag.chars().take(12).collect();
             // 工具调用品红（调用侧）· 工具结果青（回传侧），Claude Code 风格
             let c = if msg.role == MessageRole::ToolCall {
-                theme::MAGENTA
+                theme::magenta()
             } else {
-                theme::CYAN
+                theme::cyan()
             };
             (format!("[Sub {} Agent]", tag), c)
         }
@@ -544,9 +544,9 @@ fn append_message(
     let (icon, icon_color) = match msg.role {
         MessageRole::ToolCall => {
             if msg.content.contains("（失败）") {
-                (" ✗", theme::DANGER)
+                (" ✗", theme::danger())
             } else {
-                (" ✓", theme::SUCCESS)
+                (" ✓", theme::success())
             }
         }
         MessageRole::ToolResult => (" ▸", theme::faint()),
@@ -648,7 +648,7 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
         lines.push(Line::from(vec![
             Span::styled(
                 "◈ AirymaxRT",
-                Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
             Span::styled(
@@ -666,13 +666,13 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
     let brand = Line::from(vec![
         Span::styled(
             "◈ AirymaxRT",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(" v{ver} "),
             Style::default()
-                .fg(theme::ON_COLOR)
-                .bg(theme::PRIMARY)
+                .fg(theme::on_color())
+                .bg(theme::primary())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  极境智能体运行平台", Style::default().fg(theme::dim())),
@@ -701,11 +701,11 @@ fn append_welcome<'a>(lines: &mut Vec<Line<'a>>, width: usize, height: usize, ap
 
     // 3. 核心链路能力矩阵（胶囊 chips，语义色）
     let chain = [
-        ("llm", theme::ACCENT),
-        ("think", theme::WARNING),
-        ("agent", theme::SUCCESS),
-        ("tool", theme::MAGENTA),
-        ("board", theme::PRIMARY),
+        ("llm", theme::accent()),
+        ("think", theme::warning()),
+        ("agent", theme::success()),
+        ("tool", theme::magenta()),
+        ("board", theme::primary()),
     ];
     let mut caps_line = Line::from(vec![
         Span::styled("核心链路  ", Style::default().fg(theme::faint())),

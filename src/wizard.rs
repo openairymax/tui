@@ -1244,7 +1244,7 @@ fn form_field_line(
 ) {
     let selected = w.cfg_cursor == idx;
     let (marker, mstyle) = if selected {
-        ("▸", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD))
+        ("▸", Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD))
     } else {
         (" ", Style::default().fg(theme::dim()))
     };
@@ -1281,7 +1281,7 @@ fn form_field_line(
         raw
     };
     let value_style = if editing {
-        Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)
     } else if value.is_empty() {
         Style::default().fg(theme::faint())
     } else {
@@ -1292,7 +1292,7 @@ fn form_field_line(
         Span::styled(format!("    {} ", marker), mstyle.clone()),
         Span::styled(
             format!("{:<w$}", label, w = label_w),
-            Style::default().fg(if selected { theme::PRIMARY } else { theme::dim() }),
+            Style::default().fg(if selected { theme::primary() } else { theme::dim() }),
         ),
         Span::styled(format!("[{}]", value), value_style),
     ]));
@@ -1344,7 +1344,7 @@ fn option_line(selected: bool, text: &str) -> Line<'static> {
     let (marker, style) = if selected {
         (
             "▸",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         )
     } else {
         (" ", Style::default().fg(theme::dim()))

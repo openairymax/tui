@@ -34,7 +34,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 配置 ",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
     let model_display = if app.model.is_empty() {
@@ -47,7 +47,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Line::raw(""),
         Line::from(vec![
             Span::styled("  当前模型  ", Style::default().fg(theme::faint())),
-            Span::styled(model_display, Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(model_display, Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
         ]),
         Line::raw(""),
         Line::from(Span::styled(
@@ -70,7 +70,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  ── 宿主机实时信息 ──",
-        Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
     )));
     lines.extend(host_env_lines());
 
@@ -83,7 +83,7 @@ fn model_table_lines() -> Vec<Line<'static>> {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  ── 模型连接表（model.yaml，最多 3 个） ──",
-        Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
     )));
 
     let m = models_cfg::read_model_yaml();
@@ -116,18 +116,18 @@ fn model_table_lines() -> Vec<Line<'static>> {
         let (dot, dot_color) = if r.api_key_env.is_empty() || key_set.contains("未配置") {
             ("○", theme::faint())
         } else {
-            ("●", theme::SUCCESS)
+            ("●", theme::success())
         };
         let key_color = if key_set.contains("未配置") {
-            theme::WARNING
+            theme::warning()
         } else {
-            theme::SUCCESS
+            theme::success()
         };
         lines.push(Line::from(vec![
             Span::styled(format!("  [{}] ", i + 1), Style::default().fg(theme::dim())),
             Span::styled(dot, Style::default().fg(dot_color).add_modifier(Modifier::BOLD)),
             Span::styled(format!(" {} ", r.name), Style::default().fg(theme::text()).add_modifier(Modifier::BOLD)),
-            Span::styled(mode_zh, Style::default().fg(theme::PRIMARY)),
+            Span::styled(mode_zh, Style::default().fg(theme::primary())),
             Span::styled(" · ", Style::default().fg(theme::faint())),
             Span::styled(fmt_zh, Style::default().fg(theme::dim())),
             Span::styled(" · ", Style::default().fg(theme::faint())),
@@ -164,7 +164,7 @@ fn think_section_lines() -> Vec<Line<'static>> {
         m.default_model.clone()
     };
     let (st, sc) = if enabled {
-        ("开启", theme::SUCCESS)
+        ("开启", theme::success())
     } else {
         ("关闭", theme::faint())
     };
@@ -172,7 +172,7 @@ fn think_section_lines() -> Vec<Line<'static>> {
     lines.push(Line::from(vec![
         Span::styled(
             "  ── 双思考系统（think） ──",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  [{}]", st), Style::default().fg(sc).add_modifier(Modifier::BOLD)),
     ]));
@@ -202,7 +202,7 @@ fn api_key_lines() -> Vec<Line<'static>> {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  ── 模型 API Key（secrets.env） ──",
-        Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
     )));
 
     let path = secrets::secrets_path();
@@ -221,7 +221,7 @@ fn api_key_lines() -> Vec<Line<'static>> {
         Span::styled(
             format!("   已配置 {}/{}", configured, secrets::KNOWN_KEYS.len()),
             Style::default()
-                .fg(if configured > 0 { theme::SUCCESS } else { theme::dim() }),
+                .fg(if configured > 0 { theme::success() } else { theme::dim() }),
         ),
     ]));
 
@@ -234,7 +234,7 @@ fn api_key_lines() -> Vec<Line<'static>> {
         let (dot, dot_color, status) = if value.is_empty() {
             ("○", theme::faint(), "未配置".to_string())
         } else {
-            ("●", theme::SUCCESS, format!("已配置 {}", secrets::mask(&value)))
+            ("●", theme::success(), format!("已配置 {}", secrets::mask(&value)))
         };
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
@@ -243,7 +243,7 @@ fn api_key_lines() -> Vec<Line<'static>> {
             Span::styled(key, Style::default().fg(theme::text())),
             Span::styled(format!("（{}）", label), Style::default().fg(theme::faint())),
             Span::styled("  ", Style::default()),
-            Span::styled(status, Style::default().fg(if value.is_empty() { theme::faint() } else { theme::ACCENT })),
+            Span::styled(status, Style::default().fg(if value.is_empty() { theme::faint() } else { theme::accent() })),
         ]));
     }
 
@@ -269,7 +269,7 @@ fn api_key_lines() -> Vec<Line<'static>> {
         Span::styled("  编辑  ", Style::default().fg(theme::faint())),
         Span::styled(
             "/set-key <KEY> <VALUE>",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "   ·  写回 secrets.env（chmod 600，llm_d 热加载，无需重启）",
@@ -297,7 +297,7 @@ fn host_env_lines() -> Vec<Line<'static>> {
         Line::raw(""),
         Line::from(Span::styled(
             "  ── 宿主机信息 ──",
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
             Span::styled("  架构      ", Style::default().fg(theme::faint())),
@@ -325,7 +325,7 @@ fn host_env_lines() -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  主题模式  ", Style::default().fg(theme::faint())),
-            Span::styled(theme_mode, Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+            Span::styled(theme_mode, Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
             Span::styled("  AIRY_HOME ", Style::default().fg(theme::faint())),
