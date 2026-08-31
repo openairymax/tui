@@ -24,6 +24,8 @@ target/
 # ---------- 构建目录 ----------
 build/
 build-*/
+# cargo-clangd / clangd 生成的编译数据库（在项目根生成时不入 target/）
+compile_commands.json
 
 # ---------- 环境与密钥（禁止入库） ----------
 .env
