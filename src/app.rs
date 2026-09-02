@@ -245,6 +245,8 @@ pub struct App {
     pub chat_view: crate::panels::chat::ChatView,
     /// 消息 id 单调发生器（缓存键，永不复用）
     msg_seq: u64,
+    /// 记忆面板分组视图缓存（0.1.9 W8）：条数不变即复用，翻页仅移动窗口
+    pub memory_view: crate::panels::memory::MemoryView,
 }
 
 /// hall 面板轮询结果（看板/事件流二选一）。
@@ -437,6 +439,7 @@ impl App {
             insert_queue: VecDeque::new(),
             chat_view: crate::panels::chat::ChatView::new(),
             msg_seq: 0,
+            memory_view: crate::panels::memory::MemoryView::default(),
         }
     }
 
@@ -1625,7 +1628,20 @@ impl App {
             } else {
                 self.stop_hall_watch();
             }
+            if panel == ActivePanel::Memory {
+                self.memory_view.reset();
+            }
         }
+    }
+
+    /// PgDn：记忆面板向更早方向翻一页（分组窗口懒加载，0.1.9 W8）。
+    pub fn memory_page_down(&mut self) {
+        self.memory_view.page_down(self.memory.len());
+    }
+
+    /// PgUp：记忆面板向更新方向翻回一页。
+    pub fn memory_page_up(&mut self) {
+        self.memory_view.page_up();
     }
 
     /// Submit the current input as a message.
@@ -3483,7 +3499,7 @@ fn build_help_text() -> Vec<String> {
         "  Esc         - 返回对话".to_string(),
         "  Up/Down     - 滚动对话".to_string(),
         "  Alt+Up/Down - 浏览输入历史（Alt+↓ 可回到手输状态）".to_string(),
-        "  PgUp/PgDn   - 滚动对话（翻页）".to_string(),
+        "  PgUp/PgDn   - 滚动对话（翻页）；记忆面板翻记录窗口".to_string(),
         "  End         - 回到底部（最新消息）".to_string(),
         "  Ctrl+X      - 中止当前请求（任务执行/对话等待）".to_string(),
         "  Ctrl+Z      - 暂停/恢复等待（请求继续在后台执行）".to_string(),
