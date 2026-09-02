@@ -602,4 +602,31 @@ mod tests {
         let joined: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("fn main() {}"));
     }
+
+    #[test]
+    fn wrap_line_short_text_single_line() {
+        assert_eq!(wrap_line("你好", 10), vec!["你好"]);
+        assert_eq!(wrap_line("abc", 10), vec!["abc"]);
+    }
+
+    #[test]
+    fn wrap_line_splits_by_display_width() {
+        // 中文按 2 列计：宽度 5 时 "你好世" = 6 列超宽 → 拆行
+        assert_eq!(wrap_line("你好世界", 5), vec!["你好", "世界"]);
+        // 半角按 1 列计
+        assert_eq!(wrap_line("abcdef", 3), vec!["abc", "def"]);
+    }
+
+    #[test]
+    fn wrap_line_empty_and_narrow() {
+        assert!(wrap_line("", 10).is_empty());
+        // 极窄宽度兜底：整行返回，不产生空片段
+        assert_eq!(wrap_line("abc", 1), vec!["abc"]);
+    }
+
+    #[test]
+    fn wrap_line_mixed_widths() {
+        // "a你好b" = 1+2+2+1 = 6 列，宽度 4 → "a你"（3 列）+ "好b"（3 列）
+        assert_eq!(wrap_line("a你好b", 4), vec!["a你", "好b"]);
+    }
 }
