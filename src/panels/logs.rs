@@ -35,11 +35,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme::dim()),
             )),
             Line::from(Span::styled(
-                "  连接 gateway 后事件日志将在此显示。",
+                "  本 TUI 进程的连接/权限/控制等运行时事件将在此显示。",
                 Style::default().fg(theme::faint()),
             )),
             Line::from(Span::styled(
-                format!("  完整运行时日志（各 daemon）：{home}/logs/*.log"),
+                format!("  完整 daemon 运行日志：{home}/logs/*.log"),
                 Style::default().fg(theme::faint()),
             )),
         ];
