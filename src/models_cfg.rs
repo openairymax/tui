@@ -10,7 +10,7 @@
 //!     键名所在行，保留注释、自定义键与其余模型行（不整文件重写，
 //!     避免丢失用户手写内容与格式）。
 //!
-//! 供 TUI 向导（wizard.rs）与配置面板（panels/config.rs）共用，保证两处
+//! 供 TUI 向导（wizard 模块）与配置面板（panels/config.rs）共用，保证两处
 //! 对 model.yaml 的读写口径一致（Unify Design SSoT）。
 
 use std::path::PathBuf;
