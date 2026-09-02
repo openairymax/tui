@@ -20,6 +20,30 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// W6 构建期门禁：TUI 只允许链接下列库——
+///   agentrt_memoryrovol(_oss)：memoryrovol 独立 OSS 库（L1+L2）；
+///   airy_common / airy_ime：commons 宿主机地基（IME 词典符号）。
+/// 严禁链入任何 daemon 内部库 / coreloopthree / cognition 等 agentrt
+/// 运行时库（TUI 只许 gateway HTTP/SSE 客户端 + 渲染栈）。新增链接时
+/// 若不在白名单内直接 panic 阻断（fail-closed）。
+const ALLOWED_STATIC_LIBS: &[&str] = &[
+    "agentrt_memoryrovol",
+    "agentrt_memoryrovol_oss",
+    "airy_common",
+    "airy_ime",
+];
+
+fn assert_allowed_lib(name: &str) {
+    if !ALLOWED_STATIC_LIBS.contains(&name) {
+        panic!(
+            "agentrt-tui 构建门禁（W6）：禁止链接非白名单静态库 `{}`。\n\
+             允许集：{:?}。TUI 只许 gateway HTTP/SSE 客户端 + 渲染栈，\n\
+             不得链入 agentrt daemon/coreloopthree 等运行时内部库。",
+            name, ALLOWED_STATIC_LIBS
+        );
+    }
+}
+
 fn main() {
     // 无论是否找到库都声明 mr_linked / ime_linked cfg，避免 rustc 1.80+ unexpected_cfgs 告警
     println!("cargo:rustc-check-cfg=cfg(mr_linked)");
@@ -73,6 +97,7 @@ fn main() {
                 .and_then(|s| s.to_str())
                 .unwrap_or("agentrt_memoryrovol");
             let libname = stem.strip_prefix("lib").unwrap_or(stem);
+            assert_allowed_lib(libname);
             println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=static={}", libname);
             // OSS 库（L1+L2）的外部依赖：cJSON/curl/yaml/sqlite3/zlib/OpenSSL/pthread
@@ -117,6 +142,8 @@ fn main() {
             // libairy_ime.a，用 +whole-archive 强制提取；airy_common 紧随
             // 其后作为辅助符号（memory_alloc 等）的兜底来源。
             if let Some(ime_a) = extract_ime_member(&lib) {
+                assert_allowed_lib("airy_common");
+                assert_allowed_lib("airy_ime");
                 let ime_dir = ime_a.parent().expect("libairy_ime.a has parent dir");
                 println!("cargo:rustc-link-search=native={}", ime_dir.display());
                 println!("cargo:rustc-link-search=native={}", dir.display());
