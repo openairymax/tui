@@ -295,7 +295,8 @@ pub fn separator() -> Color {
 
 // ─────────────────────────── 测试 ───────────────────────────
 
-/// WCAG 相对亮度（sRGB 线性化）。
+/// WCAG 相对亮度（sRGB 线性化）。仅测试用（对比度门禁），不随产品构建。
+#[cfg(test)]
 fn wcag_luminance(r: u8, g: u8, b: u8) -> f64 {
     let f = |c: u8| {
         let s = c as f64 / 255.0;
@@ -304,7 +305,8 @@ fn wcag_luminance(r: u8, g: u8, b: u8) -> f64 {
     0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
 }
 
-/// WCAG 对比度（fg/bg 各通道 RGB）。
+/// WCAG 对比度（fg/bg 各通道 RGB）。仅测试用。
+#[cfg(test)]
 fn wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> f64 {
     let l1 = wcag_luminance(fg.0, fg.1, fg.2);
     let l2 = wcag_luminance(bg.0, bg.1, bg.2);
@@ -313,6 +315,8 @@ fn wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> f64 {
 }
 
 /// 取当前主题模式下某 token 的源 RGB（强制 TrueColor 深度，只取设计源值）。
+/// 仅测试用（对比度门禁取设计源值，绕过终端降级映射）。
+#[cfg(test)]
 fn source_rgb(c: Color) -> (u8, u8, u8) {
     match c {
         Color::Rgb(r, g, b) => (r, g, b),
