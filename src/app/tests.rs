@@ -333,19 +333,26 @@ fn ime_cancel_discards_without_insert() {
 }
 
 /// Enter：有候选上屏高亮候选并退出拼音态；无候选提交拼音原文退出。
+///
+/// 两个用例分属独立作用域：Home 持进程级 ENV_LOCK 直至作用域结束，
+/// 同作用域内再建第二个 Home 会自死锁（首次 ime_linked 运行暴露）。
 #[cfg(all(feature = "ime", ime_linked))]
 #[test]
 fn ime_enter_commits_candidate_or_raw() {
-    let (_d, mut app) = app_with_ime();
-    ime_type(&mut app, "zhongguo");
-    assert!(app.ime_commit_enter(), "拼音态 Enter 应由调用方先行提交");
-    assert!(app.input.contains("中国"));
-    assert!(!app.ime_active, "Enter 提交后退出拼音态");
+    {
+        let (_d, mut app) = app_with_ime();
+        ime_type(&mut app, "zhongguo");
+        assert!(app.ime_commit_enter(), "拼音态 Enter 应由调用方先行提交");
+        assert!(app.input.contains("中国"));
+        assert!(!app.ime_active, "Enter 提交后退出拼音态");
+    }
 
-    let (_d2, mut app2) = app_with_ime();
-    ime_type(&mut app2, "zzzzz"); // 无候选拼音
-    assert!(app2.ime_cands.is_empty(), "zzzzz 应无候选");
-    assert!(app2.ime_commit_enter());
-    assert!(app2.input.contains("zzzzz"), "无候选时 Enter 提交拼音原文");
-    assert!(!app2.ime_active);
+    {
+        let (_d2, mut app2) = app_with_ime();
+        ime_type(&mut app2, "zzzzz"); // 无候选拼音
+        assert!(app2.ime_cands.is_empty(), "zzzzz 应无候选");
+        assert!(app2.ime_commit_enter());
+        assert!(app2.input.contains("zzzzz"), "无候选时 Enter 提交拼音原文");
+        assert!(!app2.ime_active);
+    }
 }
