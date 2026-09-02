@@ -306,7 +306,8 @@ impl App {
         };
         // 流式请求：结果已到达但打字机尚未上屏完 → 暂存 finish，
         // 等 reveal 追平（下一 tick）再落定，保证逐字动效完整走完
-        let is_stream = matches!(p.kind, PendingKind::StreamRound { .. });
+        // （0.1.9 M5 W1：StreamRound 与 agent.run_stream 执行轮均带 streamed）
+        let is_stream = p.streamed;
         let reveal_pending = self.streaming_reveal < self.streaming_text.chars().count();
         if is_stream && reveal_pending {
             log::debug!(

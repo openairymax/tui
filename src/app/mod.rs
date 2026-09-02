@@ -335,6 +335,10 @@ struct PendingTurn {
     stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     /// 流式工具事件接收端（tool_call/tool_result JSON，option：非流式请求为 None）
     tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// 事件流式轮标记（0.1.9 M5 W1）：true = 打字机 reveal 追平后才落定
+    /// 结果（StreamRound 与 agent.run_stream 执行轮均走此语义）。oneshot
+    /// 结果先到而 reveal 未追平时暂存 finish，等逐字动效完整走完再 apply。
+    streamed: bool,
     /// 流式最终结果暂存（打字机上屏完成前收到结果时先存这里，
     /// 等 reveal 追平文本长度后再 apply——保证逐字动效完整走完）。
     finish: Option<PendingOutcome>,

@@ -91,6 +91,7 @@ impl App {
             session_id,
             stream_rx: None,
             tool_rx: None,
+            streamed: false,
             finish: None,
         });
     }
@@ -144,6 +145,7 @@ impl App {
             session_id,
             stream_rx: Some(stream_rx),
             tool_rx: Some(tool_rx),
+            streamed: true,
             finish: None,
         });
         // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
@@ -192,8 +194,84 @@ impl App {
             session_id: String::new(),
             stream_rx: None,
             tool_rx: None,
+            streamed: false,
             finish: None,
         });
+    }
+
+    /// 发起 agent.run_stream 事件流请求（0.1.9 M5 W1，任务执行轮）。
+    ///
+    /// 经 gateway POST /api/v1/agent/run/stream 消费 §2.4 v1 事件帧：
+    /// token_delta → 打字机实时渲染（stream_rx）；工具进度/思考链/错误 →
+    /// 工具事件通道（tool_rx）；完整结果经 oneshot 回传后按 GradConfirm
+    /// 语义 apply（执行轮最终以 message 帧 content 为准）。
+    pub(super) fn start_run_stream_pending(
+        &mut self,
+        kind: PendingKind,
+        prompt: &str,
+        agent: Option<serde_json::Value>,
+        history: Option<serde_json::Value>,
+        gccp_answers: Option<String>,
+    ) {
+        let gateway = self.gateway.clone();
+        let agent_file = self.agent_file.clone();
+        let prompt = prompt.to_string();
+        let model = if self.model.is_empty() {
+            None
+        } else {
+            Some(self.model.clone())
+        };
+        let session_id = self.new_session_id();
+        let sid_for_task = session_id.clone();
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = gateway
+                .run_stream_turn(
+                    &prompt,
+                    &agent_file,
+                    model.as_deref(),
+                    &sid_for_task,
+                    agent,
+                    history,
+                    gccp_answers.as_deref(),
+                    |chunk| {
+                        let _ = stream_tx.send(chunk.to_string());
+                    },
+                    |evt| {
+                        let _ = tool_tx.send(evt.to_string());
+                    },
+                )
+                .await;
+            let _ = tx.send(PendingOutcome::Run(result));
+        });
+        log::info!(
+            "start_run_stream_pending: agent.run_stream 已发起（session={}，kind={:?}）",
+            session_id,
+            kind
+        );
+        self.loading = true;
+        self.set_task_control(TaskControl::Running);
+        self.pending = Some(PendingTurn {
+            rx,
+            kind,
+            task: Some(task),
+            session_id,
+            stream_rx: Some(stream_rx),
+            tool_rx: Some(tool_rx),
+            streamed: true,
+            finish: None,
+        });
+        // 占位清场：打字机/思考链/工具行本轮从零开始
+        self.streaming_text.clear();
+        self.streaming_reveal = 0;
+        self.stream_reasoning.clear();
+        self.stream_reasoning_model.clear();
+        self.stream_reasoning_start = None;
+        self.pending_reasoning = None;
+        self.stream_tool_events.clear();
+        self.stream_error = None;
     }
 
     /// 动作短语映射（与 C 版 airy_cli cli_tool_action 对齐）：对话只展示
