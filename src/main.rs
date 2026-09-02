@@ -864,17 +864,21 @@ async fn run_app<B: Backend>(
                     }
                 }
                 KeyCode::PageUp => {
-                    // PgUp：IME 拼音态翻上一页（微信式）；否则滚动上翻
+                    // PgUp：IME 拼音态翻上一页（微信式）；记忆面板翻记录窗口；否则滚动上翻
                     if app.ime_visible() {
                         app.ime_page_flip(-1);
+                    } else if app.active_panel == ActivePanel::Memory {
+                        app.memory_page_up();
                     } else {
                         app.scroll_page_up();
                     }
                 }
                 KeyCode::PageDown => {
-                    // PgDn：IME 拼音态翻下一页（微信式）；否则滚动下翻
+                    // PgDn：IME 拼音态翻下一页（微信式）；记忆面板翻记录窗口；否则滚动下翻
                     if app.ime_visible() {
                         app.ime_page_flip(1);
+                    } else if app.active_panel == ActivePanel::Memory {
+                        app.memory_page_down();
                     } else {
                         app.scroll_page_down();
                     }
