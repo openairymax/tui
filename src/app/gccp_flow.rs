@@ -202,7 +202,10 @@ impl App {
             let agent_spec = serde_json::json!({ "role": "coding" });
             // 执行轮同样携带对话历史（GCCP 确认过程），编排分支可引用上下文
             let history = self.build_history_messages(&prompt);
-            self.dispatch_with_agent(
+            // 0.1.9 M5 W1：执行轮切 agent.run_stream v1 事件流（协议先行）——
+            // token 增量/工具进度/思考链/结构化错误实时渲染，替代一次性
+            // agent.run 的"静默等待"。引擎事件经 gateway 纯翻译后逐帧消费。
+            self.start_run_stream_pending(
                 PendingKind::GradConfirm { confirmed: true },
                 &prompt,
                 Some(agent_spec),
@@ -223,6 +226,17 @@ impl App {
 
     /// 应用 GRAD 确认/修订轮的 LLM 结果。
     pub(super) fn apply_grad_confirm(&mut self, confirmed: bool, res: Result<RunResponse>) {
+        // 0.1.9 M5 W1：执行轮（confirmed=true）已切 agent.run_stream 事件流，
+        // 先落定流式尾段（工具行/思考链/打字机占位）；error 事件 → Err 呈现
+        let stream_err = if confirmed {
+            self.settle_stream_tail()
+        } else {
+            None
+        };
+        let res = match (stream_err, res) {
+            (Some(msg), Ok(_)) => Err(anyhow::anyhow!("{}", msg)),
+            (_, other) => other,
+        };
         match res {
             Ok(r) => {
                 if let Some(t) = r.tokens_used {
@@ -234,7 +248,15 @@ impl App {
                     }
                     let cleaned = gccp::strip_task_done(&r.response);
                     self.add_message(MessageRole::Agent, cleaned.clone());
-                    if let Err(e) = self.memory.push("assistant", &cleaned, "task") {
+                    // 思考链副本随执行轮回复持久化（与 apply_chat_result 对齐，
+                    // 2.1.1.6：思考 token 不丢失）
+                    let reasoning = self.pending_reasoning.take();
+                    if let Err(e) = self.memory.push_with_reasoning(
+                        "assistant",
+                        &cleaned,
+                        reasoning.as_deref(),
+                        "task",
+                    ) {
                         log::warn!("memory push(assistant) failed: {}", e);
                     }
                     if gccp::has_task_done_marker(&r.response) {

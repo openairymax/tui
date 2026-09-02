@@ -392,6 +392,281 @@ impl GatewayClient {
         Ok(full)
     }
 
+    /// agent.run_stream 事件流（0.1.9 M5 W1，方案 §2.4 v1 信封协议）。
+    ///
+    /// POST /api/v1/agent/run/stream（gateway SSE 纯翻译端点），消费
+    /// agent_d 引擎流式事件帧，并按 UI 语义转译为两个回调通道：
+    ///   - `on_text`：token_delta.delta 增量文本（对话打字机实时渲染）；
+    ///   - `on_tool`：工具进度 / 思考链 / 错误事件（__airy_evt 语义 JSON，
+    ///     与 stream_chat 工具事件通道同格式，poll_pending 复用同一套消费）。
+    ///
+    /// 返回最终 RunResponse：response = message 帧 content（引擎权威最终
+    /// 文本）；引擎无 message 时回退 token_delta 累积。结构化错误帧
+    /// （error 事件 code/message）以 Err 呈现，原始 JSON 不上屏。
+    ///
+    /// `params` 透传语义与 send_message 一致（prompt/agent_file/model/
+    /// session_id/agent/messages/gccp_answers），任务执行轮带 agent spec
+    /// 走 agent_d 编排分支。
+    pub async fn run_stream_turn<F, E>(
+        &self,
+        prompt: &str,
+        agent_file: &str,
+        model: Option<&str>,
+        session_id: &str,
+        agent: Option<serde_json::Value>,
+        messages: Option<serde_json::Value>,
+        gccp_answers: Option<&str>,
+        mut on_text: F,
+        mut on_tool: E,
+    ) -> Result<RunResponse>
+    where
+        F: FnMut(&str),
+        E: FnMut(&str),
+    {
+        use crate::run_stream::decode_sse_line;
+
+        let url = format!("{}/api/v1/agent/run/stream", self.base_url);
+        let mut params = serde_json::json!({
+            "prompt": prompt,
+            "agent_file": agent_file,
+            "interactive": true,
+        });
+        if let Some(m) = model {
+            if !m.is_empty() {
+                params["model"] = serde_json::Value::String(m.to_string());
+            }
+        }
+        if !session_id.is_empty() {
+            params["session_id"] = serde_json::Value::String(session_id.to_string());
+        }
+        if let Some(a) = agent {
+            // gateway 判定 params.agent（JSON 对象）存在才进入编排分支
+            params["agent"] = a;
+        }
+        if let Some(h) = messages {
+            params["messages"] = h;
+        }
+        if let Some(a) = gccp_answers {
+            if !a.is_empty() {
+                params["gccp_answers"] = serde_json::Value::String(a.to_string());
+            }
+        }
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "agent.run_stream",
+            "params": params,
+        });
+        info!(
+            "POST {} (agent.run_stream, prompt_len={}, session={})",
+            url,
+            prompt.len(),
+            session_id
+        );
+        // 流式请求使用独立无总超时 client（工具循环时长可能远超 60s）
+        let stream_client = HttpClient::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .user_agent(format!("agentrt-tui-stream/{}", env!("AIRY_RT_VERSION")))
+            .build()
+            .context("Failed to create stream HTTP client")?;
+        let resp = stream_client.post(&url).json(&request).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await?;
+            anyhow::bail!("run_stream endpoint HTTP {}: {}", status.as_u16(), body);
+        }
+
+        // v1 事件消费状态（本方法内局部；渲染状态经回调推给 UI）
+        let mut final_content: Option<String> = None;
+        let mut text_acc = String::new();
+        let mut err_msg: Option<String> = None;
+        let mut tokens: Option<u64> = None;
+        // tool_end 只带 tool_id：以本地映射回填工具名（渲染需要动作短语）
+        let mut tool_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        let mut stream = resp.bytes_stream();
+        let mut pending: Vec<u8> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| anyhow::anyhow!("run_stream network: {}", e))?;
+            pending.extend_from_slice(&chunk);
+            loop {
+                match pending.iter().position(|&b| b == b'\n') {
+                    Some(pos) => {
+                        let line: Vec<u8> = pending.drain(..=pos).collect();
+                        let text = String::from_utf8_lossy(&line);
+                        let text = text.trim_end_matches('\r');
+                        let Some(ev) = decode_sse_line(text) else {
+                            continue;
+                        };
+                        match ev.event_type.as_str() {
+                            // token_delta：增量文本 → 打字机实时渲染 + 本地累积
+                            crate::run_stream::gen::AIRY_RS_TYPE_TOKEN_DELTA => {
+                                if let Some(d) = ev.data_str(crate::run_stream::gen::AIRY_RS_K_DELTA)
+                                {
+                                    if !d.is_empty() {
+                                        text_acc.push_str(d);
+                                        on_text(d);
+                                    }
+                                }
+                            }
+                            // tool_start / tool_end：工具进度行（克制：只显示
+                            // 动作名与成败，不暴露参数与结果内容）
+                            crate::run_stream::gen::AIRY_RS_TYPE_TOOL_START => {
+                                let tool = ev
+                                    .data_str(crate::run_stream::gen::AIRY_RS_K_TOOL)
+                                    .unwrap_or("tool")
+                                    .to_string();
+                                if let Some(tid) =
+                                    ev.data_str(crate::run_stream::gen::AIRY_RS_K_TOOL_ID)
+                                {
+                                    tool_names.insert(tid.to_string(), tool.clone());
+                                }
+                                let line = serde_json::json!({
+                                    "__airy_evt": "tool_call",
+                                    "tool": tool,
+                                });
+                                on_tool(&line.to_string());
+                            }
+                            crate::run_stream::gen::AIRY_RS_TYPE_TOOL_END => {
+                                let tid = ev
+                                    .data_str(crate::run_stream::gen::AIRY_RS_K_TOOL_ID)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let tool =
+                                    tool_names.get(&tid).cloned().unwrap_or_else(|| {
+                                        if tid.is_empty() {
+                                            "tool".to_string()
+                                        } else {
+                                            tid.clone()
+                                        }
+                                    });
+                                let ok = ev
+                                    .data_str(crate::run_stream::gen::AIRY_RS_K_STATUS)
+                                    == Some("ok");
+                                // 失败附引擎结果预览首行（≤80 字符）便于诊断
+                                let mut line = serde_json::json!({
+                                    "__airy_evt": "tool_result",
+                                    "tool": tool,
+                                    "ok": if ok { 1 } else { 0 },
+                                });
+                                if !ok {
+                                    if let Some(summary) = ev.data_str(
+                                        crate::run_stream::gen::AIRY_RS_K_RESULT_HASH,
+                                    ) {
+                                        let err: String = summary
+                                            .lines()
+                                            .next()
+                                            .unwrap_or("")
+                                            .chars()
+                                            .take(80)
+                                            .collect();
+                                        line["summary"] = serde_json::Value::String(err);
+                                    }
+                                }
+                                on_tool(&line.to_string());
+                            }
+                            // message：引擎权威最终文本（role=assistant）；
+                            // reasoning 为全流程思考链（一次性投递）
+                            crate::run_stream::gen::AIRY_RS_TYPE_MESSAGE => {
+                                if let Some(c) = ev
+                                    .data_str(crate::run_stream::gen::AIRY_RS_K_CONTENT)
+                                {
+                                    if !c.is_empty() {
+                                        final_content = Some(c.to_string());
+                                    }
+                                }
+                                if let Some(r) =
+                                    ev.data_str(crate::run_stream::gen::AIRY_RS_K_REASONING)
+                                {
+                                    if !r.is_empty() {
+                                        let line = serde_json::json!({
+                                            "__airy_evt": "reasoning",
+                                            "content": r,
+                                        });
+                                        on_tool(&line.to_string());
+                                    }
+                                }
+                            }
+                            // plan：引擎目标计划（DAG 已由 GRAD 确认阶段展示，
+                            // 此处克制不进对话区，仅入日志）
+                            crate::run_stream::gen::AIRY_RS_TYPE_PLAN => {
+                                debug!("agent.run_stream: plan event (ignored, GRAD DAG shown)");
+                            }
+                            // error：结构化错误帧 → Err（UI 只呈现可读消息）
+                            crate::run_stream::gen::AIRY_RS_TYPE_ERROR => {
+                                if let Some(m) =
+                                    ev.data_str(crate::run_stream::gen::AIRY_RS_K_MSG)
+                                {
+                                    if err_msg.is_none() {
+                                        err_msg = Some(m.to_string());
+                                    }
+                                    let line = serde_json::json!({
+                                        "__airy_evt": "error",
+                                        "message": m,
+                                    });
+                                    on_tool(&line.to_string());
+                                }
+                            }
+                            // run_end：流收尾（completed/cancelled/failed）；
+                            // use_ticks = 本 run token 消耗
+                            crate::run_stream::gen::AIRY_RS_TYPE_RUN_END => {
+                                tokens = ev
+                                    .data_i64(crate::run_stream::gen::AIRY_RS_K_USE_TICKS)
+                                    .map(|t| t as u64);
+                                let status = ev
+                                    .data_str(crate::run_stream::gen::AIRY_RS_K_STATUS)
+                                    .unwrap_or("completed");
+                                debug!("agent.run_stream: run_end (status={})", status);
+                            }
+                            // 其余（run_start / 未知）：宽容忽略（§2.4.4）
+                            _ => {}
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+        /* 尾部残行（无 \n 收尾） */
+        if !pending.is_empty() {
+            let text = String::from_utf8_lossy(&pending);
+            if let Some(ev) = decode_sse_line(text.trim_end_matches('\r')) {
+                if ev.event_type == crate::run_stream::gen::AIRY_RS_TYPE_MESSAGE {
+                    if let Some(c) = ev.data_str(crate::run_stream::gen::AIRY_RS_K_CONTENT) {
+                        if !c.is_empty() {
+                            final_content = Some(c.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 结构化错误优先：引擎失败仅发 error 帧（无 message）
+        if let Some(m) = err_msg {
+            return Err(anyhow::anyhow!("{}", m));
+        }
+        // 引擎成功以 message 帧为权威内容；无 message 时回退增量累积
+        let response = final_content.unwrap_or(text_acc);
+        if response.trim().is_empty() {
+            return Err(anyhow::anyhow!("agent.run_stream: empty result"));
+        }
+        info!(
+            "← agent.run_stream OK ({} chars, tokens={:?})",
+            response.len(),
+            tokens
+        );
+        Ok(RunResponse {
+            session_id: session_id.to_string(),
+            response,
+            tokens_used: tokens,
+            cost_usd: None,
+            thinking: None,
+            tool_trace: None,
+            gccp_need_interaction: false,
+            gccp_questions: Vec::new(),
+        })
+    }
+
     #[allow(dead_code)]
     pub async fn get_logs(&self, lines: u32) -> Result<Vec<LogEntry>> {
         let url = format!("{}/api/v1/logs?lines={}", self.base_url, lines);

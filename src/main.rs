@@ -24,6 +24,7 @@ mod memory;
 mod models_cfg;
 mod panels;
 mod paths;
+mod run_stream;
 mod secrets;
 mod skills;
 mod theme;

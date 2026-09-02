@@ -260,16 +260,17 @@ impl App {
         Ok(())
     }
 
-    /// 应用流式对话轮的最终结果（流式结束后按普通对话相同逻辑处理）。
-    pub(super) fn apply_stream_result(&mut self, input: String, res: Result<RunResponse>) {
-        // 流式工具状态行 → 落为正式消息（先于最终回答；流式路径无 tool_trace，
-        // 工具事件仅此一处可见）
+    /// 流式尾段落定（0.1.9 M5 W1 提取共用）：事件流结束后把瞬态渲染态
+    /// 落为正式消息——工具状态行 → ToolCall 消息、思考链 → System 折叠
+    /// 消息（副本保留到 pending_reasoning 供记忆持久化）、打字机占位清理。
+    /// 返回本轮流式错误（None = 正常；error 事件经 poll 已写入 stream_error）。
+    pub(super) fn settle_stream_tail(&mut self) -> Option<String> {
+        // 流式工具状态行 → 落为正式消息（先于最终回答；工具事件仅此一处可见）
         for line in std::mem::take(&mut self.stream_tool_events) {
             self.add_message(MessageRole::ToolCall, line);
         }
         // 思考链（reasoning_content）→ 落为 [Dual Think] 正式消息（折叠展示）。
-        // 2.1.1.6：同时保留副本到 pending_reasoning，随 assistant 回复持久化
-        // 到记忆库（思考 token 不丢失）。
+        // 2.1.1.6：同时保留副本到 pending_reasoning，随 assistant 回复持久化。
         if !self.stream_reasoning.is_empty() {
             let reasoning = std::mem::take(&mut self.stream_reasoning);
             self.pending_reasoning = Some(reasoning.clone());
@@ -277,16 +278,19 @@ impl App {
         }
         self.stream_reasoning_model.clear();
         self.stream_reasoning_start = None;
-        // 流式结束：把已渲染的 streaming_text 落为正式消息（防止与 result 双写）
-        if !self.streaming_text.is_empty() {
-            // 内容已实时渲染在占位消息上；此处仅清理占位，避免重复上屏
-            self.streaming_text.clear();
-        }
+        // 流式结束：已渲染的 streaming_text 是打字机占位，仅清理（防双写）
+        self.streaming_text.clear();
         self.streaming_reveal = 0;
+        self.stream_error.take()
+    }
+
+    /// 应用流式对话轮的最终结果（流式结束后按普通对话相同逻辑处理）。
+    pub(super) fn apply_stream_result(&mut self, input: String, res: Result<RunResponse>) {
         // 0.1.8：本轮收到 gateway 错误帧（llm_d 失败/不可达）→ 把 Ok(空)
         // 转为 Err，复用 apply_chat_result 的失败呈现路径（System 一行摘要
         // + 日志详情），原始 JSON 错误信封永不上屏。
-        let res = match (self.stream_error.take(), res) {
+        let stream_err = self.settle_stream_tail();
+        let res = match (stream_err, res) {
             (Some(msg), Ok(_)) => Err(anyhow::anyhow!("{}", msg)),
             (_, other) => other,
         };
