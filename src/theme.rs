@@ -32,17 +32,22 @@ pub enum ColorDepth {
     Basic,
 }
 
+/// 静态默认 Basic（2）：任何 init_from_env 之前先按最保守 16 色走，
+/// 避免 256/16 色终端收到 38;2 序列错位解析（0.1.6h 乱色根因）。
 static DEPTH: AtomicU8 = AtomicU8::new(2);
 
 impl ColorDepth {
     fn set(self) {
         DEPTH.store(self as u8, Ordering::Relaxed);
     }
+    /// 判别值 ↔ 深度映射必须与 enum 声明顺序一致（TrueColor=0/256=1/
+    /// Basic=2），曾与判别值倒置导致 truecolor 终端落到 16 色、Basic
+    /// 终端收到 truecolor 序列（W3 测试捕获的潜伏映射 bug）。
     pub fn current() -> ColorDepth {
         match DEPTH.load(Ordering::Relaxed) {
+            0 => ColorDepth::TrueColor,
             1 => ColorDepth::Color256,
-            0 => ColorDepth::Basic,
-            _ => ColorDepth::TrueColor,
+            _ => ColorDepth::Basic,
         }
     }
 }
@@ -79,8 +84,10 @@ fn to_256(r: u8, g: u8, b: u8) -> u8 {
 }
 
 /// Rgb → ANSI 16 色（亮度加权 + 主色调，保持语义色）
+/// 注意：亮度加权和 255*587 超过 u16 上限（149685 > 65535），必须用 u32
+/// 累加，否则 debug 构建溢出 panic、release 构建静默回绕得错色（W3 测试捕获）。
 fn to_basic(r: u8, g: u8, b: u8) -> u8 {
-    let lum = (r as u16 * 299 + g as u16 * 587 + b as u16 * 114) / 1000;
+    let lum = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
     if lum > 210 {
         15 // 白
     } else if lum < 40 {
@@ -283,5 +290,148 @@ pub fn separator() -> Color {
     match ThemeMode::current() {
         ThemeMode::Dark => mapped(52, 66, 110),
         ThemeMode::Light => mapped(165, 185, 232),
+    }
+}
+
+// ─────────────────────────── 测试 ───────────────────────────
+
+/// WCAG 相对亮度（sRGB 线性化）。
+fn wcag_luminance(r: u8, g: u8, b: u8) -> f64 {
+    let f = |c: u8| {
+        let s = c as f64 / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+}
+
+/// WCAG 对比度（fg/bg 各通道 RGB）。
+fn wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> f64 {
+    let l1 = wcag_luminance(fg.0, fg.1, fg.2);
+    let l2 = wcag_luminance(bg.0, bg.1, bg.2);
+    let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// 取当前主题模式下某 token 的源 RGB（强制 TrueColor 深度，只取设计源值）。
+fn source_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => panic!("token must be source RGB under TrueColor, got {:?}", c),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_env::lock_env;
+
+    #[test]
+    fn detect_truecolor_from_colorterm() {
+        let _g = lock_env();
+        let (ct, term) = (std::env::var("COLORTERM").ok(), std::env::var("TERM").ok());
+        std::env::set_var("COLORTERM", "truecolor");
+        std::env::remove_var("TERM");
+        assert_eq!(detect_depth(), ColorDepth::TrueColor);
+        std::env::set_var("COLORTERM", "24bit");
+        assert_eq!(detect_depth(), ColorDepth::TrueColor);
+        match ct { Some(v) => std::env::set_var("COLORTERM", v), None => std::env::remove_var("COLORTERM") }
+        match term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+    }
+
+    #[test]
+    fn detect_256_from_term() {
+        let _g = lock_env();
+        let (ct, term) = (std::env::var("COLORTERM").ok(), std::env::var("TERM").ok());
+        std::env::remove_var("COLORTERM");
+        std::env::set_var("TERM", "xterm-256color");
+        assert_eq!(detect_depth(), ColorDepth::Color256);
+        std::env::set_var("TERM", "screen-256color");
+        assert_eq!(detect_depth(), ColorDepth::Color256);
+        match ct { Some(v) => std::env::set_var("COLORTERM", v), None => std::env::remove_var("COLORTERM") }
+        match term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+    }
+
+    #[test]
+    fn detect_fallback_to_basic() {
+        let _g = lock_env();
+        let (ct, term) = (std::env::var("COLORTERM").ok(), std::env::var("TERM").ok());
+        std::env::remove_var("COLORTERM");
+        std::env::set_var("TERM", "xterm");
+        assert_eq!(detect_depth(), ColorDepth::Basic);
+        std::env::remove_var("TERM");
+        assert_eq!(detect_depth(), ColorDepth::Basic);
+        match ct { Some(v) => std::env::set_var("COLORTERM", v), None => std::env::remove_var("COLORTERM") }
+        match term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+    }
+
+    /// H7 防复发：三档色深映射快照（TrueColor 保真 / 256 立方索引 / 16 色亮度加权）。
+    #[test]
+    fn color_depth_mapping_snapshots() {
+        let _g = lock_env();
+        ColorDepth::set(ColorDepth::TrueColor);
+        ThemeMode::set(ThemeMode::Dark);
+        assert_eq!(primary(), Color::Rgb(56, 102, 250));
+        assert_eq!(bg(), Color::Rgb(0, 0, 0));
+
+        ColorDepth::set(ColorDepth::Color256);
+        // to_256(56,102,250) = 16 + 36*1 + 6*2 + 4 = 68；纯黑 = 立方起点 16
+        assert_eq!(primary(), Color::Indexed(68));
+        assert_eq!(bg(), Color::Indexed(16));
+
+        ColorDepth::set(ColorDepth::Basic);
+        // to_basic(56,102,250)：亮度 ~105，主色相蓝 → 16 色蓝
+        assert_eq!(primary(), Color::Indexed(4));
+        assert_eq!(text(), Color::Indexed(15));
+        ColorDepth::set(ColorDepth::TrueColor);
+    }
+
+    /// W3：文本对比度 ≥ WCAG AA。正文 4.5:1，次要文字也按 AA 校验（实测均达）。
+    #[test]
+    fn token_text_contrast_meets_wcag_aa() {
+        let _g = lock_env();
+        ColorDepth::set(ColorDepth::TrueColor);
+
+        ThemeMode::set(ThemeMode::Dark);
+        let dark_bg = source_rgb(bg());
+        let cases_dark = [
+            ("text/bg", text(), dark_bg, 4.5),
+            ("text/surface", text(), source_rgb(surface()), 4.5),
+            ("text/bar", text(), source_rgb(bar()), 4.5),
+            ("dim/bg", dim(), dark_bg, 4.5),
+        ];
+        for (name, fg, bgc, min) in cases_dark {
+            let r = wcag_contrast(source_rgb(fg), bgc);
+            assert!(r >= min, "dark theme {} contrast {:.2} < {:.1}", name, r, min);
+        }
+
+        ThemeMode::set(ThemeMode::Light);
+        let light_bg = source_rgb(bg());
+        let cases_light = [
+            ("text/bg", text(), light_bg, 4.5),
+            ("text/surface", text(), source_rgb(surface()), 4.5),
+            ("text/bar", text(), source_rgb(bar()), 4.5),
+            ("dim/bg", dim(), light_bg, 4.5),
+        ];
+        for (name, fg, bgc, min) in cases_light {
+            let r = wcag_contrast(source_rgb(fg), bgc);
+            assert!(r >= min, "light theme {} contrast {:.2} < {:.1}", name, r, min);
+        }
+
+        ColorDepth::set(ColorDepth::TrueColor);
+    }
+
+    #[test]
+    fn theme_mode_switches_neutrals() {
+        let _g = lock_env();
+        ColorDepth::set(ColorDepth::TrueColor);
+        ThemeMode::set(ThemeMode::Dark);
+        assert_eq!(bg(), Color::Rgb(0, 0, 0));
+        assert_eq!(text(), Color::Rgb(226, 232, 240));
+        ThemeMode::set(ThemeMode::Light);
+        assert_eq!(bg(), Color::Rgb(255, 255, 255));
+        assert_eq!(text(), Color::Rgb(30, 41, 59));
+        // 品牌色不随主题切换
+        assert_eq!(primary(), Color::Rgb(56, 102, 250));
+        ThemeMode::set(ThemeMode::Dark);
     }
 }
