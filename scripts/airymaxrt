@@ -549,12 +549,13 @@ _ensure_daemon() {
     log info "补齐 daemon: $bname（PID=$!），日志: $AIRY_HOME/logs/${bname}.out"
 }
 
-# full 画像的 12 个能力 daemon（minimal 裁剪项）：硬件增强后自动恢复。
-# 顺序与正常启动路径一致（hook→plugin→monit→sched→channel→market→
-# cupolas→mem→a2a→info→notify→observe）。
+# full 画像的 9 个能力 daemon（minimal 裁剪项）：硬件增强后自动恢复。
+# 0.1.9 M4 daemon 整编：plugin_d → tool_d、info_d/observe_d → monit_d，
+# 对应补齐项随退役移除（tool.sock/monit.sock 已承接其能力面）。
+# 顺序与正常启动路径一致（hook→monit→sched→channel→market→
+# cupolas→mem→a2a→notify）。
 ensure_aux_daemons() {
     _ensure_daemon "$(find_tool AIRY_HOOK_BIN hook_d "$AIRY_HOME/bin/hook_d" "$AIRYRT_HOME/agentrt/build/bin/hook_d" "$AIRYRT_HOME/build/bin/hook_d")" "$RUNTIME_DIR/hook.sock"
-    _ensure_daemon "$(find_tool AIRY_PLUGIN_BIN plugin_d "$AIRY_HOME/bin/plugin_d" "$AIRYRT_HOME/agentrt/build/bin/plugin_d" "$AIRYRT_HOME/build/bin/plugin_d")" "$RUNTIME_DIR/plugin.sock"
     _ensure_daemon "$(find_tool AIRY_MONIT_BIN monit_d "$AIRY_HOME/bin/monit_d" "$AIRYRT_HOME/agentrt/build/bin/monit_d" "$AIRYRT_HOME/build/bin/monit_d")" "$RUNTIME_DIR/monit.sock"
     _ensure_daemon "$(find_tool AIRY_SCHED_BIN sched_d "$AIRY_HOME/bin/sched_d" "$AIRYRT_HOME/agentrt/build/bin/sched_d" "$AIRYRT_HOME/build/bin/sched_d")" "$RUNTIME_DIR/sched.sock"
     _ensure_daemon "$(find_tool AIRY_CHANNEL_BIN channel_d "$AIRY_HOME/bin/channel_d" "$AIRYRT_HOME/agentrt/build/bin/channel_d" "$AIRYRT_HOME/build/bin/channel_d")" "$RUNTIME_DIR/channel.sock"
@@ -562,9 +563,7 @@ ensure_aux_daemons() {
     _ensure_daemon "$(find_tool AIRY_CUPOLAS_BIN cupolas_d "$AIRY_HOME/bin/cupolas_d" "$AIRYRT_HOME/agentrt/build/bin/cupolas_d" "$AIRYRT_HOME/build/bin/cupolas_d")" "$RUNTIME_DIR/cupolas.sock"
     _ensure_daemon "$(find_tool AIRY_MEM_BIN mem_d "$AIRY_HOME/bin/mem_d" "$AIRYRT_HOME/agentrt/build/bin/mem_d" "$AIRYRT_HOME/build/bin/mem_d")" "$RUNTIME_DIR/mem.sock"
     _ensure_daemon "$(find_tool AIRY_A2A_BIN a2a_d "$AIRY_HOME/bin/a2a_d" "$AIRYRT_HOME/agentrt/build/bin/a2a_d" "$AIRYRT_HOME/build/bin/a2a_d")" "$RUNTIME_DIR/a2a.sock"
-    _ensure_daemon "$(find_tool AIRY_INFO_BIN info_d "$AIRY_HOME/bin/info_d" "$AIRYRT_HOME/agentrt/build/bin/info_d" "$AIRYRT_HOME/build/bin/info_d")" "$RUNTIME_DIR/info.sock"
     _ensure_daemon "$(find_tool AIRY_NOTIFY_BIN notify_d "$AIRY_HOME/bin/notify_d" "$AIRYRT_HOME/agentrt/build/bin/notify_d" "$AIRYRT_HOME/build/bin/notify_d")" "$RUNTIME_DIR/notify.sock"
-    _ensure_daemon "$(find_tool AIRY_OBSERVE_BIN observe_d "$AIRY_HOME/bin/observe_d" "$AIRYRT_HOME/agentrt/build/bin/observe_d" "$AIRYRT_HOME/build/bin/observe_d")" "$RUNTIME_DIR/observe.sock"
 }
 
 # 画像状态持久化（profile 子命令/monitor 使用）
