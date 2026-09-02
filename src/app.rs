@@ -182,6 +182,10 @@ pub struct App {
     /// 2.1.1.6：本轮流式思考链待持久化副本（apply_stream_result 落屏后
     /// 保留，apply_chat_result 写记忆时随 assistant 记录落盘）。
     pub pending_reasoning: Option<String>,
+    /// 0.1.8：本轮流式错误（SSE `__airy_evt:error` 事件携带的 message，
+    /// gateway 把 llm_d 错误信封/不可达转为可读文本）。落定时以 Err 形式
+    /// 呈现（System 一行摘要），杜绝原始 JSON 上屏。
+    pub stream_error: Option<String>,
     /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
@@ -389,6 +393,7 @@ impl App {
             stream_reasoning_model: String::new(),
             stream_reasoning_start: None,
             pending_reasoning: None,
+            stream_error: None,
             approvals: Vec::new(),
             project_context: String::new(),
             last_approval_poll: Instant::now(),
@@ -1848,6 +1853,13 @@ impl App {
             self.streaming_text.clear();
         }
         self.streaming_reveal = 0;
+        // 0.1.8：本轮收到 gateway 错误帧（llm_d 失败/不可达）→ 把 Ok(空)
+        // 转为 Err，复用 apply_chat_result 的失败呈现路径（System 一行摘要
+        // + 日志详情），原始 JSON 错误信封永不上屏。
+        let res = match (self.stream_error.take(), res) {
+            (Some(msg), Ok(_)) => Err(anyhow::anyhow!("{}", msg)),
+            (_, other) => other,
+        };
         // 复用普通对话的结果应用逻辑（模式判定/技能/记忆/GCCP 入口）
         self.apply_chat_result(input, res);
     }
@@ -2797,6 +2809,16 @@ impl App {
                         }
                         continue;
                     }
+                    // 0.1.8：error 事件（gateway 把 llm_d 错误信封/不可达转为
+                    // 可读文本）→ 记录后由 apply_stream_result 以失败形式呈现。
+                    if v.get("__airy_evt").and_then(|k| k.as_str()) == Some("error") {
+                        if let Some(m) = v.get("message").and_then(|m| m.as_str()) {
+                            if self.stream_error.is_none() {
+                                self.stream_error = Some(m.to_string());
+                            }
+                        }
+                        continue;
+                    }
                 }
                 if let Some(line) = App::render_tool_event(&evt) {
                     self.stream_tool_events.push(line);
@@ -3361,24 +3383,12 @@ fn derive_session_title(input: &str) -> String {
 
 /// 用户配置目录：$AIRY_HOME/data/agentrt/tui（AIRY_HOME 路径体系收敛，2026-08-19）
 fn tui_config_dir() -> std::path::PathBuf {
-    if let Ok(home) = std::env::var("AIRY_HOME") {
-        return std::path::PathBuf::from(home).join("data").join("agentrt").join("tui");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return std::path::PathBuf::from(home).join(".airymaxrt").join("data").join("agentrt").join("tui");
-    }
-    std::path::PathBuf::from(".airymaxrt").join("data").join("agentrt").join("tui")
+    crate::paths::airy_home_path(&["data", "agentrt", "tui"])
 }
 
 /// AIRY_HOME（用于展示 model.yaml 用户覆盖配置路径）
 fn airy_home() -> String {
-    if let Ok(home) = std::env::var("AIRY_HOME") {
-        return home;
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return format!("{}/.airymaxrt", home);
-    }
-    ".airymaxrt".to_string()
+    crate::paths::airy_home().to_string_lossy().into_owned()
 }
 
 /// 事件类别中文化（F7 详情展示用，与 panels/events.rs category_label 对齐）。
@@ -3611,8 +3621,7 @@ mod tests {
     use super::*;
     use crate::memory::{JsonlMemory, MemoryRecord};
 
-    /// 环境变量测试互斥锁（并行测试共享进程内 AIRY_HOME，必须串行）。
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 环境变量测试互斥锁：见 crate::test_env（AIRY_HOME 进程级，跨模块测试共享）。
 
     /// SSE 工具事件渲染：tool_call / tool_result JSON → 过程化状态行。
     /// 只展示动作名与成败，不暴露参数与返回内容（2026-08-17）。
@@ -3646,7 +3655,7 @@ mod tests {
     /// 模型名持久化往返：persist_model → load_saved_model 一致。
     #[test]
     fn model_persist_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::test_env::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("AIRY_HOME", dir.path());
         persist_model("deepseek-v4-flash");
@@ -3659,7 +3668,7 @@ mod tests {
     /// config.toml 缺失或损坏时 load_saved_model 返回 None（回落默认模型）。
     #[test]
     fn model_load_missing_or_corrupt() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::test_env::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("AIRY_HOME", dir.path());
         assert_eq!(load_saved_model(), None);
@@ -3672,7 +3681,7 @@ mod tests {
     /// /model 命令：设置模型并持久化；空参显示（不修改）。
     #[test]
     fn cmd_model_set_and_query() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::test_env::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("AIRY_HOME", dir.path());
         let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
@@ -3690,7 +3699,7 @@ mod tests {
     /// --resume 会话恢复：记忆库 user/assistant 记录还原到消息列表。
     #[test]
     fn resume_session_restores_history() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::test_env::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("AIRY_HOME", dir.path());
         let mem_dir = dir.path().join("tui");
@@ -3746,7 +3755,7 @@ mod tests {
     /// 项目上下文：AGENTS.md 等价物向上查找并注入。
     #[test]
     fn load_project_context_finds_agents_md() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::test_env::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         // 模拟项目根：.git 目录 + AGENTS.md
         std::fs::create_dir_all(dir.path().join(".git")).expect("create .git");
@@ -3770,7 +3779,7 @@ mod tests {
     /// 事件循环消费结果，提交后用 abort_task 清空在途请求再操作 tab。
     #[tokio::test]
     async fn session_tabs_new_and_switch_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::test_env::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("AIRY_HOME", dir.path());
         let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")

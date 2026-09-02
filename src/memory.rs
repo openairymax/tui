@@ -266,13 +266,7 @@ fn parse_ts(ts: &str) -> i64 {
 
 /// 记忆目录：$AIRY_HOME/data/agentrt/tui（AIRY_HOME 路径体系收敛，2026-08-19）
 fn memory_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("AIRY_HOME") {
-        return PathBuf::from(home).join("data").join("agentrt").join("tui");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".airymaxrt").join("data").join("agentrt").join("tui");
-    }
-    PathBuf::from(".airymaxrt").join("data").join("agentrt").join("tui")
+    crate::paths::airy_home_path(&["data", "agentrt", "tui"])
 }
 
 #[cfg(all(feature = "memoryrovol", mr_linked))]

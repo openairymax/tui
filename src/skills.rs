@@ -233,13 +233,7 @@ impl JsonlSkillStore {
 
 /// 技能库目录：$AIRY_HOME/data/agentrt/tui（AIRY_HOME 路径体系收敛，2026-08-19）
 fn skill_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("AIRY_HOME") {
-        return PathBuf::from(home).join("data").join("agentrt").join("tui");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".airymaxrt").join("data").join("agentrt").join("tui");
-    }
-    PathBuf::from(".airymaxrt").join("data").join("agentrt").join("tui")
+    crate::paths::airy_home_path(&["data", "agentrt", "tui"])
 }
 
 /// 构造技能库后端（当前仅 JSONL，后续可扩展 FFI）。

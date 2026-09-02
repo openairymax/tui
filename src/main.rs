@@ -23,11 +23,25 @@ mod markdown;
 mod memory;
 mod models_cfg;
 mod panels;
+mod paths;
 mod secrets;
 mod skills;
 mod theme;
 mod ui;
 mod wizard;
+
+/// `AIRY_HOME` 是进程级环境变量：所有改写它的测试（app / wizard）共享此锁
+/// 串行化，否则并行时互相覆盖，写入与读取落到不同临时目录（偶发断言失败）。
+#[cfg(test)]
+pub(crate) mod test_env {
+    pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 加锁（容忍前一个测试 panic 导致的毒化：锁内仅 set_var/文件读写，
+    /// 毒化不影响后续测试正确性）。
+    pub(crate) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
 
 use anyhow::Result;
 use clap::Parser;
@@ -79,11 +93,8 @@ struct Cli {
 /// 固定 127.0.0.1：localhost 可能解析到 ::1，而 gateway 只绑 IPv4，
 /// 新安装"网关拉取不到"的常见根因。
 fn default_gateway_url() -> String {
-    let home = std::env::var("AIRY_HOME").unwrap_or_else(|_| {
-        let h = std::env::var("HOME").unwrap_or_default();
-        format!("{h}/.airymaxrt")
-    });
-    let port = std::fs::read_to_string(format!("{home}/run/gateway.port"))
+    let home = crate::paths::airy_home();
+    let port = std::fs::read_to_string(home.join("run").join("gateway.port"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
@@ -183,10 +194,17 @@ fn init_file_logger() -> Result<(), Box<dyn std::error::Error>> {
     let path = if let Ok(p) = std::env::var("AGENTRT_TUI_LOG") {
         p
     } else {
-        let home = std::env::var("AIRY_HOME").or_else(|_| {
-            std::env::var("HOME").map(|h| format!("{}/.airymaxrt", h))
-        })?;
-        format!("{}/logs/agentrt-tui.log", home)
+        // 原语义：AIRY_HOME/HOME 均缺失（极端环境）→ Err → 调用方回退
+        // stderr。不能落到 paths::airy_home() 的相对回退，否则日志会写进
+        // 当前工作目录。
+        if std::env::var_os("AIRY_HOME").is_none() && std::env::var_os("HOME").is_none() {
+            return Err("AIRY_HOME/HOME unset".into());
+        }
+        crate::paths::airy_home()
+            .join("logs")
+            .join("agentrt-tui.log")
+            .to_string_lossy()
+            .into_owned()
     };
 
     if let Some(parent) = std::path::Path::new(&path).parent() {
@@ -284,12 +302,18 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     // （exec 语义，同一终端由 CLI 接管；与 CLI 的 /tui 命令构成双向互切，
     // 无进程嵌套）。exec 失败（CLI 缺失等）时保留错误提示正常退出。
     if app.switch_to_cli {
-        let home = std::env::var("AIRY_HOME").or_else(|_| {
-            std::env::var("HOME").map(|h| format!("{}/.airymaxrt", h))
-        });
-        let cli_bin = match &home {
-            Ok(h) => format!("{}/bin/airy_cli", h),
-            Err(_) => "airy_cli".to_string(),
+        // 原语义：AIRY_HOME/HOME 均缺失时按 PATH 查找 airy_cli（不能落到
+        // paths::airy_home() 的相对回退，否则会去 ./.airymaxrt/bin 找）。
+        let env_present =
+            std::env::var_os("AIRY_HOME").is_some() || std::env::var_os("HOME").is_some();
+        let cli_bin = if env_present {
+            crate::paths::airy_home()
+                .join("bin")
+                .join("airy_cli")
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            "airy_cli".to_string()
         };
         info!("Switching to CLI: {}", cli_bin);
         #[cfg(unix)]

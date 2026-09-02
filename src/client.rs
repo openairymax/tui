@@ -370,6 +370,19 @@ impl GatewayClient {
                             on_event(trimmed);
                             continue;
                         }
+                        // 0.1.8 防御：旧版网关把 llm_d 的 JSON-RPC 错误信封
+                        // 原样当正文 data: 帧透传（[Super Agent] 显示
+                        // {"jsonrpc":...,"error":{...}} 的根因）。识别信封
+                        // 前缀即转为错误返回，绝不上屏。
+                        if trimmed.starts_with("{\"jsonrpc\":") {
+                            if let Some(err) = v.get("error") {
+                                let msg = err
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("LLM service error");
+                                anyhow::bail!("Gateway stream error: {}", msg);
+                            }
+                        }
                     }
                 }
                 full.push_str(data);
