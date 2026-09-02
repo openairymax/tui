@@ -140,46 +140,34 @@ pub(crate) fn persist(lang: &str, configured: bool, provider: &str, model: &str)
 mod tests {
     use super::*;
 
-    /// 每个测试独占一个 AIRY_HOME 临时目录（调用方必须先持 lock_env 串行化）
-    fn isolated_home(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("airy-wiz-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::env::set_var("AIRY_HOME", &dir);
-        dir
-    }
-
     #[test]
     fn first_run_until_persisted() {
-        let _g = crate::test_env::lock_env();
-        let dir = isolated_home("firstrun");
+        let home = crate::test_env::Home::new("firstrun");
         assert!(is_first_run());
         persist("zh", true, "qwen", "qwen-max");
         assert!(!is_first_run());
-        let saved = std::fs::read_to_string(dir.join("data/agentrt/tui/wizard.toml")).expect("已写盘");
+        let saved =
+            std::fs::read_to_string(home.path().join("data/agentrt/tui/wizard.toml")).expect("已写盘");
         assert!(saved.contains("lang = \"zh\""));
         assert!(saved.contains("configured = \"manual\""));
         assert!(saved.contains("model = \"qwen-max\""));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn legacy_dir_migrated_on_read() {
-        let _g = crate::test_env::lock_env();
-        let dir = isolated_home("migrate");
-        let legacy = dir.join("tui");
+        let home = crate::test_env::Home::new("migrate");
+        let legacy = home.path().join("tui");
         std::fs::create_dir_all(&legacy).expect("建旧目录");
         std::fs::write(legacy.join(WIZARD_FILE), "lang = \"en\"\n").expect("写旧文件");
         assert!(!is_first_run(), "旧路径文件应被识别并迁移");
         assert!(!legacy.join(WIZARD_FILE).exists(), "旧文件已移走");
-        assert!(dir.join("data/agentrt/tui").join(WIZARD_FILE).is_file());
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(home.path().join("data/agentrt/tui").join(WIZARD_FILE).is_file());
     }
 
     #[test]
     fn secret_replace_and_append() {
-        let _g = crate::test_env::lock_env();
-        let dir = isolated_home("secret");
-        let env_file = dir.join("config").join("secrets.env");
+        let home = crate::test_env::Home::new("secret");
+        let env_file = home.path().join("config").join("secrets.env");
         assert!(write_secret(API_KEY_ENV, "sk-new"));
         let content = std::fs::read_to_string(&env_file).expect("已写盘");
         assert!(content.contains("MODEL_1_API_KEY=sk-new"));
@@ -188,6 +176,5 @@ mod tests {
         assert_eq!(content.matches("MODEL_1_API_KEY=").count(), 1, "原位替换不重复追加");
         assert!(content.contains("sk-replaced"));
         assert!(!write_secret(API_KEY_ENV, ""), "空值不写");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -16,18 +16,17 @@ use super::lang::Lang;
 use super::persist;
 use super::state::WizardState;
 
-/// 隔离环境并构造首启向导（调用方必须持有 lock_env）
-fn fresh(tag: &str) -> WizardState {
-    let dir = std::env::temp_dir().join(format!("airy-wiz-e2e-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::env::set_var("AIRY_HOME", &dir);
-    std::fs::create_dir_all(dir.join("config")).expect("config 目录");
-    std::fs::create_dir_all(dir.join("data")).expect("data 目录");
+/// 隔离环境并构造首启向导；返回的守卫自带 test_env 锁与临时目录，
+/// 须存活到用例结束
+fn fresh(tag: &str) -> (crate::test_env::Home, WizardState) {
+    let home = crate::test_env::Home::new(tag);
+    std::fs::create_dir_all(home.path().join("config")).expect("config 目录");
+    std::fs::create_dir_all(home.path().join("data")).expect("data 目录");
     std::env::remove_var("AIRY_LLM_PROVIDER");
     let w = WizardState::new();
     assert!(w.active, "首次运行应自动启动向导");
     assert_eq!(w.step, 1);
-    w
+    (home, w)
 }
 
 fn k(code: KeyCode) -> KeyEvent {
@@ -61,8 +60,7 @@ fn to_step3(w: &mut WizardState) {
 
 #[test]
 fn cjk_name_edit_roundtrip() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("cjk");
+    let (_h, mut w) = fresh("cjk");
     to_step3(&mut w);
     down_n(&mut w, 1); // 光标到 Name
     assert!(!press(&mut w, KeyCode::Enter), "Enter 进入编辑");
@@ -76,8 +74,7 @@ fn cjk_name_edit_roundtrip() {
 
 #[test]
 fn cjk_edit_left_right_home_end() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("cjkmv");
+    let (_h, mut w) = fresh("cjkmv");
     to_step3(&mut w);
     down_n(&mut w, 1);
     press(&mut w, KeyCode::Enter);
@@ -97,8 +94,7 @@ fn cjk_edit_left_right_home_end() {
 
 #[test]
 fn paste_key_strips_newlines() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("paste");
+    let (_h, mut w) = fresh("paste");
     to_step3(&mut w);
     down_n(&mut w, 6); // ApiKey
     press(&mut w, KeyCode::Enter);
@@ -109,8 +105,7 @@ fn paste_key_strips_newlines() {
 
 #[test]
 fn untouched_finish_fills_preset() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("fill");
+    let (_h, mut w) = fresh("fill");
     to_step3(&mut w);
     down_n(&mut w, 7); // 动作位
     assert!(!press(&mut w, KeyCode::Enter));
@@ -129,8 +124,7 @@ fn untouched_finish_fills_preset() {
 
 #[test]
 fn full_wizard_flow_reaches_finish() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("flow");
+    let (_h, mut w) = fresh("flow");
     to_step3(&mut w);
     // 提供商：清空默认值改输 qwen → Enter 应用预设
     press(&mut w, KeyCode::Enter);
@@ -168,8 +162,7 @@ fn full_wizard_flow_reaches_finish() {
 
 #[test]
 fn esc_roundtrip_keeps_all_three_forms() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("escre");
+    let (_h, mut w) = fresh("escre");
     to_step3(&mut w);
     press(&mut w, KeyCode::Tab); // deepseek → openai
     assert_eq!(w.form[0].value, "openai");
@@ -206,8 +199,7 @@ fn esc_roundtrip_keeps_all_three_forms() {
 
 #[test]
 fn digit_shortcut_steps_1_and_2() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("digit");
+    let (_h, mut w) = fresh("digit");
     assert!(!press(&mut w, KeyCode::Char('2')));
     assert_eq!(w.step, 2);
     assert!(matches!(w.effective_lang, Lang::English), "数字 2 选 English");
@@ -222,8 +214,7 @@ fn digit_shortcut_steps_1_and_2() {
 
 #[test]
 fn esc_on_step1_skips_without_persist() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("escskip");
+    let (_h, mut w) = fresh("escskip");
     assert!(press(&mut w, KeyCode::Esc), "选项步 Esc 直接关闭向导");
     assert!(!w.active);
     assert!(w.result.is_none(), "跳过不产生结果");
@@ -232,8 +223,7 @@ fn esc_on_step1_skips_without_persist() {
 
 #[test]
 fn back_to_step3_restores_snapshot() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("back3");
+    let (_h, mut w) = fresh("back3");
     to_step3(&mut w);
     press(&mut w, KeyCode::Tab); // openai
     down_n(&mut w, 7);
@@ -250,8 +240,7 @@ fn back_to_step3_restores_snapshot() {
 
 #[test]
 fn step4_adv_values_survive_finish() {
-    let _g = crate::test_env::lock_env();
-    let mut w = fresh("adv");
+    let (_h, mut w) = fresh("adv");
     to_step3(&mut w);
     down_n(&mut w, 7);
     assert!(!press(&mut w, KeyCode::Enter));
