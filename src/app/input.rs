@@ -88,7 +88,7 @@ impl App {
         } else {
             self.ime_cands.clear();
         }
-        self.ime_pages = (self.ime_cands.len().max(1) + 8) / 9;
+        self.ime_pages = self.ime_cands.len().max(1).div_ceil(9);
         self.ime_page = self.ime_page.min(self.ime_pages.saturating_sub(1));
         self.ime_sel = self.ime_sel.min(8);
     }
