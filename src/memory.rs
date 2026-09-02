@@ -554,10 +554,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_mode_marker_works() {
-        assert_eq!(crate::app::parse_mode_marker("[MODE:TASK] 执行任务"), (true, "执行任务".into()));
-        assert_eq!(crate::app::parse_mode_marker("[MODE:CHAT]\n闲聊"), (false, "闲聊".into()));
-        assert_eq!(crate::app::parse_mode_marker("普通回复"), (false, "普通回复".into()));
+    fn parse_mode_detail_parses_markers() {
+        assert_eq!(
+            crate::app::parse_mode_detail("[MODE:TASK] 执行任务"),
+            (crate::app::ModeMarker::Task, "执行任务".into())
+        );
+        assert_eq!(
+            crate::app::parse_mode_detail("[MODE:CHAT]\n闲聊"),
+            (crate::app::ModeMarker::Chat, "闲聊".into())
+        );
+        assert_eq!(
+            crate::app::parse_mode_detail("普通回复"),
+            (crate::app::ModeMarker::Chat, "普通回复".into())
+        );
     }
 
     #[test]
