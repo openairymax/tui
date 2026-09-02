@@ -269,7 +269,7 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
 /// 当前 tab 高亮（主色底 + 反色字），其余弱化；Alt+1..9 切换 · Ctrl+T 新建。
 fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
     let n = app.tab_count();
-    let current = app.current_tab_index_pub();
+    let current = app.current_tab_index();
     let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default())];
     for i in 0..n {
         let active = i == current;

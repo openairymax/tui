@@ -2605,7 +2605,7 @@ impl App {
     /* ==================== 多会话 tab（2026-08-21） ==================== */
 
     /// 当前会话在 tab 列表中的索引（None = 主会话，即槽 0）。
-    fn current_tab_index(&self) -> usize {
+    pub(crate) fn current_tab_index(&self) -> usize {
         self.active_tab.unwrap_or(0)
     }
 
@@ -2651,11 +2651,6 @@ impl App {
                 }
             })
             .unwrap_or_default()
-    }
-
-    /// 当前 tab 索引（渲染高亮用；主会话 = 0）。
-    pub fn current_tab_index_pub(&self) -> usize {
-        self.current_tab_index()
     }
 
     /// Ctrl+T：新建会话 tab。当前对话（有内容时）保留为 tab，开启空白新会话。
@@ -3788,7 +3783,7 @@ mod tests {
 
         // 初始：仅主会话（槽 0）
         assert_eq!(app.tab_count(), 1);
-        assert_eq!(app.current_tab_index_pub(), 0);
+        assert_eq!(app.current_tab_index(), 0);
 
         // 主会话发一条消息 → 标题派生
         app.submit_input("帮我写一个冒泡排序").expect("submit");
@@ -3798,7 +3793,7 @@ mod tests {
         // Ctrl+T 新建：主会话内容保留，新 tab 为空（仅含系统提示）
         app.new_session_tab();
         assert_eq!(app.tab_count(), 2);
-        assert_eq!(app.current_tab_index_pub(), 1);
+        assert_eq!(app.current_tab_index(), 1);
         assert!(
             app.messages.iter().all(|m| m.role == MessageRole::System),
             "新会话应仅含系统提示"
@@ -3814,7 +3809,7 @@ mod tests {
 
         // Alt+1 切回主会话：内容还原
         app.switch_tab(1);
-        assert_eq!(app.current_tab_index_pub(), 0);
+        assert_eq!(app.current_tab_index(), 0);
         assert!(
             app.messages.iter().any(|m| m.content.contains("冒泡排序")),
             "主会话内容应还原"
@@ -3822,7 +3817,7 @@ mod tests {
 
         // Alt+2 切到新会话：内容还原
         app.switch_tab(2);
-        assert_eq!(app.current_tab_index_pub(), 1);
+        assert_eq!(app.current_tab_index(), 1);
         assert!(
             app.messages.iter().any(|m| m.content.contains("另一个话题")),
             "tab 2 内容应还原"
@@ -3830,9 +3825,9 @@ mod tests {
 
         // 越界/0：无操作
         app.switch_tab(0);
-        assert_eq!(app.current_tab_index_pub(), 1);
+        assert_eq!(app.current_tab_index(), 1);
         app.switch_tab(9);
-        assert_eq!(app.current_tab_index_pub(), 1);
+        assert_eq!(app.current_tab_index(), 1);
     }
 
     /// 会话标题派生：首行截断 ≤24 字符，空输入回退占位。
