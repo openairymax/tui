@@ -39,7 +39,8 @@ pub struct RunStreamEnvelope {
     pub data: Value,
 }
 
-/// 事件分层（方案 §2.4.3）。
+/// 事件分层（方案 §2.4.3）。仅测试用：生产路径按 event_type 直接分派。
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RsKind {
     Control,
