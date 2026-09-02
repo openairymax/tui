@@ -213,14 +213,13 @@ mod tests {
     use super::*;
     use crate::app::MessageRole;
 
-    /// 构造隔离 App（调用方持 test_env 锁与 TempDir 至测试结束，
-    /// 与 app.rs 既有测试同一范式）。
-    fn make_app() -> (App, tempfile::TempDir) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("AIRY_HOME", dir.path());
+    /// 构造隔离 App（守卫持 AIRY_HOME 与 test_env 锁至测试结束，
+    /// 与 app 模块既有测试同一范式）。
+    fn make_app() -> (App, crate::test_env::Home) {
+        let home = crate::test_env::Home::new("chat-view");
         let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
         let app = App::new("agents/main.agent.yaml", gw);
-        (app, dir)
+        (app, home)
     }
 
     /// 按 6 类角色循环造历史：System 长思考链触发折叠，连续工具触发 compact。
@@ -250,8 +249,7 @@ mod tests {
     /// 0.1.9 W8 验收核心）。
     #[test]
     fn virtual_window_equals_full_slicing() {
-        let _g = crate::test_env::lock_env();
-        let (mut app, _dir) = make_app();
+        let (mut app, _h) = make_app();
         fill(&mut app, 1200);
         let mut view = ChatView::new();
         let all = view.layout(&app, 80, 30, true);
@@ -277,8 +275,7 @@ mod tests {
     /// 行高缓存增量性：同尺寸第二帧零测量；新增仅测一条；变宽全量重测。
     #[test]
     fn height_cache_is_incremental() {
-        let _g = crate::test_env::lock_env();
-        let (mut app, _dir) = make_app();
+        let (mut app, _h) = make_app();
         fill(&mut app, 300);
         let mut view = ChatView::new();
         view.layout(&app, 80, 30, false);
@@ -295,8 +292,7 @@ mod tests {
     /// 队列挤位后窗口仍与全量一致（上限 2000 生效）。
     #[test]
     fn trim_keeps_window_aligned() {
-        let _g = crate::test_env::lock_env();
-        let (mut app, _dir) = make_app();
+        let (mut app, _h) = make_app();
         fill(&mut app, crate::app::MAX_CHAT_MESSAGES + 500);
         assert_eq!(
             app.messages.len(),
@@ -313,8 +309,7 @@ mod tests {
     /// 缓存修剪：先测满 2000，再挤位新增 600 → 残留按最老现存 id 修剪。
     #[test]
     fn cache_prunes_trimmed_history() {
-        let _g = crate::test_env::lock_env();
-        let (mut app, _dir) = make_app();
+        let (mut app, _h) = make_app();
         fill(&mut app, crate::app::MAX_CHAT_MESSAGES);
         let mut view = ChatView::new();
         view.layout(&app, 80, 30, false);
@@ -332,8 +327,7 @@ mod tests {
     /// 窄屏空态渲染单行品牌（<44 列短路路径）。
     #[test]
     fn welcome_narrow_single_line() {
-        let _g = crate::test_env::lock_env();
-        let (app, _dir) = make_app();
+        let (app, _h) = make_app();
         let mut view = ChatView::new();
         let frame = view.layout(&app, 40, 12, false);
         let text: String = frame.lines.iter().map(|l| l.to_string()).collect();

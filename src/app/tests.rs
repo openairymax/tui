@@ -40,9 +40,7 @@ fn render_tool_event_parses_sse_json() {
 /// 模型名持久化往返：persist_model → load_saved_model 一致。
 #[test]
 fn model_persist_roundtrip() {
-    let _g = crate::test_env::lock_env();
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("AIRY_HOME", dir.path());
+    let _h = crate::test_env::Home::new("model-persist");
     persist_model("deepseek-v4-flash");
     assert_eq!(load_saved_model().as_deref(), Some("deepseek-v4-flash"));
     // 再次切换覆盖
@@ -53,9 +51,7 @@ fn model_persist_roundtrip() {
 /// config.toml 缺失或损坏时 load_saved_model 返回 None（回落默认模型）。
 #[test]
 fn model_load_missing_or_corrupt() {
-    let _g = crate::test_env::lock_env();
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("AIRY_HOME", dir.path());
+    let _h = crate::test_env::Home::new("model-load");
     assert_eq!(load_saved_model(), None);
     let cfg_dir = tui_config_dir();
     std::fs::create_dir_all(&cfg_dir).expect("create dir");
@@ -66,9 +62,7 @@ fn model_load_missing_or_corrupt() {
 /// /model 命令：设置模型并持久化；空参显示（不修改）。
 #[test]
 fn cmd_model_set_and_query() {
-    let _g = crate::test_env::lock_env();
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("AIRY_HOME", dir.path());
+    let _h = crate::test_env::Home::new("cmd-model");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
         .expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
@@ -84,10 +78,8 @@ fn cmd_model_set_and_query() {
 /// --resume 会话恢复：记忆库 user/assistant 记录还原到消息列表。
 #[test]
 fn resume_session_restores_history() {
-    let _g = crate::test_env::lock_env();
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("AIRY_HOME", dir.path());
-    let mem_dir = dir.path().join("tui");
+    let home = crate::test_env::Home::new("resume");
+    let mem_dir = home.path().join("tui");
     std::fs::create_dir_all(&mem_dir).expect("create mem dir");
     let recs = [
         MemoryRecord {
@@ -164,9 +156,7 @@ fn load_project_context_finds_agents_md() {
 /// 事件循环消费结果，提交后用 abort_task 清空在途请求再操作 tab。
 #[tokio::test]
 async fn session_tabs_new_and_switch_roundtrip() {
-    let _g = crate::test_env::lock_env();
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("AIRY_HOME", dir.path());
+    let _h = crate::test_env::Home::new("session-tabs");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
         .expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
@@ -238,16 +228,14 @@ fn derive_session_title_truncates_and_falls_back() {
 // F10 激活 / 字母追加 / 空格·数字选字 / 退格 / Esc 取消 / Enter 提交。
 
 #[cfg(all(feature = "ime", ime_linked))]
-fn app_with_ime() -> (tempfile::TempDir, App) {
-    let _g = crate::test_env::lock_env();
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("AIRY_HOME", dir.path());
+fn app_with_ime() -> (crate::test_env::Home, App) {
+    let home = crate::test_env::Home::new("ime");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
     assert!(app.ime_engine.is_some(), "ime_linked 下 App 应加载 IME 引擎");
     app.ime_toggle();
     assert!(app.ime_active, "F10 应进入拼音态");
-    (dir, app)
+    (home, app)
 }
 
 #[cfg(all(feature = "ime", ime_linked))]
