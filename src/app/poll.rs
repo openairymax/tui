@@ -7,6 +7,28 @@
 
 use super::*;
 
+/// 事件流面板本地缓存上限（M5 W4）：SSE 增量 + RPC 兜底两路数据合并后
+/// 保留最新 N 条（渲染 take 256，缓存留余量防抖动）。
+const HALL_EVENTS_MAX: usize = 1024;
+
+/// 合并本地事件与拉取/推送事件（M5 W4）。
+///
+/// hall_events 保持升序（渲染层 rev 展示最新在前）；合并按 (ts_utc, seq)
+/// 稳定全局序（跨进程 gseq 会重启，不能作排序键），以 file_id 去重
+/// （事件文件 id 全局唯一）。SSE 增量与 RPC 全量两路数据在 gateway 侧
+/// 同为扁平事件形态（SSoT），此处即可用同一合并逻辑收敛。
+fn merge_hall_events(local: &mut Vec<HallEvent>, incoming: Vec<HallEvent>) {
+    if !incoming.is_empty() {
+        local.extend(incoming);
+        local.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| a.seq.cmp(&b.seq)));
+        local.dedup_by(|a, b| !a.file_id.is_empty() && a.file_id == b.file_id);
+    }
+    if local.len() > HALL_EVENTS_MAX {
+        let excess = local.len() - HALL_EVENTS_MAX;
+        local.drain(..excess);
+    }
+}
+
 impl App {
     /// 消费 /chain 的异步结果并渲染进对话区。
     pub fn poll_chain(&mut self) {
@@ -112,26 +134,43 @@ impl App {
         }
     }
 
-    /// hall 面板（看板/事件流）数据拉取：面板激活时 1s 节流刷新。
+    /// hall 面板（看板/事件流）数据拉取：面板激活时刷新。
     ///
     /// 看板 = hall.board（work_hall 持久化实例 + 在线 agent）；
     /// 事件流 = hall.stream（全局 gseq 因果序，最新 512 条）。
     /// 数据经 gateway 统一转发，任何前端看到同一份状态。
+    ///
+    /// M5 W4 数据源统一：hall.watch SSE 推送内容被真实消费——事件流面板
+    /// 增量插入（实时上屏，RPC pull 仅作 1s 兜底合并）；看板是聚合快照，
+    /// 推送只作刷新触发（提前 pull），与 RPC 轮询互补。
     pub fn poll_hall(&mut self) {
         if self.active_panel != ActivePanel::Board && self.active_panel != ActivePanel::Events {
             return;
         }
-        // hall.watch 推送消费（2026-08-21）：SSE 事件到达 → 立即刷新（跳过节流）
+        let want_board = self.active_panel == ActivePanel::Board;
+        // hall.watch 推送消费（2026-08-21 事件驱动；M5 W4 内容级消费）
         if let Some(rx) = &mut self.hall_watch_rx {
-            let mut pushed = false;
-            while rx.try_recv().is_ok() {
-                pushed = true;
-            }
-            if pushed {
-                self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+            if want_board {
+                // 看板为聚合快照：任何推送只作刷新触发（跳过节流提前 pull）
+                let mut pushed = false;
+                while rx.try_recv().is_ok() {
+                    pushed = true;
+                }
+                if pushed {
+                    self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+                }
+            } else {
+                // 事件流：推送内容即事件（与 hall.stream 同形态），增量入列
+                let mut incoming: Vec<HallEvent> = Vec::new();
+                while let Ok(raw) = rx.try_recv() {
+                    if let Ok(evt) = serde_json::from_str::<HallEvent>(&raw) {
+                        incoming.push(evt);
+                    }
+                }
+                merge_hall_events(&mut self.hall_events, incoming);
             }
         }
-        // 消费在途结果
+        // 消费在途结果（pull 结果与本地合并去重，避免覆盖 SSE 增量）
         if let Some(mut rx) = self.hall_poll_rx.take() {
             match rx.try_recv() {
                 Ok(HallPollOutcome::Board(r)) => match r {
@@ -139,7 +178,7 @@ impl App {
                     Err(e) => log::warn!("hall.board 拉取失败: {}", e),
                 },
                 Ok(HallPollOutcome::Events(r)) => match r {
-                    Ok(evts) => self.hall_events = evts,
+                    Ok(evts) => merge_hall_events(&mut self.hall_events, evts),
                     Err(e) => log::warn!("hall.stream 拉取失败: {}", e),
                 },
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
@@ -148,14 +187,13 @@ impl App {
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
             }
         }
-        // 节流：1s
+        // 节流：1s（事件流面板的实时增量由 SSE 驱动，pull 仅兜底）
         let now = Instant::now();
         if now.duration_since(self.last_hall_poll) < std::time::Duration::from_millis(1000) {
             return;
         }
         self.last_hall_poll = now;
         let gw = self.gateway.clone();
-        let want_board = self.active_panel == ActivePanel::Board;
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             if want_board {
@@ -450,5 +488,78 @@ impl App {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造一条最小 HallEvent（file_id 含 ts/seq，便于断言顺序）。
+    fn evt(file_id: &str, ts_utc: &str, seq: u64, category: &str) -> HallEvent {
+        HallEvent {
+            file_id: file_id.to_string(),
+            category: category.to_string(),
+            task_id: "t1".to_string(),
+            tenant_id: "default".to_string(),
+            node_id: String::new(),
+            ts_utc: ts_utc.to_string(),
+            seq,
+            gseq: seq,
+            content: serde_json::json!({ "event": file_id }),
+        }
+    }
+
+    #[test]
+    fn merge_appends_sse_increments_after_pull() {
+        /* RPC pull 快照（旧）→ SSE 增量（新）：合并后按 ts 升序，全部保留 */
+        let mut local = vec![evt("a.20260901T000000000.0001.json", "20260901T000000000", 1, "progress")];
+        let incoming = vec![
+            evt("b.20260901T000000100.0001.json", "20260901T000000100", 1, "result"),
+            evt("c.20260901T000000200.0001.json", "20260901T000000200", 1, "result"),
+        ];
+        merge_hall_events(&mut local, incoming);
+        assert_eq!(local.len(), 3);
+        assert_eq!(local[2].file_id, "c.20260901T000000200.0001.json");
+    }
+
+    #[test]
+    fn merge_dedups_overlap_between_pull_and_sse() {
+        /* pull 兜底可能包含 SSE 已推事件：同 file_id 只保留一份 */
+        let mut local = vec![
+            evt("a.20260901T000000000.0001.json", "20260901T000000000", 1, "progress"),
+            evt("b.20260901T000000100.0001.json", "20260901T000000100", 1, "result"),
+        ];
+        let incoming = vec![
+            evt("b.20260901T000000100.0001.json", "20260901T000000100", 1, "result"),
+            evt("c.20260901T000000200.0001.json", "20260901T000000200", 1, "issue"),
+        ];
+        merge_hall_events(&mut local, incoming);
+        assert_eq!(local.len(), 3);
+    }
+
+    #[test]
+    fn merge_sorts_out_of_order_increments() {
+        /* SSE 重连回放偶发乱序：按 (ts_utc, seq) 收敛 */
+        let mut local = vec![evt("c.20260901T000000200.0001.json", "20260901T000000200", 1, "result")];
+        let incoming = vec![evt("a.20260901T000000000.0001.json", "20260901T000000000", 1, "progress")];
+        merge_hall_events(&mut local, incoming);
+        assert_eq!(local.len(), 2);
+        assert!(local[0].ts_utc < local[1].ts_utc);
+    }
+
+    #[test]
+    fn merge_trims_to_cap_keeping_newest() {
+        /* 容量上限：超出保留最新（头部弹出，渲染层期望最新在尾） */
+        let mut local: Vec<HallEvent> = Vec::new();
+        for i in 0..(HALL_EVENTS_MAX + 50) {
+            let ts = format!("20260901T{:06}000", 0);
+            local.push(evt(&format!("f{}.json", i), &ts, i as u64, "progress"));
+        }
+        merge_hall_events(&mut local, Vec::new());
+        assert_eq!(local.len(), HALL_EVENTS_MAX);
+        // 保留的是最大 seq（最新）
+        assert_eq!(local.last().unwrap().seq, (HALL_EVENTS_MAX + 49) as u64);
+        assert_eq!(local.first().unwrap().seq, 50);
     }
 }
