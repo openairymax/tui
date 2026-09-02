@@ -224,11 +224,17 @@ pub struct WizardState {
     /// 0.1.7 修复：此前 adv_values() 在 step=5 时 cfg_fields.len()==4 回落
     /// 默认值，用户在步骤 4 编辑的上下文窗口/最大输出等被静默覆盖）
     adv_fields: Vec<String>,
+    /// 步骤 5 双思考快照（0.1.8：Esc 返回步骤 4 再前进时恢复，防编辑丢失）
+    think_fields: Vec<String>,
     /// 字段光标 / 编辑态
     pub cfg_cursor: usize,
     pub editing: bool,
-    /// 编辑态插入点（字符索引）：支持 ← → 移动，在长文本（API Key /
-    /// base_url）中精确定位修改，渲染时窗口跟随插入点滚动。
+    /// 编辑态插入点（**字节索引**，恒落在字符边界上）：支持 ← → 按字
+    /// 移动，在长文本（API Key / base_url）与含 CJK 的字段（名称="智谱
+    /// GLM"）中精确定位修改。0.1.8 修复：此前 edit_pos 混用字节/字符语义
+    /// （insert/remove 按字节、←→ 按字符步进），对含中文的字段 Backspace
+    /// 落在非字符边界直接 panic（TUI 崩溃＝社区"乱码/操作错误"根因之一），
+    /// 且渲染光标恒错位。现统一字节语义 + 边界步进。
     edit_pos: usize,
     /// 文本字段是否被用户手动编辑过（预设自动填充不置位；防预设覆盖手改）
     touched: Vec<bool>,
@@ -252,6 +258,7 @@ impl WizardState {
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
             adv_fields: Vec::new(),
+            think_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -288,6 +295,7 @@ impl WizardState {
         self.touched = vec![false; 7];
         self.model_fields = Vec::new();
         self.adv_fields = Vec::new();
+        self.think_fields = Vec::new();
         self.result = None;
         log::info!("wizard: reopened via /hiairy");
     }
@@ -304,32 +312,37 @@ impl WizardState {
         }
         match key.code {
             // 编辑态：字符插入优先于一切快捷键（含数字 1/2/3），
-            // 插入位置跟随 edit_pos（支持 ← → 移动后继续输入）
+            // 插入位置跟随 edit_pos（字节索引，支持 ← → 移动后继续输入）
             KeyCode::Char(c) if self.editing => {
                 let f = self.cfg_cursor;
                 if f < self.cfg_fields.len() {
                     let pos = self.edit_pos.min(self.cfg_fields[f].len());
                     self.cfg_fields[f].insert(pos, c);
-                    self.edit_pos = pos + 1;
+                    self.edit_pos = pos + c.len_utf8();
                     self.mark_touched(f);
                 }
             }
             KeyCode::Backspace if self.editing => {
                 let f = self.cfg_cursor;
                 if f < self.cfg_fields.len() && self.edit_pos > 0 {
-                    self.edit_pos -= 1;
-                    self.cfg_fields[f].remove(self.edit_pos);
+                    let prev = prev_char_boundary(&self.cfg_fields[f], self.edit_pos);
+                    self.cfg_fields[f].remove(prev);
+                    self.edit_pos = prev;
                     self.mark_touched(f);
                 }
             }
             KeyCode::Left if self.editing => {
-                self.edit_pos = self.edit_pos.saturating_sub(1);
+                let f = self.cfg_cursor;
+                if f < self.cfg_fields.len() {
+                    self.edit_pos = prev_char_boundary(&self.cfg_fields[f], self.edit_pos);
+                } else {
+                    self.edit_pos = 0;
+                }
             }
             KeyCode::Right if self.editing => {
                 let f = self.cfg_cursor;
                 if f < self.cfg_fields.len() {
-                    let max = self.cfg_fields[f].len();
-                    self.edit_pos = (self.edit_pos + 1).min(max);
+                    self.edit_pos = next_char_boundary(&self.cfg_fields[f], self.edit_pos);
                 }
             }
             KeyCode::Home if self.editing => self.edit_pos = 0,
@@ -373,9 +386,15 @@ impl WizardState {
                         self.editing = false;
                         self.edit_pos = 0;
                     } else if self.step > 3 {
+                        // 0.1.8 修复：返回上一步前快照当前步骤编辑（此前
+                        // 快照仅在「下一步」按钮路径进行，Esc 返回后再前进
+                        // 时 enter_step_form 重读 model.yaml / 旧快照，本轮
+                        // 编辑丢失——社区反馈"信息没有缓存"）。
+                        self.snapshot_step_fields(self.step);
                         self.step -= 1;
                         self.enter_step_form(self.step);
                     } else {
+                        self.snapshot_step_fields(3);
                         self.step = 2;
                     }
                     return false;
@@ -405,7 +424,7 @@ impl WizardState {
         }
         let pos = self.edit_pos.min(self.cfg_fields[f].len());
         self.cfg_fields[f].insert_str(pos, &cleaned);
-        self.edit_pos = pos + cleaned.chars().count();
+        self.edit_pos = pos + cleaned.len();
         self.mark_touched(f);
     }
 
@@ -451,6 +470,17 @@ impl WizardState {
         };
     }
 
+    /// 离开表单步骤时快照当前编辑（0.1.8：「下一步」与 Esc「返回」两条
+    /// 路径统一走此方法；此前仅「下一步」路径快照，Esc 往返丢编辑）。
+    fn snapshot_step_fields(&mut self, step: u8) {
+        match step {
+            3 if self.cfg_fields.len() == 7 => self.model_fields = self.cfg_fields.clone(),
+            4 if self.cfg_fields.len() == 5 => self.adv_fields = self.cfg_fields.clone(),
+            5 if self.cfg_fields.len() == 4 => self.think_fields = self.cfg_fields.clone(),
+            _ => {}
+        }
+    }
+
     /// 确认当前步骤 / 当前字段。
     fn confirm(&mut self) -> bool {
         match self.step {
@@ -489,15 +519,9 @@ impl WizardState {
                 } else {
                     // 完成按钮
                     if self.step < TOTAL_STEPS {
-                        if self.step == 3 {
-                            // 离开步骤 3 前快照模型基本字段（finish 写 model.yaml 用）
-                            self.model_fields = self.cfg_fields.clone();
-                        } else if self.step == 4 {
-                            // 0.1.7：离开步骤 4 前快照高级选项（finish 写
-                            // model.yaml 用；进入步骤 5 后 cfg_fields 被双思考
-                            // 字段覆盖，此前 adv_values() 因此回落默认值）
-                            self.adv_fields = self.cfg_fields.clone();
-                        }
+                        // 0.1.8：离开任何表单步骤前统一快照（finish 写
+                        // model.yaml 用 + 往返恢复用）
+                        self.snapshot_step_fields(self.step);
                         self.step += 1;
                         self.enter_step_form(self.step);
                         false
@@ -560,7 +584,10 @@ impl WizardState {
             }
             5 => {
                 let default_model = m.default_model.clone();
-                self.cfg_fields = if let Some(t) = &m.think {
+                // 0.1.8：从步骤 4 返回步骤 5 时优先恢复双思考快照
+                self.cfg_fields = if self.think_fields.len() == 4 {
+                    self.think_fields.clone()
+                } else if let Some(t) = &m.think {
                     vec![
                         format!("{}", t.enabled.unwrap_or(true)),
                         if t.slow_model.is_empty() { default_model.clone() } else { t.slow_model.clone() },
@@ -919,16 +946,10 @@ struct WizardConfig {
 /// 向导目录：$AIRY_HOME/data/agentrt/tui（与 TUI config.toml 同目录约定，
 /// 2.3.15 统一运行时数据布局——旧版曾用 $AIRY_HOME/tui，读时自动迁移）。
 fn wizard_dir() -> PathBuf {
-    let home = if let Ok(h) = std::env::var("AIRY_HOME") {
-        h
-    } else if let Ok(h) = std::env::var("HOME") {
-        format!("{}/.airymaxrt", h)
-    } else {
-        ".airymaxrt".to_string()
-    };
+    let home = crate::paths::airy_home();
     // 迁移：旧路径 $AIRY_HOME/tui/wizard.toml → 新路径 data/agentrt/tui/
-    let legacy = PathBuf::from(&home).join("tui").join(WIZARD_FILE);
-    let new_dir = PathBuf::from(&home).join("data").join("agentrt").join("tui");
+    let legacy = home.join("tui").join(WIZARD_FILE);
+    let new_dir = home.join("data").join("agentrt").join("tui");
     if legacy.is_file() && !new_dir.join(WIZARD_FILE).exists() {
         if std::fs::create_dir_all(&new_dir).is_ok() {
             let _ = std::fs::rename(&legacy, new_dir.join(WIZARD_FILE));
@@ -939,13 +960,7 @@ fn wizard_dir() -> PathBuf {
 
 /// 运行配置目录：$AIRY_HOME/config（secrets.env 所在目录）
 fn config_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("AIRY_HOME") {
-        return PathBuf::from(home).join("config");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".airymaxrt").join("config");
-    }
-    PathBuf::from(".airymaxrt").join("config")
+    crate::paths::airy_home_path(&["config"])
 }
 
 fn config_path() -> PathBuf {
@@ -1316,31 +1331,34 @@ fn form_field_line(
     let raw = w.cfg_fields.get(idx).cloned().unwrap_or_default();
     let value = if editing {
         // 编辑态：窗口跟随插入点滚动——长文本（API Key / base_url）不截断，
-        // 始终可见光标附近内容；窗口内以 ▍ 标示插入点。
+        // 始终可见光标附近内容；窗口内以 ▍ 标示插入点。edit_pos 为字节索引，
+        // 此处先折算成字符索引再按显示宽度开窗（0.1.8：此前直接把字节索引
+        // 当字符索引 skip，含 CJK 的字段光标错位、切片越界 panic）。
+        let chars: Vec<char> = raw.chars().collect();
+        let n = chars.len();
+        let cpos = byte_to_char(&raw, w.edit_pos.min(raw.len()));
         let max_vis = 48usize;
-        let len = raw.chars().count();
-        let pos = w.edit_pos.min(len);
-        let mut prefix_ell = false;
-        let mut start = pos.saturating_sub(max_vis / 2);
-        if start > 0 {
-            start = pos.saturating_sub(max_vis - 3);
-            prefix_ell = true;
+        let mut start = cpos.saturating_sub(max_vis / 2);
+        if start + max_vis > n {
+            start = n.saturating_sub(max_vis);
         }
-        let vis: String = raw.chars().skip(start).take(max_vis).collect();
-        let inner_pos = pos.saturating_sub(start);
-        let head = &vis[..char_boundary(&vis, inner_pos)];
-        let tail = &vis[char_boundary(&vis, inner_pos)..];
+        let prefix_ell = start > 0;
+        let inner = cpos.saturating_sub(start);
+        let head: String = chars[start..(start + inner).min(n)].iter().collect();
+        let tail: String = chars[(start + inner).min(n)..(start + max_vis).min(n)].iter().collect();
         if prefix_ell {
             format!("…{}▍{}", head, tail)
         } else {
             format!("{}▍{}", head, tail)
         }
     } else if idx == 6 && !raw.is_empty() {
-        // API Key 掩码：非编辑态仅显示尾 4 位
-        if raw.len() > 4 {
-            format!("{}…{}", "•".repeat(12), &raw[raw.len() - 4..])
+        // API Key 掩码：非编辑态仅显示尾 4 位（按字符取，避免多字节切片 panic）
+        let nc = raw.chars().count();
+        if nc > 4 {
+            let tail: String = raw.chars().skip(nc - 4).collect();
+            format!("{}…{}", "•".repeat(12), tail)
         } else {
-            "•".repeat(raw.len())
+            "•".repeat(nc)
         }
     } else {
         raw
@@ -1385,16 +1403,31 @@ fn push_footer(lines: &mut Vec<Line>, step: u8, width: usize) {
     }
 }
 
-/// 字符位置 → 字节边界（防止多字节字符切片 panic；越界返回 len）。
-fn char_boundary(s: &str, char_idx: usize) -> usize {
-    let mut b = 0;
-    for (i, ch) in s.char_indices() {
-        if i == char_idx {
-            return b;
-        }
-        b = i + ch.len_utf8();
+/// 字节位置 → 前一个字符边界（Backspace / ← 步进；0.1.8 统一编辑态
+/// 字节语义，防多字节字符中间切片 panic）。
+fn prev_char_boundary(s: &str, pos: usize) -> usize {
+    let pos = pos.min(s.len());
+    if pos == 0 {
+        return 0;
     }
-    s.len()
+    match s[..pos].chars().next_back() {
+        Some(c) => pos - c.len_utf8(),
+        None => 0,
+    }
+}
+
+/// 字节位置 → 后一个字符边界（→ 步进）。
+fn next_char_boundary(s: &str, pos: usize) -> usize {
+    let pos = pos.min(s.len());
+    match s[pos..].chars().next() {
+        Some(c) => pos + c.len_utf8(),
+        None => s.len(),
+    }
+}
+
+/// 字节索引 → 字符索引（渲染窗口计算用）。
+fn byte_to_char(s: &str, byte_idx: usize) -> usize {
+    s[..byte_idx.min(s.len())].chars().count()
 }
 
 /// 水平居中（按 unicode 显示宽度补空格）
@@ -1471,6 +1504,7 @@ mod tests {
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
             adv_fields: Vec::new(),
+            think_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1507,6 +1541,7 @@ mod tests {
     #[test]
     fn full_wizard_flow_reaches_finish() {
         // finish() 会写 secrets.env / model.yaml / wizard.toml → 隔离到临时目录
+        let _env_guard = crate::test_env::lock_env();
         let tmp = std::env::temp_dir().join(format!("airymaxrt-wiz-test-{}", std::process::id()));
         std::env::set_var("AIRY_HOME", &tmp);
         let _ = std::fs::create_dir_all(tmp.join("config"));
@@ -1521,6 +1556,7 @@ mod tests {
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
             adv_fields: Vec::new(),
+            think_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1592,6 +1628,7 @@ mod tests {
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
             adv_fields: Vec::new(),
+            think_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1614,6 +1651,7 @@ mod tests {
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
             adv_fields: Vec::new(),
+            think_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1643,6 +1681,7 @@ mod tests {
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
             adv_fields: Vec::new(),
+            think_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,
@@ -1669,6 +1708,7 @@ mod tests {
     /// 上下文窗口/最大输出等编辑被静默丢失）。
     #[test]
     fn step4_adv_fields_survive_finish() {
+        let _env_guard = crate::test_env::lock_env();
         let tmp = std::env::temp_dir().join(format!("airymaxrt-wiz-adv-{}", std::process::id()));
         std::env::set_var("AIRY_HOME", &tmp);
         let _ = std::fs::create_dir_all(tmp.join("config"));
@@ -1683,6 +1723,7 @@ mod tests {
             cfg_fields: default_model_fields(),
             model_fields: Vec::new(),
             adv_fields: Vec::new(),
+            think_fields: Vec::new(),
             cfg_cursor: 0,
             editing: false,
             edit_pos: 0,

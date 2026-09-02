@@ -15,13 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// secrets.env 文件路径：$AIRY_HOME/config/secrets.env（默认 ~/.airymaxrt/config/）。
 pub fn secrets_path() -> PathBuf {
-    if let Ok(home) = std::env::var("AIRY_HOME") {
-        return PathBuf::from(home).join("config").join("secrets.env");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".airymaxrt").join("config").join("secrets.env");
-    }
-    PathBuf::from(".airymaxrt").join("config").join("secrets.env")
+    crate::paths::airy_home_path(&["config", "secrets.env"])
 }
 
 /// 已知模型 API Key 变量名（v2 表格形式：统一 MODEL_N_API_KEY，与 model.yaml

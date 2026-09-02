@@ -82,10 +82,7 @@ pub struct ModelYaml {
 
 /// model.yaml 路径：$AIRY_HOME/config/model.yaml（HOME 回退 ~/.airymaxrt）。
 pub fn model_yaml_path() -> PathBuf {
-    let home = std::env::var("AIRY_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{}/.airymaxrt", h)))
-        .unwrap_or_else(|_| ".airymaxrt".to_string());
-    PathBuf::from(home).join("config").join("model.yaml")
+    crate::paths::airy_home_path(&["config", "model.yaml"])
 }
 
 /// 读取并解析 model.yaml（文件缺失返回空结构，绝不 panic）。

@@ -51,6 +51,16 @@ fn blink_cursor_color(elapsed_ms: u128) -> ratatui::style::Color {
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
+    // 0.1.8：整屏先铺主题背景。此前各面板仅给自身控件设 bg，chat 正文区
+    // 等未显式着色的区域透出**终端默认背景**——终端配色与主题不符时
+    // （浅色终端跑深色主题、或反之）出现社区反馈的"页面色彩反差"：
+    // 同一屏幕一半主题色一半终端色。Block 的 style 覆盖区域内全部
+    // 单元格，一次铺底后所有子控件按需在自身层级覆盖。
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme::bg())),
+        area,
+    );
+
     // 首次启动向导（或 /hiairy 重开）全屏接管，不渲染聊天/输入/快捷键
     if app.wizard.active {
         wizard::render(f, area, &app.wizard);

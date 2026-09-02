@@ -161,7 +161,10 @@ fn render_empty(lines: &mut Vec<Line>) {
     )));
     if std::env::var("AIRY_HOME").is_err() {
         lines.push(Line::from(Span::styled(
-            "  提示：未设置 AIRY_HOME，记忆将存入 ~/.airymaxrt/data/agentrt/tui/。",
+            format!(
+                "  提示：未设置 AIRY_HOME，记忆将存入 ~{}/data/agentrt/tui/。",
+                crate::paths::DEFAULT_DIR_NAME
+            ),
             Style::default().fg(theme::warning()),
         )));
     }

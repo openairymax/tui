@@ -20,7 +20,7 @@
 use std::os::raw::c_int;
 use std::path::PathBuf;
 
-// ---- FFI 声明（与 commons/utils/ime/include/airy_ime.h 严格对齐） ----
+// ---- FFI 声明（与 commons/utils/ime/airy_ime.h 严格对齐） ----
 
 /// C 侧类型定义无条件存在（Rust 结构体引用需要）；extern 函数声明仅在
 /// build.rs 声明 cfg(ime_linked)（成功链接 libairy_common.a）时编译。

@@ -27,7 +27,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ));
 
     if app.logs.is_empty() {
-        let home = std::env::var("AIRY_HOME").unwrap_or_else(|_| "~/.airymaxrt".to_string());
+        let home = std::env::var("AIRY_HOME")
+            .unwrap_or_else(|_| format!("~/{}", crate::paths::DEFAULT_DIR_NAME));
         let text = vec![
             Line::from(Span::styled(
                 "  暂无日志",
