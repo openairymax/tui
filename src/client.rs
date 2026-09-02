@@ -667,28 +667,6 @@ impl GatewayClient {
         })
     }
 
-    #[allow(dead_code)]
-    pub async fn get_logs(&self, lines: u32) -> Result<Vec<LogEntry>> {
-        let url = format!("{}/api/v1/logs?lines={}", self.base_url, lines);
-        let resp = self.http.get(&url).send().await?;
-        let body = resp.text().await?;
-        serde_json::from_str(&body).context("Failed to parse logs")
-    }
-
-    #[allow(dead_code)]
-    pub async fn get_memory_stats(&self) -> Result<String> {
-        let url = format!("{}/api/v1/memory/stats", self.base_url);
-        let resp = self.http.get(&url).send().await?;
-        Ok(resp.text().await.unwrap_or_default())
-    }
-
-    #[allow(dead_code)]
-    pub async fn get_plugins(&self) -> Result<String> {
-        let url = format!("{}/api/v1/plugins", self.base_url);
-        let resp = self.http.get(&url).send().await?;
-        Ok(resp.text().await.unwrap_or_default())
-    }
-
     /// 通用 JSON-RPC 调用（POST /），返回 result 节点（无 result 时返回 Null）。
     ///
     /// 公开给运维命令（/daemons /agents /tools /models /mem /rpc）复用；
@@ -882,15 +860,6 @@ pub struct PendingApproval {
     pub params: String,
     #[serde(default)]
     pub created_at: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct LogEntry {
-    pub timestamp: String,
-    pub level: String,
-    pub message: String,
-    pub daemon: Option<String>,
 }
 
 /// 任务看板条目（work_hall 持久化执行实例快照）。
