@@ -70,7 +70,8 @@ impl RunStreamEnvelope {
         })
     }
 
-    /// 事件分层分类；未知类型返回 Unknown（宽容读取）。
+    /// 事件分层分类；未知类型返回 Unknown（宽容读取）。仅测试用。
+    #[cfg(test)]
     pub fn kind(&self) -> RsKind {
         match self.event_type.as_str() {
             gen::AIRY_RS_TYPE_RUN_START

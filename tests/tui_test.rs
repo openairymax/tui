@@ -70,7 +70,6 @@ enum TestRole {
 
 #[derive(Debug, Clone)]
 struct TestLogEntry {
-    timestamp: String,
     level: String,
     message: String,
     daemon: Option<String>,
@@ -118,7 +117,6 @@ impl TestApp {
             self.logs.pop_front();
         }
         self.logs.push_back(TestLogEntry {
-            timestamp: String::from("2026-01-01T00:00:00Z"),
             level: level.to_string(),
             message: message.to_string(),
             daemon: daemon.map(|s| s.to_string()),
