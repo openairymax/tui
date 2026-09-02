@@ -17,7 +17,10 @@ use crate::skills::{self, SkillStore};
 use crate::wizard;
 
 /// Maximum number of chat messages to keep in memory.
-const MAX_CHAT_MESSAGES: usize = 500;
+///
+/// 0.1.9 W8：渲染改为按消息块虚拟滚动后，内存条数与每帧渲染行数解耦，
+/// 上限从 500 提升至 2000（长会话保留更多历史，帧成本仍只与视口高度相关）。
+pub(crate) const MAX_CHAT_MESSAGES: usize = 2000;
 
 /// Maximum number of log entries to keep.
 const MAX_LOG_ENTRIES: usize = 200;
@@ -44,9 +47,16 @@ pub struct ChatMessage {
     pub content: String,
     /// 消息时间戳（HH:MM:SS），消息气泡头部展示
     pub timestamp: String,
+    /// 稳定消息 id（0.1.9 W8）：虚拟滚动的行高缓存键，单调分配、永不复用
+    pub id: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl ChatMessage {
+    /// 流式哨兵 id：不进缓存、不参与身份判断
+    pub const NO_ID: u64 = u64::MAX;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum MessageRole {
     User,
@@ -231,6 +241,10 @@ pub struct App {
     /// 2026-08-17：任务执行期间（busy）插入对话队列——Enter 提交后先入队，
     /// 任务完成后主循环自动逐条处理（submit_input），对话不被打断、体验连续。
     pub insert_queue: VecDeque<String>,
+    /// 对话虚拟视图缓存（0.1.9 W8）：行高缓存随 App 生命周期，跨帧/tab 复用
+    pub chat_view: crate::panels::chat::ChatView,
+    /// 消息 id 单调发生器（缓存键，永不复用）
+    msg_seq: u64,
 }
 
 /// hall 面板轮询结果（看板/事件流二选一）。
@@ -421,6 +435,8 @@ impl App {
             events_cursor: 0,
             events_filter: String::new(),
             insert_queue: VecDeque::new(),
+            chat_view: crate::panels::chat::ChatView::new(),
+            msg_seq: 0,
         }
     }
 
@@ -3300,10 +3316,12 @@ impl App {
     pub fn add_message(&mut self, role: MessageRole, content: String) {
         // 时间戳：HH:MM:SS（消息气泡头部展示）
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+        self.msg_seq += 1;
         let msg = ChatMessage {
             role,
             content,
             timestamp,
+            id: self.msg_seq,
         };
 
         if self.messages.len() >= MAX_CHAT_MESSAGES {
