@@ -3556,17 +3556,6 @@ pub enum ModeMarker {
     TaskGccp,
 }
 
-/// 解析 LLM 返回的模式标记（由 LLM 判定"是否进入任务集"）。
-///
-/// 支持格式：`[MODE:TASK]` / `[MODE:CHAT]` / `[MODE:TASK:GCCP]`（标记后可有换行/空白）。
-/// 返回 (是否任务集, 剥离标记后的内容)。未匹配标记时视为普通对话原样返回。
-/// 保持兼容旧接口（memory.rs 测试使用）；新代码请用 parse_mode_detail。
-#[allow(dead_code)]
-pub fn parse_mode_marker(resp: &str) -> (bool, String) {
-    let (mode, rest) = parse_mode_detail(resp);
-    (mode != ModeMarker::Chat, rest)
-}
-
 /// 解析 LLM 返回的模式标记详情（区分普通任务集与大任务集 GCCP）。
 ///
 /// 容错（2026-08-26 修复）：此前要求响应严格以 `[MODE:XXX]` 开头，LLM 输出
