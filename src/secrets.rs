@@ -6,7 +6,7 @@
 // secrets.env 便捷读写（2.2.1.5 任务 3：F2 配置面板 API Key 配置节）。
 //
 // 存储位置：$AIRY_HOME/config/secrets.env（默认 ~/.airymaxrt/config/secrets.env），
-// 与 wizard.rs 的写回路径一致（llm_d 热加载，无需重启）。
+// 与 wizard 模块的写回路径一致（llm_d 热加载，无需重启）。
 // 安全约定：读入仅用于脱敏展示（后 4 位）；写入后文件权限收紧为 600（Unix）。
 
 use std::fs::{self, OpenOptions};
