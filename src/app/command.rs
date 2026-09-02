@@ -18,12 +18,12 @@ impl App {
             let cur = if self.model.is_empty() {
                 "（默认，由网关 / llm_d 自动回落）".to_string()
             } else {
-                format!("{}", self.model)
+                self.model.clone()
             };
             self.add_message(MessageRole::System, format!("当前模型：{}", cur));
             self.add_message(
                 MessageRole::System,
-                format!("设置模型：/model <模型名>（持久化到 $AIRY_HOME/tui/config.toml）"),
+                "设置模型：/model <模型名>（持久化到 $AIRY_HOME/tui/config.toml）".to_string(),
             );
             self.add_message(
                 MessageRole::System,
