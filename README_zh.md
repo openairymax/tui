@@ -2,7 +2,7 @@
 
 # Airymax TUI
 
-[![Version](https://img.shields.io/badge/version-0.1.5-5a6b7e)](https://atomgit.com/openairymax/tui)
+[![Version](https://img.shields.io/badge/version-0.1.9-5a6b7e)](https://atomgit.com/openairymax/tui)
 [![License](https://img.shields.io/badge/license-AGPL--3.0+Apache--2.0-4a90d9)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 
@@ -14,20 +14,22 @@
 
 ## 概述
 
-**Airymax TUI**（`agentrt-tui`）是用 Rust 构建的终端用户界面，为开发者和运维人员提供可视化、交互式驱动 Airymax 运行时的方式。它基于 `ratatui` 与 `crossterm` 构建，提供多面板切换、实时对话、日志监控、记忆查看、配置编辑和插件管理 —— 全部在单个终端窗口内完成。
+**Airymax TUI**（`agentrt-tui`）是用 Rust 构建的终端用户界面，为开发者和运维人员提供可视化、交互式的运行时渲染仪表盘 —— 覆盖对话渲染、交互与可观测，业务逻辑保持在运行时侧。它基于 `ratatui` 与 `crossterm` 构建，在单个终端窗口内提供多面板导航、实时对话渲染、日志 / 记忆面板、配置与向导。
 
-与 CLI 一样，TUI 是一等**运行时租户**：通过 HTTP（JSON-RPC 2.0）与 Airymax Gateway 通信，使用自身的 `reqwest` 客户端。它不依赖、也不链接各语言 SDK（`agentrt-rs` 等）。
+0.1.9（M5）起公开能力：对话流对接 gateway 的 `agent.run_stream` 事件帧协议（token 打字机 / 工具调用 / 思考链 / 结构化错误渲染）；首次启动向导数据驱动；主题 token 化（语义色 token，自动适配 TrueColor / 256 / 16 三档色深）；日志 / 记忆面板经 gateway 事件订阅；大历史对话虚拟渲染。
+
+与 CLI 一样，TUI 是一等**运行时租户**：经 Gateway 通信（HTTP / JSON-RPC 2.0，对话执行轮走 SSE 事件流），使用自身的 `reqwest` 客户端。它不依赖、也不链接各语言 SDK（`agentrt-rs` 等）。
 
 ## 运行时通信
 
-TUI 通过 Gateway HTTP API（JSON-RPC 2.0）与运行时通信，直接使用自己的 HTTP 客户端（`src/client.rs`，基于 `reqwest`）。它不包装、也不消费语言 SDK：`Cargo.toml` 中没有 `agentrt-rs` 依赖。
+TUI 经 Gateway 与运行时通信：常规请求走 HTTP（JSON-RPC 2.0），对话执行轮经 `agent.run_stream` SSE 事件流接收事件帧（token 打字机 / 工具调用 / 思考链 / 结构化错误）。HTTP 客户端为 `src/client.rs`（基于 `reqwest`）。它不包装、也不消费语言 SDK：`Cargo.toml` 中没有 `agentrt-rs` 依赖。
 
 ```
 agentrt-tui <panel>
-   └── src/client.rs — reqwest HTTP 客户端
-       ├── chat    → 对话 / 任务提交
-       ├── memory  → 记忆查看
-       ├── logs    → 运行时日志流
+   └── src/client.rs — reqwest HTTP / SSE 客户端
+       ├── chat    → 对话 / 任务提交（run_stream 事件流）
+       ├── memory  → 记忆面板（gateway 事件订阅）
+       ├── logs    → 日志面板（gateway 事件订阅）
        └── plugins → 插件管理
 ```
 
@@ -37,17 +39,29 @@ agentrt-tui <panel>
 tui/
 ├── src/
 │   ├── main.rs              # 入口与终端初始化 / 清理
-│   ├── app.rs               # 应用状态与事件循环
-│   ├── client.rs            # Gateway HTTP 客户端
-│   ├── ui.rs                # UI 渲染入口
-│   └── panels/
-│       ├── mod.rs           # 面板模块导出
-│       ├── chat.rs          # 对话面板
-│       ├── config.rs        # 配置面板
-│       ├── help.rs          # 帮助面板
-│       ├── logs.rs          # 日志面板
-│       ├── memory.rs        # 记忆面板
-│       └── plugins.rs       # 插件面板
+│   ├── client.rs            # Gateway 客户端（HTTP / JSON-RPC 2.0 + SSE 事件流）
+│   ├── run_stream.rs        # agent.run_stream v1 事件帧解析（SSoT 常量由 build.rs 生成）
+│   ├── ui.rs                # 主渲染与统一布局
+│   ├── theme.rs             # 设计令牌：语义色 token + TrueColor / 256 / 16 三档色深
+│   ├── gccp.rs              # GCCP 任务事实确认 / GRAD 流程图确认
+│   ├── markdown.rs          # Markdown 渲染
+│   ├── memory.rs            # 对话记忆
+│   ├── skills.rs            # 本地技能库
+│   ├── models_cfg.rs        # model.yaml 读写（模型连接表 + 思考系统段）
+│   ├── secrets.rs           # secrets.env 读写
+│   ├── paths.rs             # AIRY_HOME 路径解析单一来源
+│   ├── ime.rs               # 内置拼音输入法
+│   ├── app/                 # 应用状态域（分发 / 轮询 / 面板 / 任务 / 会话 / 输入）
+│   ├── panels/              # 渲染面板
+│   │   ├── mod.rs           # 面板模块导出
+│   │   ├── chat/            # 对话面板（大历史虚拟视图 / 消息块）
+│   │   ├── config.rs        # 配置面板
+│   │   ├── logs.rs          # 日志面板
+│   │   ├── memory.rs        # 记忆面板
+│   │   ├── plugins.rs       # 插件面板
+│   │   ├── help.rs          # 帮助面板
+│   │   └── board.rs / events.rs
+│   └── wizard/              # 首次启动向导（数据驱动：steps 注册表即 SSoT）
 ├── Cargo.toml               # crate 清单（agentrt-tui，二进制：agentrt-tui）
 └── README.md                # 本文件
 ```
@@ -56,7 +70,7 @@ tui/
 
 ### 上游
 
-- **运行时**：通过 HTTP 和 JSON-RPC 2.0 连接到运行中的 Airymax / AgentRT 实例（`gateway_d` / Gateway HTTP API）。TUI 直接使用 `reqwest`，**无 `agentrt-rs` 依赖**（见 `Cargo.toml`）。
+- **运行时**：经 HTTP（JSON-RPC 2.0）与 SSE 事件流连接到运行中的 Airymax / AgentRT 实例（Gateway HTTP / SSE API）。TUI 直接使用 `reqwest`，**无 `agentrt-rs` 依赖**（见 `Cargo.toml`）。
 - **配置**：依次从 CLI 标志、环境变量（`AGENTRT_GATEWAY_URL`、`AGENTRT_API_KEY`）、默认值 `http://localhost:8080` 解析。
 
 ### 下游
@@ -139,7 +153,7 @@ cargo test
 
 ## 分支策略
 
-本叶子仓在 **`feature/official-hubs-01`** 分支上开发。聚合管理仓 `sdk` 仅使用 `main` 分支。
+本叶子仓在 **`develop/hubs-01`** 分支上开发，`main` 为发布快照。聚合管理仓 `sdk` 在 `main` 上直接开发。
 
 ## 许可证
 
