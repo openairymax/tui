@@ -15,7 +15,7 @@ use crate::theme;
 /// 空态欢迎（无消息时，2.0 分层品牌卡重设计）。
 ///
 /// 视觉结构（自上而下，垂直居中）：
-///   1. 品牌行：◈ AirymaxRT（主色粗体）+ 版本徽章（主色底反白）+ tagline（灰）；
+///   1. 品牌行：◈ AirymaxRT（主色粗体）+ tagline（灰；版本只在顶部状态条展示）；
 ///   2. 主题细线（主色弱化，半宽居中）——与顶部状态条呼应；
 ///   3. 核心链路能力矩阵（胶囊 chips，次级表面底 + 语义色文字）；
 ///   4. 硬件摘要行（复用配置面板宿主机探测，静态展示独占欢迎墙）；
@@ -24,7 +24,6 @@ use crate::theme;
 /// 运行数据（连接灯/模型/token/成本/阶段）由顶部系统状态条独占，
 /// 两区域职责分离、无重叠。极窄屏（<44 列）降级为单行精简品牌。
 pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, app: &App) {
-    let ver = env!("AIRY_RT_VERSION");
     let proj = if app.project_context.is_empty() {
         "未加载项目上下文（F2 配置 / /project 加载）".to_string()
     } else {
@@ -42,7 +41,6 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
                 "◈ AirymaxRT",
                 Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("  v{ver}"), Style::default().fg(theme::faint())),
             Span::styled(
                 "  极境智能体运行平台 · 输入消息开始对话",
                 Style::default().fg(theme::dim()),
@@ -54,18 +52,12 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
     let content_max = width.saturating_sub(4).max(16);
     let mut hero: Vec<Line<'static>> = Vec::new();
 
-    // 1. 品牌行：徽标 + 版本徽章 + tagline
+    // 1. 品牌行：徽标 + tagline（中区欢迎墙不显示版本号——版本以顶部状态条为准，
+    //    中区版本与包/网关版本错位会误导（社区反馈 2026-09-07））
     let brand = Line::from(vec![
         Span::styled(
             "◈ AirymaxRT",
             Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" v{ver} "),
-            Style::default()
-                .fg(theme::on_color())
-                .bg(theme::primary())
-                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  极境智能体运行平台", Style::default().fg(theme::dim())),
     ]);
