@@ -94,7 +94,8 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  用得多、沉淀多、可用工具就多，不用重复造技能的轮子。".to_string(),
         String::new(),
         "状态栏:".to_string(),
-        "  显示阶段、技能数、回合数、Token、成本与耗时。".to_string(),
+        "  顶部系统状态条：连接状态与时间、模型、Token/成本、阶段徽章、".to_string(),
+        "  任务控制（暂停/中止）——技能数/回合数不在此栏，F4 记忆/F5 技能查看。".to_string(),
     ]
 }
 

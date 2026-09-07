@@ -6,7 +6,7 @@
 // AirymaxRT TUI 主渲染：统一布局与主题（极简自适应）。
 
 // Layout structure（主内容区随终端大小弹性伸缩）:
-// ┌─ ◈ AirymaxRT v0.1.8 ───────────── ● ONLINE  22:45:33 ─┐
+// ┌─ ◈ AirymaxRT ─────────────── ● ONLINE  22:45:33 ─┐
 // │ 对话 2 · 技能 3 · 记忆 128     模型 deepseek-v4-flash  │
 // │ 12,345 tok · $0.0080 · [对话]                         │
 // └──────────────────────────────────────────────────────┘  ← 英雄区
@@ -440,6 +440,19 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
     render_input_sep(f, layout[idx]);
 }
 
+/// 只读展示面板（无输入语义）在输入栏占位处给出的状态提示：输入栏仍显示，
+/// 但 Enter/普通字符不会汇入或发出对话共享输入（按键守卫在 main.rs）。
+fn panel_read_hint(p: ActivePanel) -> Option<&'static str> {
+    match p {
+        ActivePanel::Help => Some("帮助只读 · Esc 返回对话"),
+        ActivePanel::Config => Some("配置只读 · Esc 返回对话"),
+        ActivePanel::Logs => Some("日志只读 · ↑↓ 滚动 · Esc 返回对话"),
+        ActivePanel::Memory => Some("记忆只读 · PgUp/PgDn 翻页 · Esc 返回对话"),
+        ActivePanel::Plugins => Some("插件只读 · Esc 返回对话"),
+        _ => None,
+    }
+}
+
 /// 输入行（第一行）：`❯` 前缀 + 阶段引导/占位提示 + 输入文本 + 光标。
 fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
     // 等待回复：prefix 保持普通，无呼吸灯、无动画（思考动效在对话主区，输入框安静克制）；
@@ -474,9 +487,14 @@ fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // 可输入状态：空输入（普通对话）显示占位引导，输入后自动消失
+    // 可输入状态：空输入（普通对话）显示占位引导，输入后自动消失。
+    // 只读面板（F1-F5 帮助/配置/日志/记忆/插件）在空输入时给出面板态提示：
+    // 输入栏仍可见但与对话解耦——Enter/字符不会汇入或发出共享输入
     let (hint, hint_color) = if app.flow_phase == FlowPhase::Chat && app.input.is_empty() {
-        ("发送消息，Enter 发送".to_string(), theme::faint())
+        match panel_read_hint(app.active_panel) {
+            Some(h) => (h.to_string(), theme::dim()),
+            None => ("发送消息，Enter 发送".to_string(), theme::faint()),
+        }
     } else {
         (app.flow_phase.input_hint(), theme::dim())
     };
@@ -562,15 +580,18 @@ fn render_input_sep(f: &mut Frame, area: Rect) {
 /// 快捷键（单行低对比，Claude Code 风格克制；0.1.3 去掉彩色胶囊背景，
 /// 仅当前面板键以主色高亮，其余灰显；窄屏自动收起文字标签）。
 fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
-    let items = [
-        ("F1", "帮助", ActivePanel::Help),
-        ("F2", "配置", ActivePanel::Config),
-        ("F3", "日志", ActivePanel::Logs),
-        ("F4", "记忆", ActivePanel::Memory),
-        ("F5", "插件", ActivePanel::Plugins),
-        ("F6", "看板", ActivePanel::Board),
-        ("F7", "事件流", ActivePanel::Events),
-        ("F8", "CLI", ActivePanel::Chat),
+    // F8 是"切到 CLI"动作键而非面板：active 恒为 None → 普通文字不高亮，
+    // 修复此前与 ActivePanel::Chat 绑定导致的"伪激活"恒亮（当前在对话时
+    // F8 也被误高亮成已激活面板）
+    let items: [(&str, &str, Option<ActivePanel>); 8] = [
+        ("F1", "帮助", Some(ActivePanel::Help)),
+        ("F2", "配置", Some(ActivePanel::Config)),
+        ("F3", "日志", Some(ActivePanel::Logs)),
+        ("F4", "记忆", Some(ActivePanel::Memory)),
+        ("F5", "插件", Some(ActivePanel::Plugins)),
+        ("F6", "看板", Some(ActivePanel::Board)),
+        ("F7", "事件流", Some(ActivePanel::Events)),
+        ("F8", "CLI", None),
     ];
 
     // 窄屏只显示键位，隐藏文字标签，避免溢出
@@ -578,7 +599,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
 
     let mut spans: Vec<Span> = Vec::with_capacity(items.len() * 2 + 2);
     for (key, label, panel) in items {
-        let active = app.active_panel == panel;
+        let active = panel == Some(app.active_panel);
         spans.push(Span::styled(
             format!(" {key} "),
             Style::default().fg(if active { theme::primary() } else { theme::dim() }),
