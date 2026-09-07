@@ -1549,6 +1549,13 @@ case "$CMD" in
         }
         log info "委托安装器执行卸载: $inst"
         shift
+        # 0.1.6h 同款修复（对齐下方 reinstall 分支）：非默认位置安装的用户
+        # 卸载到错误路径（install.sh 强制忽略环境变量 AIRY_HOME）；显式传
+        # --prefix，否则 do_uninstall 找不到 install.env → "未检测到安装"
+        # 以 0 退出，真实安装原封不动残留（0.1.13 C2a 复核实证）。
+        if [ "$AIRY_HOME" != "${HOME}/.airymaxrt" ]; then
+            exec sh "$inst" --uninstall --prefix "$AIRY_HOME" "$@"
+        fi
         exec sh "$inst" --uninstall "$@"
         ;;
     reinstall)
