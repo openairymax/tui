@@ -945,6 +945,18 @@ apply_package() { # <tarball> [expect_sha]
         rm -rf "$TMPD"
         return 1
     fi
+    # lib/ python 运行时四子树自检（对齐 publish-release.sh REQUIRED_SUBTREE）：
+    # 本缺陷实录——install.sh/updater 的 lib/ 拷贝曾为非递归 cp，airymax_agents
+    # 等 python 运行时目录被静默漏拷（v0.1.11/0.1.12 安装树缺件、agent 无法
+    # 启动）。镜像同步后仍缺件即包体不完整或拷贝残缺，fail-closed 回滚拒绝。
+    for _py in airymax_agents airymax_agents_rs orchestration agentrt; do
+        if [ ! -d "$AIRY_HOME/lib/$_py" ]; then
+            log error "镜像同步自检失败（lib/${_py} python 运行时缺失），自动回滚…"
+            restore_from_backup "$bkup" || log error "回滚恢复不完整，请执行 reinstall 修复"
+            rm -rf "$TMPD"
+            return 1
+        fi
+    done
     # 固化新版本与制品 sha 到 install.env（sed_inplace 跨平台：macOS BSD
     # sed 直接覆盖会失败，导致键重复/不更新；键缺失时追加。AIRY_ARTIFACT_
     # SHA256 为同 tag 修复重发检测依据，期望值已强校验=制品实际 sha）
