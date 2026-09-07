@@ -33,7 +33,17 @@ use crate::theme;
 /// 行级滚动 + 右侧滚动条。视口行的选取由 ChatView::layout 完成，
 /// 本函数只做组件装配。
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
-    let width = area.width as usize;
+    // 正文区宽：有对话且宽度允许时，先预留最右 1 列为滚动条轨道——正文
+    // 按减 1 后的宽度换行/截断，滚动条画在预留列上，不再覆盖正文最后一列。
+    // 预留与否只随"是否有消息"与面板宽度变化（跨帧稳定），滚动条随内容
+    // 超出视口才出现，避免行高缓存随滚动抖动失效。
+    let reserve_sb = area.width >= 44 && !app.messages.is_empty();
+    let body_w = if reserve_sb {
+        area.width.saturating_sub(1)
+    } else {
+        area.width
+    };
+    let width = body_w as usize;
     let viewport = area.height as usize;
     // 缓存视图从 App 取出，避免 layout 的 &App 与 &mut chat_view 借用冲突
     let mut view = std::mem::take(&mut app.chat_view);
@@ -42,8 +52,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
 
     f.render_widget(Paragraph::new(Text::from(frame.lines)), area);
 
-    // 滚动条：内容超出视口且有对话时显示；窄屏（<44 列）隐藏避免挤占
-    if frame.total > viewport && !app.messages.is_empty() && area.width >= 44 {
+    // 滚动条：内容超出视口且有对话时显示；画在预留的最右 1 列上
+    // （正文布局已按 width-1 排布，不再压住正文最后一列）；窄屏隐藏
+    if reserve_sb && frame.total > viewport && area.width >= 44 {
         let sb_area = Rect {
             x: area.right().saturating_sub(1),
             y: area.y,

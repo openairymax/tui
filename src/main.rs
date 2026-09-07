@@ -551,6 +551,13 @@ async fn run_app<B: Backend>(
                         app.events_view_selected();
                         continue;
                     }
+                    // 只读面板（Help/Config/Logs/Memory/Plugins）：Enter 不提交、
+                    // Alt+Enter 不换行——共享输入只属于对话面板，防止切到面板后
+                    // 误触 Enter 把输入框内容真的发出去（Board/Events 上面已处理）
+                    if read_only_panel(app.active_panel) {
+                        debug!("Panel: Enter 在只读面板被忽略（不提交共享输入）");
+                        continue;
+                    }
                     // Alt+Enter 换行（多行输入，光标处插入），Enter 发送
                     if key.modifiers.contains(event::KeyModifiers::ALT) {
                         app.input_insert_text("\n");
@@ -592,6 +599,15 @@ async fn run_app<B: Backend>(
                                     Event::Key(key) => {
                                         if key.kind == KeyEventKind::Press {
                                         match key.code {
+                                            // 与空闲态一致：busy（等待回复/任务执行）期间按
+                                            // Ctrl+C 同样退出 TUI，不再被 busy 内层循环吞键
+                                            KeyCode::Char('c') | KeyCode::Char('C')
+                                                if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                            {
+                                                info!("User pressed Ctrl+C while busy, shutting down...");
+                                                app.shutdown().await?;
+                                                return Ok(());
+                                            }
                                             KeyCode::Char('x') | KeyCode::Char('X')
                                                 if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                                             {
@@ -676,7 +692,15 @@ async fn run_app<B: Backend>(
                                             KeyCode::Esc if app.ime_visible() => {
                                                 app.ime_cancel();
                                             }
+                                            // 非拼音态 Esc：与空闲态一致返回对话（busy 期间
+                                            // 在只读面板/看板上也能 Esc 退出，不困在面板里）
+                                            KeyCode::Esc => {
+                                                app.active_panel = ActivePanel::Chat;
+                                            }
                                             // ── 插入对话（2.3.7）：任务执行中输入文本 ──
+                                            // 只读面板（Help/Config/Logs/Memory/Plugins）：
+                                            // Enter 不入插入队列——共享输入只属于对话面板
+                                            KeyCode::Enter if read_only_panel(app.active_panel) => {}
                                             KeyCode::Enter => {
                                                 // 拼音态：先提交拼音原文（随后提交整行）
                                                 app.ime_commit_enter();
@@ -719,9 +743,12 @@ async fn run_app<B: Backend>(
                                             // 0.1.7：带修饰键的字符（Alt+E 展开/折叠、Ctrl+E 光标到行尾、
                                             // Alt+1..9 切换标签）不能落入普通字符插入——此前 busy 期间
                                             // 按 Alt+E/Ctrl+E 被当 'e' 插入输入框，交互动作静默丢失。
+                                            // 只读面板（Help/Config/Logs/Memory/Plugins）同样
+                                            // 不写入共享输入。
                                             KeyCode::Char(c)
-                                                if key.modifiers.is_empty()
-                                                    || key.modifiers == event::KeyModifiers::SHIFT =>
+                                                if (key.modifiers.is_empty()
+                                                    || key.modifiers == event::KeyModifiers::SHIFT)
+                                                    && !read_only_panel(app.active_panel) =>
                                             {
                                                 if !app.ime_input_char(c) {
                                                     // 普通字符插入输入框（光标感知；IME 拼音态已消费时跳过）
@@ -866,18 +893,24 @@ async fn run_app<B: Backend>(
                         _ => {}
                     }
                 }
-                KeyCode::Char(c) => {
-                    // 普通字符插入到光标位置（IME 拼音态：先经拼音输入法）
+                KeyCode::Char(c) if app.active_panel == ActivePanel::Chat => {
+                    // 普通字符插入到光标位置（IME 拼音态：先经拼音输入法）。
+                    // 仅对话面板可写入共享输入；只读面板（Help/Config/Logs/
+                    // Memory/Plugins）不汇入输入框，Board/Events 由上方数字
+                    // 过滤分支消费、不落入此处。
                     if !app.ime_input_char(c) {
                         app.input_insert_char(c);
                     }
                 }
                 KeyCode::Up => {
-                    // F6/F7 面板：↑ 移动选中光标（循环）；其余场景滚对话/浏览历史
+                    // F6/F7 面板：↑ 移动选中光标（循环）；F3 日志面板滚动；
+                    // 其余场景滚对话/浏览历史
                     if app.active_panel == ActivePanel::Board {
                         app.board_cursor_up();
                     } else if app.active_panel == ActivePanel::Events {
                         app.events_cursor_up();
+                    } else if app.active_panel == ActivePanel::Logs {
+                        app.logs_scroll_older();
                     } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                         app.history_prev();
                     } else {
@@ -889,6 +922,8 @@ async fn run_app<B: Backend>(
                         app.board_cursor_down();
                     } else if app.active_panel == ActivePanel::Events {
                         app.events_cursor_down();
+                    } else if app.active_panel == ActivePanel::Logs {
+                        app.logs_scroll_newer();
                     } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                         app.history_next();
                     } else {
@@ -925,4 +960,18 @@ async fn run_app<B: Backend>(
 
 fn truncate_str(s: &str, max: usize) -> &str {
     if s.len() <= max { s } else { &s[..max] }
+}
+
+/// 只读展示面板：Help/Config/Logs/Memory/Plugins 无输入语义，Enter 与
+/// 普通字符键不应写入或提交对话面板的共享输入（Board/Events 有各自的
+/// 选中/过滤键位，不在此列）。
+fn read_only_panel(p: ActivePanel) -> bool {
+    matches!(
+        p,
+        ActivePanel::Help
+            | ActivePanel::Config
+            | ActivePanel::Logs
+            | ActivePanel::Memory
+            | ActivePanel::Plugins
+    )
 }
