@@ -70,7 +70,7 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  /board      - 任务看板面板（F6 等价）".to_string(),
         "  /events     - 事件流面板（F7 等价）".to_string(),
         "  /chain      - 决策链：无参列任务，/chain <task_id> 回放该任务决策链".to_string(),
-        "  /daemons    - 16 个 daemon 在线状态（经 gateway health_check）".to_string(),
+        "  /daemons    - 14 个 daemon 在线状态（gateway 自身见顶部连接灯）".to_string(),
         "  /agents     - 已注册智能体（agent.list）".to_string(),
         "  /tools      - 可用工具（tool.list_tools）".to_string(),
         "  /models     - LLM 模型（llm.list_models）".to_string(),

@@ -294,10 +294,13 @@ enum OpsOutcome {
     Call(Result<serde_json::Value>),
 }
 
-/// gateway 转发的 16 个 daemon 命名空间（与 C CLI CLI_DAEMONS 对齐）。
-const OPS_DAEMON_NS: [&str; 16] = [
-    "agent", "tool", "hook", "plugin", "think", "monit", "sched", "channel", "market", "llm",
-    "cupolas", "mem", "info", "notify", "observe", "a2a",
+/// /daemons 探测清单（0.1.9 M4 整编后口径）：14 个可经 gateway FWD 探测
+/// 的业务 daemon 命名空间。plugin/info/observe 为整编兼容别名（→tool/
+/// monit），列入即同一 daemon 重复计数；gateway_d 自身以顶部连接状态呈现
+/// （连接断开时 /daemons 本就不可达）；maths_d 随 0.1.9 M4 补入。
+const OPS_DAEMON_NS: [&str; 14] = [
+    "agent", "tool", "think", "monit", "sched", "channel", "market", "llm",
+    "cupolas", "mem", "notify", "hook", "a2a", "maths",
 ];
 
 /// 后台 LLM 请求的类型（决定结果如何应用）。
