@@ -213,6 +213,16 @@ impl App {
         self.scroll_offset = self.scroll_offset.saturating_sub(10);
     }
 
+    /// F3 日志面板：向更早方向滚一条（距最新的条目偏移 +1）。
+    pub fn logs_scroll_older(&mut self) {
+        self.logs_scroll = self.logs_scroll.saturating_add(1);
+    }
+
+    /// F3 日志面板：向最新方向滚一条（偏移减 1，0 封底）。
+    pub fn logs_scroll_newer(&mut self) {
+        self.logs_scroll = self.logs_scroll.saturating_sub(1);
+    }
+
     /// Shutdown gracefully.
     pub async fn shutdown(&mut self) -> Result<()> {
         if self.connected {

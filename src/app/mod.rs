@@ -146,6 +146,8 @@ pub struct App {
     pub last_turn_elapsed: Option<Instant>,
     /// Log entries
     pub logs: VecDeque<LogEntry>,
+    /// F3 日志面板滚动偏移（距最新的条目数，0 = 最新在顶；↑/↓ 调整）
+    pub logs_scroll: usize,
     /// Help text cached
     pub help_text: Vec<String>,
     /// 当前对话/任务模型（/model <name> 设置并持久化；空 = 由网关/llm_d 回落默认）
@@ -391,6 +393,7 @@ impl App {
             turn_started: Instant::now(),
             last_turn_elapsed: None,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            logs_scroll: 0,
             help_text: build_help_text(),
             model: load_saved_model().unwrap_or_default(),
             config_file: format!("{}/config/model.yaml", airy_home()),

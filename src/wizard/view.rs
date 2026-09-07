@@ -32,23 +32,46 @@ pub fn render(f: &mut Frame, area: Rect, w: &WizardState) {
     let width = (area.width as usize).clamp(24, 78);
     let mut lines: Vec<Line> = Vec::new();
 
-    match w.step {
+    // build_* 返回当前选中行（选项/字段/动作位）在 lines 中的行号，
+    // 高度不足时以其为锚滚动窗口
+    let active = match w.step {
         1 => build_welcome(&mut lines, w, width),
         2 => build_start(&mut lines, w, width),
         _ => build_form(&mut lines, w, width),
-    }
+    };
     push_footer(&mut lines, w.step, width);
 
-    // 垂直居中；水平居中裁剪到 width 列
-    let pad_top = area.height.saturating_sub(lines.len() as u16) / 2;
+    let x = area.x + (area.width.saturating_sub(width as u16)) / 2;
+    // 高度充足：整段垂直居中展示（历史行为，大终端不受影响）
+    let avail = area.height as usize;
+    if lines.len() <= avail {
+        let pad_top = area.height.saturating_sub(lines.len() as u16) / 2;
+        let body = Rect {
+            x,
+            y: area.y.saturating_add(pad_top),
+            width: width as u16,
+            height: area.height.saturating_sub(pad_top),
+        };
+        f.render_widget(
+            Paragraph::new(Text::from(lines)).style(Style::default().bg(theme::bg())),
+            body,
+        );
+        return;
+    }
+    // 高度不足：纵向滚动窗口，顶部行 = 选中行 − 2 行余量（钳到可视范围）。
+    // 选中行（选项/字段/动作位）始终可见，↑/↓ 移动时窗口跟随，底部内容可达
+    let win = avail.max(1);
+    let max_top = lines.len() - win;
+    let top = active.saturating_sub(2).min(max_top);
+    let view: Vec<Line> = lines.iter().skip(top).take(win).cloned().collect();
     let body = Rect {
-        x: area.x + (area.width.saturating_sub(width as u16)) / 2,
-        y: area.y.saturating_add(pad_top),
+        x,
+        y: area.y,
         width: width as u16,
-        height: area.height.saturating_sub(pad_top),
+        height: area.height,
     };
     f.render_widget(
-        Paragraph::new(Text::from(lines)).style(Style::default().bg(theme::bg())),
+        Paragraph::new(Text::from(view)).style(Style::default().bg(theme::bg())),
         body,
     );
 }
@@ -62,8 +85,8 @@ fn t<'a>(zh: bool, pair: (&'a str, &'a str)) -> &'a str {
     }
 }
 
-/// 步骤 1：欢迎 + 版本 + 界面语言选择（中英双语展示）。
-fn build_welcome(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
+/// 步骤 1：欢迎 + 界面语言选择（中英双语展示）。返回选中选项行的行号。
+fn build_welcome(lines: &mut Vec<Line>, w: &WizardState, width: usize) -> usize {
     let detected = Lang::detect();
     let detected_hint = match detected {
         Lang::Chinese => "简体中文",
@@ -91,6 +114,7 @@ fn build_welcome(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
     lines.push(centered(&format!("当前检测到 · Detected: {}", detected_hint), width));
     lines.push(Line::raw(""));
 
+    let opt_start = lines.len();
     for (i, lang) in LANG_CHOICES.iter().enumerate() {
         let label = match lang {
             Lang::Auto => format!("{}  [推荐]", lang.label()),
@@ -98,10 +122,11 @@ fn build_welcome(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
         };
         lines.push(option_line(i == w.choice_cursor, &label));
     }
+    opt_start + w.choice_cursor.min(LANG_CHOICES.len().saturating_sub(1))
 }
 
-/// 步骤 2：想怎么开始？（文案随步骤 1 所选语言切换）。
-fn build_start(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
+/// 步骤 2：想怎么开始？（文案随步骤 1 所选语言切换）。返回选中行行号。
+fn build_start(lines: &mut Vec<Line>, w: &WizardState, width: usize) -> usize {
     let zh = w.effective_lang.zh();
 
     lines.push(Line::raw(""));
@@ -120,18 +145,24 @@ fn build_start(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
     ));
     lines.push(Line::raw(""));
 
+    let mut active = 0usize;
     for (i, c) in START_CHOICES.iter().enumerate() {
+        if i == w.choice_cursor {
+            active = lines.len();
+        }
         lines.push(option_line(i == w.choice_cursor, t(zh, c.label)));
         for dl in desc_lines(t(zh, c.desc), width) {
             lines.push(dl);
         }
         lines.push(Line::raw(""));
     }
+    active
 }
 
-/// 表单步骤（3/4/5）：标题 + 副标题 + 可见字段 + 动作按钮。
-fn build_form(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
-    let Some(spec) = form_step(w.step) else { return };
+/// 表单步骤（3/4/5）：标题 + 副标题 + 可见字段 + 动作按钮。返回选中
+/// 字段/动作按钮所在行号。
+fn build_form(lines: &mut Vec<Line>, w: &WizardState, width: usize) -> usize {
+    let Some(spec) = form_step(w.step) else { return 0 };
     let zh = w.effective_lang.zh();
 
     step_header(lines, w.step, t(zh, spec.title), width);
@@ -144,15 +175,23 @@ fn build_form(lines: &mut Vec<Line>, w: &WizardState, width: usize) {
     }
 
     let visible = spec.visible(w.mode_local());
+    let mut active = 0usize;
     for (pos, &idx) in visible.iter().enumerate() {
+        if pos == w.field_cursor {
+            active = lines.len();
+        }
         field_line(lines, w, pos, idx, &spec.fields[idx], zh);
         lines.push(Line::raw(""));
     }
     lines.push(Line::raw(""));
+    if w.field_cursor >= visible.len() {
+        active = lines.len();
+    }
     lines.push(option_line(
         w.field_cursor >= visible.len(),
         t(zh, spec.action),
     ));
+    active
 }
 
 /// 表单步骤标题（◈ 标志 + 标题 + 步骤计数）。
