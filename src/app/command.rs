@@ -189,7 +189,9 @@ impl App {
         self.chain_pending = Some(rx);
     }
 
-    /// /daemons：16 个 daemon 命名空间经 gateway health_check 聚合在线状态。
+    /// /daemons：14 个 daemon 命名空间经 gateway health_check 聚合在线
+    /// 状态（0.1.9 M4 整编口径，清单见 OPS_DAEMON_NS；gateway_d 自身以
+    /// 连接状态呈现）。
     ///
     /// 结果异步返回：先给"检查中"提示，poll_ops 消费后渲染进对话区。
     pub(super) fn cmd_daemons(&mut self) {
