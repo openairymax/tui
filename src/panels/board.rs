@@ -18,6 +18,11 @@ use crate::app::App;
 use crate::client::HallBoardEntry;
 use crate::theme;
 
+/// 看板单屏物化行数上限：渲染只取前 MAX_BOARD_ROWS 条，选中行与 Enter
+/// 详情也必须收敛到该窗口内，否则光标越界后高亮消失、Enter 打开屏外
+/// 条目（与 app/panel.rs 光标移动共用同一上限）。
+pub(crate) const MAX_BOARD_ROWS: usize = 64;
+
 /// 状态图标（2.3.10 细化：执行/等待/调度/完成/失败/取消各自独立图示）
 fn state_icon(state: &str) -> &'static str {
     match state {
@@ -205,13 +210,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme::faint()),
             )));
         } else {
-            let sel = app.board_cursor % entries.len();
-            for (i, e) in entries.iter().take(64).enumerate() {
+            // 只物化前 MAX_BOARD_ROWS 条；sel 在该窗口内取模，光标由
+            // app/panel.rs 以同一上限循环，任何时刻高亮与 Enter 详情同条目
+            let rows: Vec<&HallBoardEntry> = entries.iter().copied().take(MAX_BOARD_ROWS).collect();
+            let sel = app.board_cursor % rows.len();
+            for (i, e) in rows.iter().enumerate() {
                 lines.push(entry_line(e, i == sel));
             }
-            if entries.len() > 64 {
+            if entries.len() > MAX_BOARD_ROWS {
                 lines.push(Line::from(Span::styled(
-                    format!("  … 共 {} 条", entries.len()),
+                    format!("  … 共 {} 条，仅展示前 {} 条", entries.len(), MAX_BOARD_ROWS),
                     Style::default().fg(theme::faint()),
                 )));
             }
@@ -229,6 +237,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 ]));
             }
         }
+    } else if let Some(err) = &app.hall_error {
+        // 拉取失败/离线：与"正在加载"区分——hall_board 缓存为空且最近一次
+        // 拉取失败时给出明确失败态，避免无限"加载中"误导（每 1s 自动重试）
+        let msg: String = err.chars().take(72).collect();
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  ✗ 看板拉取失败 ",
+                Style::default().fg(theme::danger()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(msg, Style::default().fg(theme::text())),
+        ]));
+        lines.push(Line::from(Span::styled(
+            "  gateway 离线或未启动？启动后自动重试 · Esc 返回对话",
+            Style::default().fg(theme::faint()),
+        )));
     } else {
         lines.push(Line::from(Span::styled(
             "  正在加载看板（gateway hall.board）…",
