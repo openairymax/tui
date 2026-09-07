@@ -87,24 +87,26 @@ impl App {
         self.cmd_chain(&format!("/chain {}", exec));
     }
 
-    /// F7 事件流光标下移（循环）。
+    /// F7 事件流光标下移（循环）。上限与渲染窗口一致（只物化最新 256 条）。
     pub fn events_cursor_down(&mut self) {
         let n = self.events_visible_count();
         if n == 0 {
             self.events_cursor = 0;
             return;
         }
-        self.events_cursor = (self.events_cursor + 1) % n;
+        let cap = n.min(crate::panels::events::MAX_EVENT_ROWS);
+        self.events_cursor = (self.events_cursor + 1) % cap;
     }
 
-    /// F7 事件流光标上移（循环）。
+    /// F7 事件流光标上移（循环）。上限与渲染窗口一致。
     pub fn events_cursor_up(&mut self) {
         let n = self.events_visible_count();
         if n == 0 {
             self.events_cursor = 0;
             return;
         }
-        self.events_cursor = (self.events_cursor + n - 1) % n;
+        let cap = n.min(crate::panels::events::MAX_EVENT_ROWS);
+        self.events_cursor = (self.events_cursor + cap - 1) % cap;
     }
 
     /// F7 事件流类别过滤：空 = 全部；点按过滤后光标回零。

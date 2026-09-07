@@ -238,6 +238,9 @@ pub struct App {
     /// hall.watch SSE 推送流接收端（2026-08-21：事件流驱动，替代纯轮询；
     /// Board/Events 面板激活时订阅，离开时 drop 以结束 watch 任务）
     hall_watch_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// hall 面板最近一次拉取失败信息（None = 尚无失败或上次已成功；
+    /// board.rs 据此区分"正在加载"与"拉取失败/离线"两种空态）
+    pub hall_error: Option<String>,
     /// 多会话 tab（2026-08-21）：其他会话快照；None = 主会话即当前会话
     pub session_tabs: Vec<SessionTab>,
     /// 当前显示的 tab 索引（None = 主会话；Some(n) = session_tabs[n]）
@@ -444,6 +447,7 @@ impl App {
             last_hall_poll: Instant::now(),
             hall_poll_rx: None,
             hall_watch_rx: None,
+            hall_error: None,
             session_tabs: vec![SessionTab {
                 title: String::new(),
                 messages: VecDeque::new(),

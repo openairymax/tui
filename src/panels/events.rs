@@ -33,6 +33,11 @@ pub fn category_label(cat: &str) -> &'static str {
     }
 }
 
+/// 事件流单屏物化行数上限：渲染只取最新 MAX_EVENT_ROWS 条，选中行与
+/// Enter 详情也必须收敛到该窗口内，否则光标越界后高亮消失、Enter 打开
+/// 屏外条目（与 app/panel.rs 光标移动共用同一上限）。
+pub(crate) const MAX_EVENT_ROWS: usize = 256;
+
 fn category_color(cat: &str) -> Color {
     match cat {
         "blueprint" => theme::primary(),
@@ -186,7 +191,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(theme::faint()),
         )));
     } else {
-        // hall.stream 已返回最新 N 条（升序），此处倒序展示（最新在前）
+        // hall.stream 已返回最新 N 条（升序），此处倒序展示（最新在前）。
+        // 只物化最新 MAX_EVENT_ROWS 条；sel 在该窗口内取模，光标由
+        // app/panel.rs 以同一上限循环，任何时刻高亮与 Enter 详情同条目。
         let events: Vec<&HallEvent> = if app.events_filter.is_empty() {
             app.hall_events.iter().rev().collect()
         } else {
@@ -196,9 +203,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 .filter(|e| e.category == app.events_filter)
                 .collect()
         };
-        let sel = app.events_cursor % events.len().max(1);
-        for (i, e) in events.iter().take(256).enumerate() {
+        let rows: Vec<&HallEvent> = events.iter().copied().take(MAX_EVENT_ROWS).collect();
+        let sel = app.events_cursor % rows.len().max(1);
+        for (i, e) in rows.iter().enumerate() {
             lines.push(event_row(e, i == sel));
+        }
+        if events.len() > MAX_EVENT_ROWS {
+            lines.push(Line::from(Span::styled(
+                format!("  … 共 {} 条，仅展示最新 {} 条", events.len(), MAX_EVENT_ROWS),
+                Style::default().fg(theme::faint()),
+            )));
         }
     }
 

@@ -171,21 +171,41 @@ impl App {
             }
         }
         // 消费在途结果（pull 结果与本地合并去重，避免覆盖 SSE 增量）
+        let mut in_flight = false;
         if let Some(mut rx) = self.hall_poll_rx.take() {
             match rx.try_recv() {
                 Ok(HallPollOutcome::Board(r)) => match r {
-                    Ok(b) => self.hall_board = Some(b),
-                    Err(e) => log::warn!("hall.board 拉取失败: {}", e),
+                    Ok(b) => {
+                        self.hall_board = Some(b);
+                        self.clear_hall_error("hall.board");
+                    }
+                    Err(e) => {
+                        self.set_hall_error("hall.board", &e);
+                        log::warn!("hall.board 拉取失败: {}", e);
+                    }
                 },
                 Ok(HallPollOutcome::Events(r)) => match r {
-                    Ok(evts) => merge_hall_events(&mut self.hall_events, evts),
-                    Err(e) => log::warn!("hall.stream 拉取失败: {}", e),
+                    Ok(evts) => {
+                        merge_hall_events(&mut self.hall_events, evts);
+                        self.clear_hall_error("hall.stream");
+                    }
+                    Err(e) => {
+                        self.set_hall_error("hall.stream", &e);
+                        log::warn!("hall.stream 拉取失败: {}", e);
+                    }
                 },
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // 上次请求仍在途：保留接收端，本轮不再发起新请求
+                    in_flight = true;
                     self.hall_poll_rx = Some(rx);
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
             }
+        }
+        // 上一请求仍在途：跳过本轮——即使 1s 节流到期也不重复 spawn 覆盖
+        // 在途接收端（否则慢请求结果丢失、gateway 每秒被多发一次无效请求）
+        if in_flight {
+            return;
         }
         // 节流：1s（事件流面板的实时增量由 SSE 驱动，pull 仅兜底）
         let now = Instant::now();
@@ -203,6 +223,25 @@ impl App {
             }
         });
         self.hall_poll_rx = Some(rx);
+    }
+
+    /// hall 拉取失败：记录失败态（board.rs 区分"正在加载"与"失败/离线"）
+    /// 并在状态变化时追加一条 F3 日志——内容相同不重复刷屏（离线时轮询
+    /// 每秒重试一次，日志只记一次变化，文件日志仍逐条记录）。
+    fn set_hall_error(&mut self, source: &str, err: &anyhow::Error) {
+        let msg = format!("{} 拉取失败：{}", source, err);
+        let changed = self.hall_error.as_deref() != Some(msg.as_str());
+        self.hall_error = Some(msg.clone());
+        if changed {
+            self.add_log("ERROR", msg);
+        }
+    }
+
+    /// hall 拉取成功：清除失败态；此前确有失败时记一条恢复日志（F3 可见）。
+    fn clear_hall_error(&mut self, source: &str) {
+        if self.hall_error.take().is_some() {
+            self.add_log("INFO", format!("{} 恢复刷新", source));
+        }
     }
 
     /// 强制下次 poll_hall 立即拉取（F6/F7 进入面板时调用）。
@@ -470,6 +509,7 @@ impl App {
                     // 连接检查失败：若正在进行任务收尾（技能蒸馏），仍需结束任务流，
                     // 否则会卡在 Executing 阶段——「技能沉淀」被跳过且无法继续对话。
                     log::warn!("apply_result: 连接检查失败（kind={:?}）", kind);
+                    self.add_log("ERROR", "网关不可达：连接检查失败".to_string());
                     if matches!(&*kind, PendingKind::Distill) {
                         self.add_message(
                             MessageRole::System,
