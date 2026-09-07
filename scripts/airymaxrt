@@ -906,16 +906,34 @@ apply_package() { # <tarball> [expect_sha]
         fi
     done
     rm -rf "$KEEP"
-    # config：仅"缺则补"，用户配置（含 secrets.env）绝不覆盖
+    # config：模板类文件白名单强制覆盖（2026-09-07）——旧逻辑"只缺则补"
+    # 让模板永不随更新演进（agentrt.yaml/model.yaml/permission_rules.yaml
+    # 等 SSoT 模板须随版本刷新）；secrets.env 等用户配置绝不覆盖，其余
+    # 新包文件缺则补（兼容新版本新增的非模板配置）。
     if [ -d "$extracted/config" ]; then
+        mkdir -p "$AIRY_HOME/config"
         for f in "$extracted"/config/*; do
             [ -f "$f" ] || continue
             b="$(basename "$f")"
             case "$b" in
                 secrets.env) continue ;;   # 用户敏感配置绝不覆盖
+                agentrt.yaml|model.yaml|permission_rules.yaml)
+                    cp -f "$f" "$AIRY_HOME/config/$b" 2>/dev/null || true
+                    log info "config 模板已随更新刷新: $b" ;;
                 *) [ -f "$AIRY_HOME/config/$b" ] || cp -f "$f" "$AIRY_HOME/config/" 2>/dev/null || true ;;
             esac
         done
+    fi
+    # ACL 权威路径联动：permission_rules.yaml 为 daemon 启动读取的 SSoT 模板
+    #（install.sh init_secrets 每次安装均强制覆盖到 config/cupolas/），更新
+    # 后顶层模板已刷新，这里同步权威副本，避免工具 ACL 不随更新。
+    # 残余项：install.sh 内的 init_secrets/install_maths_toolkit 等函数无法
+    # 跨脚本调用——maths-toolkit 模块文件与其运行时后端刷新留待 reinstall
+    # 时由安装器完成（本更新器仅覆盖其随包分发的 config 模板）。
+    if [ -f "$AIRY_HOME/config/permission_rules.yaml" ]; then
+        mkdir -p "$AIRY_HOME/config/cupolas"
+        cp -f "$AIRY_HOME/config/permission_rules.yaml" "$AIRY_HOME/config/cupolas/permission_rules.yaml" 2>/dev/null || true
+        chmod 600 "$AIRY_HOME/config/cupolas/permission_rules.yaml" 2>/dev/null || true
     fi
     # 同步签名公钥（新包自带时）
     [ -f "$extracted/keys/agentrt.asc" ] && cp -f "$extracted/keys/agentrt.asc" "$AIRY_HOME/keys/" 2>/dev/null || true
@@ -1167,6 +1185,37 @@ airymaxrt_update() { # update [--check] [--yes] [--channel stable|beta|rc] [--ro
     rm -rf "$TMPD"
     [ "$rc" = "0" ] && stop_running_daemons
     return $rc
+}
+
+# ── 安装器定位（uninstall/reinstall 委托执行，2026-09-07 加固）───────────
+# $AIRY_HOME/scripts/install.sh 由安装器自托管（install.sh finalize_install），
+# 但管道安装（curl | sh）等场景缺失——经 fetch_repo_file 从官方仓 main 分支
+# 在线拉取兜底（与安装器自身 installer_self_bootstrap 同源：openairymax/agentrt
+# 仓 scripts/install.sh）。输出脚本路径到 stdout（log 全部走 stderr，不污染）。
+# TODO(加固残余项)：可扩展多源重试（github 镜像）与断点续传。
+ensure_installer() { # <动作名（uninstall|reinstall）> → stdout 路径；失败为空且返回 1
+    local act="$1" inst="${AIRY_HOME}/scripts/install.sh"
+    if [ -f "$inst" ]; then
+        log debug "安装器就绪: $inst"
+        printf '%s\n' "$inst"
+        return 0
+    fi
+    log warn "${act}: 本机未找到安装器脚本 $inst"
+    if [ -n "${AIRY_NO_NETWORK:-}" ] || ! command -v curl >/dev/null 2>&1; then
+        log error "${act}: 无法在线拉取安装器（AIRY_NO_NETWORK 已设或 curl 不可用）"
+        return 1
+    fi
+    local fetched="$AIRY_HOME/tmp/install.$$.sh"
+    mkdir -p "$AIRY_HOME/tmp" 2>/dev/null || true
+    if fetch_repo_file "scripts/install.sh" "$fetched"; then
+        chmod 755 "$fetched"
+        log warn "${act}: 本机安装器缺失，已从官方仓在线拉取兜底: $fetched"
+        printf '%s\n' "$fetched"
+        return 0
+    fi
+    rm -f "$fetched"
+    log error "${act}: 在线拉取安装器失败（请检查网络后重试）"
+    return 1
 }
 
 # ── 子命令：help / status / doctor / uninstall ──────────────────────────────
@@ -1493,31 +1542,28 @@ case "$CMD" in
         exit 0
         ;;
     uninstall)
-        inst="${AIRY_HOME}/scripts/install.sh"
-        if [ -f "$inst" ]; then
-            log info "委托安装器执行卸载: $inst"
-            shift
-            exec sh "$inst" --uninstall "$@"
-        else
-            log warn "未找到安装器脚本，请手动删除: $AIRY_HOME"
+        inst="$(ensure_installer uninstall)" || {
+            log error "请重新执行官方一键安装命令（见官网 install 指南）后再卸载，"
+            log error "或手动删除: $AIRY_HOME"
             exit 1
-        fi
+        }
+        log info "委托安装器执行卸载: $inst"
+        shift
+        exec sh "$inst" --uninstall "$@"
         ;;
     reinstall)
-        inst="${AIRY_HOME}/scripts/install.sh"
-        if [ -f "$inst" ]; then
-            log info "委托安装器执行重装: $inst"
-            shift
-            # 0.1.6h 修复：非默认位置安装的用户重装到错误路径（install.sh
-            # 强制忽略环境变量 AIRY_HOME，防残留劫持）；显式传 --prefix。
-            if [ "$AIRY_HOME" != "${HOME}/.airymaxrt" ]; then
-                exec sh "$inst" --reinstall --prefix "$AIRY_HOME" "$@"
-            fi
-            exec sh "$inst" --reinstall "$@"
-        else
-            log warn "未找到安装器脚本: $inst（请重新运行官方 install.sh 一键安装）"
+        inst="$(ensure_installer reinstall)" || {
+            log error "请重新执行官方一键安装命令（见官网 install 指南）以完成重装"
             exit 1
+        }
+        log info "委托安装器执行重装: $inst"
+        shift
+        # 0.1.6h 修复：非默认位置安装的用户重装到错误路径（install.sh
+        # 强制忽略环境变量 AIRY_HOME，防残留劫持）；显式传 --prefix。
+        if [ "$AIRY_HOME" != "${HOME}/.airymaxrt" ]; then
+            exec sh "$inst" --reinstall --prefix "$AIRY_HOME" "$@"
         fi
+        exec sh "$inst" --reinstall "$@"
         ;;
     update)
         # 自更新器：检查/执行官方通道更新（stable|beta），GPG 验签 + sha256 校验
