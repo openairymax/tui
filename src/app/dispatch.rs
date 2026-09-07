@@ -96,26 +96,46 @@ impl App {
         });
     }
 
-    /// 发起流式对话请求（普通对话路径）：SSE 增量块经 channel 逐块渲染，
-    /// 完整结果经 oneshot 回传后按 ChatRound 相同逻辑应用。
+    /// 发起流式对话请求（普通对话路径）：0.1.9 二轮收敛——legacy
+    /// /api/v1/chat/stream（网关内 LLM 工具循环）退役，统一走
+    /// agent.run_stream v1 事件流（gateway SSE 纯翻译端点）。全应用仅
+    /// 存在一条流式通道，行为/错误语义/工具事件渲染完全一致。
+    ///
+    /// `messages` 为完整对话历史（OpenAI messages 数组，末条 user 为
+    /// 增强后 prompt）；prompt 取末条 user content，随 params.prompt
+    /// 透传（run_stream 语义要求）。
     pub(super) fn start_stream_pending(&mut self, kind: PendingKind, messages: serde_json::Value) {
         let gateway = self.gateway.clone();
+        let agent_file = self.agent_file.clone();
         let model = if self.model.is_empty() {
             None
         } else {
             Some(self.model.clone())
         };
         let session_id = self.new_session_id();
-        // 流式通道：tokio 任务把 SSE 块逐块送进 mpsc，主循环 poll_pending 消费；
-        // 工具事件（tool_call/tool_result）走独立通道渲染工具状态行
+        // prompt：末条 user 消息文本（chat_round 构造的增强 prompt）
+        let prompt = messages
+            .as_array()
+            .and_then(|a| a.iter().rev().find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user")))
+            .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+            .unwrap_or("")
+            .to_string();
+        // 流式通道：tokio 任务把事件帧转译后的文本增量送进 mpsc，主循环
+        // poll_pending 消费；工具/思考/错误事件走独立通道渲染
         let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let sid_for_task = session_id.clone();
         let task = tokio::spawn(async move {
             let result = gateway
-                .stream_chat(
-                    messages,
+                .run_stream_turn(
+                    &prompt,
+                    &agent_file,
                     model.as_deref(),
+                    &sid_for_task,
+                    None,
+                    Some(messages),
+                    None,
                     |chunk| {
                         let _ = stream_tx.send(chunk.to_string());
                     },
@@ -124,16 +144,7 @@ impl App {
                     },
                 )
                 .await;
-            let _ = tx.send(PendingOutcome::Run(result.map(|full| RunResponse {
-                session_id: String::new(),
-                response: full,
-                tokens_used: None,
-                cost_usd: None,
-                thinking: None,
-                tool_trace: None,
-                gccp_need_interaction: false,
-                gccp_questions: Vec::new(),
-            })));
+            let _ = tx.send(PendingOutcome::Run(result));
         });
         log::info!("start_stream_pending: 流式请求已发起（session={}）", session_id);
         self.loading = true;
