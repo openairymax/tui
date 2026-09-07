@@ -189,6 +189,17 @@ impl App {
     /// GRAD：确认流程图后开始执行；否则按反馈修订流程图。
     pub(super) fn grad_confirm(&mut self, input: &str) -> Result<()> {
         if gccp::is_confirm(input) {
+            // 失败守卫：流程图尚未生成（生成轮失败/尚未返回）时「确认」
+            // 不得以空 plan 进入执行——重新发起流程图生成本轮。
+            if self.gccp.grad_plan.trim().is_empty() {
+                self.add_message(
+                    MessageRole::System,
+                    "任务流程图尚未生成，正在重新生成…".to_string(),
+                );
+                let prompt = gccp::build_grad_prompt(&self.gccp);
+                self.dispatch(PendingKind::GradPlan, &prompt);
+                return Ok(());
+            }
             self.set_flow_phase(FlowPhase::Executing);
             log::info!("grad_confirm: 流程图已确认，开始执行任务集");
             self.add_message(MessageRole::System, "任务流程图已确认，开始执行任务集。".to_string());
@@ -275,7 +286,22 @@ impl App {
                 }
             }
             Err(e) => {
-                self.add_message(MessageRole::System, format!("Error: {}", e));
+                // 失败守卫：执行轮失败（网络中断/引擎 error 事件等）不得停留
+                // Executing（DAG 节点卡 running、输入行锁死）——回退确认阶段，
+                // DAG 复位后用户可「确认」重试或输入修改意见修订流程图。
+                if confirmed {
+                    self.set_flow_phase(FlowPhase::GradConfirm);
+                    self.gccp.init_node_states();
+                    self.add_message(
+                        MessageRole::System,
+                        format!(
+                            "任务执行失败：{}。可输入「确认」重试，或输入修改意见修订流程图。",
+                            e
+                        ),
+                    );
+                } else {
+                    self.add_message(MessageRole::System, format!("Error: {}", e));
+                }
             }
         }
     }
