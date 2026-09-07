@@ -455,26 +455,13 @@ fn panel_read_hint(p: ActivePanel) -> Option<&'static str> {
 
 /// 输入行（第一行）：`❯` 前缀 + 阶段引导/占位提示 + 输入文本 + 光标。
 fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
-    // 等待回复：prefix 保持普通，无呼吸灯、无动画（思考动效在对话主区，输入框安静克制）；
-    // 但按阶段给出明确的等待语义，让用户知道"正在做什么"。
+    // 等待回复（loading）：输入框保持中性安静（无呼吸灯、无等待文案）——
+    // 忙碌中由另外两层各司其职：顶部 hero 阶段徽章（含 Paused/Aborted）
+    // 标明"正在做什么"，对话主区 spinner 表达进行中动效；输入行不再
+    // 重复 wait_hint 文案（2026-09 状态栏三层去重）。
     if app.loading {
-        let wait_hint = match app.flow_phase {
-            FlowPhase::Chat => "…".to_string(),
-            FlowPhase::GccpRound(n) => format!("正在思考第 {} 问…", n),
-            FlowPhase::GccpClarify => "正在汇总目标澄清答案…".to_string(),
-            FlowPhase::GradConfirm => "正在生成任务流程图…".to_string(),
-            FlowPhase::Executing => match app.task_control {
-                crate::gccp::TaskControl::Paused => "已暂停，Ctrl+Z 恢复…".to_string(),
-                crate::gccp::TaskControl::Aborted => "已中止…".to_string(),
-                crate::gccp::TaskControl::Running => "正在执行任务集…".to_string(),
-            },
-        };
         let line = Line::from(vec![
             Span::styled(" ❯ ", Style::default().fg(theme::faint())),
-            Span::styled(
-                wait_hint,
-                Style::default().fg(theme::faint()),
-            ),
             Span::styled(
                 app.input.clone(),
                 Style::default().fg(theme::text()),
