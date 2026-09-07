@@ -622,7 +622,12 @@ field_cmp() {
     while [ -n "$y" ] && [[ "$y" == [a-zA-Z]* ]]; do y="${y#?}"; done
     xn="${x%%[a-zA-Z]*}"; xl="${x#$xn}"
     yn="${y%%[a-zA-Z]*}"; yl="${y#$yn}"
-    xn="${xn:-0}"; yn="${yn:-0}"
+    # D10（2026-09-07）：脏字段防护——剥字母前缀后数字段仍可能残留非
+    # 数字字符（如语义化 build 元数据 v0.1.13+build.5 截出 "13+"），
+    # 10# 算术抛错致函数空返回、ver_cmp 静默判等（升级漏判）。非
+    # [0-9] 字符一律剥除，清洗后为空按 0 处理（比较降级但不中断）。
+    xn="$(printf '%s' "$xn" | tr -cd '0-9')"; xn="${xn:-0}"
+    yn="$(printf '%s' "$yn" | tr -cd '0-9')"; yn="${yn:-0}"
     if (( 10#$xn > 10#$yn )); then echo 1; return; fi
     if (( 10#$xn < 10#$yn )); then echo -1; return; fi
     if [ -z "$xl" ] && [ -z "$yl" ]; then echo 0; return; fi
@@ -743,7 +748,9 @@ elif mode.startswith("artifact:"):
 PYEOF
         return 0
     fi
-    # 回退：仅顶层 latest / 单行 artifact 提取
+    # 回退：仅顶层 latest（单行键形安全）。artifact 嵌套字段无可靠解析、
+    # 恒空返回——远程更新路径由调用方按 D7 fail-closed 拒绝，离线路径
+    # （--file + --sha256）不依赖本函数。
     case "$mode" in
         latest) sed -n 's/.*"latest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1 ;;
         artifact:*) : ;;
@@ -824,6 +831,11 @@ prune_rollback() {
 # 防绕过验签口径）。
 apply_package() { # <tarball> [expect_sha]
     local tarball="$1" expect_sha="$2" arch="$(detect_arch)"
+    # D9（2026-09-07）：崩溃孤儿清理——kill/断电留下的 apply.*/update.*
+    # 残留（单个 tarball 数百 MB）会在 $AIRY_HOME/tmp 无限累积；仅清
+    # 1 天前的旧目录，避开并发活跃进程的临时区。完整目录级原子替换
+    # （staging+swap）改动面大，登记后置。
+    find "$AIRY_HOME/tmp" -maxdepth 1 \( -name 'apply.*' -o -name 'update.*' \) -mtime +0 -exec rm -rf {} + 2>/dev/null
     local TMPD="$AIRY_HOME/tmp/apply.$$"
     rm -rf "$TMPD"; mkdir -p "$TMPD"
     # sha256 强制校验（fail-closed）
@@ -1091,6 +1103,10 @@ airymaxrt_update() { # update [--check] [--yes] [--channel stable|beta|rc] [--ro
             log error "回滚恢复不完整，请执行 airymaxrt reinstall 修复"
             return 1
         fi
+        # D8（2026-09-07）：回收运行中 daemon——回滚只换磁盘文件，更新后
+        # 拉起的新版 daemon（或残留进程）仍执行替换前代码，必须回收后由
+        # 下次启动自然拉起回滚版（与 apply_package 成功路径同语义）。
+        stop_running_daemons
         if [ -f "$inst_env" ]; then
             if [ -f "$rb/install.env" ]; then
                 # 2026-09-07 起备份含 install.env 快照：版本号 + 制品 sha
@@ -1155,19 +1171,30 @@ airymaxrt_update() { # update [--check] [--yes] [--channel stable|beta|rc] [--ro
     # 与 install.env 记录的 AIRY_ARTIFACT_SHA256 比对（同 tag 修复重发检测）
     local plat="$(runtime_platform)"
     local art_url art_sha
-    art_url="$(manifest_get "$TMPD/manifest.json" "artifact:${plat}" | sed -n 1p)"
-    art_sha="$(manifest_get "$TMPD/manifest.json" "artifact:${plat}" | sed -n 2p)"
-    # 平台键兼容（三代 manifest）：本版主键 = OS-架构族-位宽（如
-    # linux-x86-64）；旧两代（gen2：linux-x64 等 / gen1：linux-x86_64 等）
-    # 未命中时按 plat_legacy_name 候选依序反查（发布侧 manifest 亦含全部
-    # 别名键，此处兜底旧 manifest）。
-    if [ -z "$art_url" ] && [ -z "$art_sha" ]; then
-        for legacy in $(plat_legacy_name "$plat"); do
-            [ -n "$legacy" ] || continue
-            art_url="$(manifest_get "$TMPD/manifest.json" "artifact:${legacy}" | sed -n 1p)"
-            art_sha="$(manifest_get "$TMPD/manifest.json" "artifact:${legacy}" | sed -n 2p)"
-            { [ -n "$art_url" ] || [ -n "$art_sha" ]; } && { log warn "平台键 ${plat} 未命中，已用兼容命名 ${legacy}"; break; }
-        done
+    if command -v python3 >/dev/null 2>&1; then
+        art_url="$(manifest_get "$TMPD/manifest.json" "artifact:${plat}" | sed -n 1p)"
+        art_sha="$(manifest_get "$TMPD/manifest.json" "artifact:${plat}" | sed -n 2p)"
+        # 平台键兼容（三代 manifest）：本版主键 = OS-架构族-位宽（如
+        # linux-x86-64）；旧两代（gen2：linux-x64 等 / gen1：linux-x86_64 等）
+        # 未命中时按 plat_legacy_name 候选依序反查（发布侧 manifest 亦含全部
+        # 别名键，此处兜底旧 manifest）。
+        if [ -z "$art_url" ] && [ -z "$art_sha" ]; then
+            for legacy in $(plat_legacy_name "$plat"); do
+                [ -n "$legacy" ] || continue
+                art_url="$(manifest_get "$TMPD/manifest.json" "artifact:${legacy}" | sed -n 1p)"
+                art_sha="$(manifest_get "$TMPD/manifest.json" "artifact:${legacy}" | sed -n 2p)"
+                { [ -n "$art_url" ] || [ -n "$art_sha" ]; } && { log warn "平台键 ${plat} 未命中，已用兼容命名 ${legacy}"; break; }
+            done
+        fi
+    elif [ "$cmp" != "1" ]; then
+        # D7 fail-closed（2026-09-07）：无 python3 时嵌套制品字段无可靠解析
+        # （旧 sed 回退为 no-op，同版本重发被静默判"已是最新"、新版本误报
+        # "平台无制品"，均为 fail-open）。凡需下载或 sha 比对即明确拒绝，
+        # 指引离线包路径（离线更新不依赖 manifest 解析，全环境可用）。
+        log error "当前环境缺 python3，无法安全解析远程 manifest 制品字段"
+        log error "请安装 python3 后重试；或使用离线包更新："
+        log error "  airymaxrt update --file <tarball> --sha256 <hash>"
+        rm -rf "$TMPD"; return 1
     fi
     if [ "$cmp" = "0" ]; then
         # 同版本 sha 门禁（2026-09-07）：仅比版本号收不到同 tag 修复重发——
@@ -1589,6 +1616,26 @@ case "$CMD" in
         shift
         airymaxrt_update "$@"
         exit $?
+        ;;
+esac
+# D11（2026-09-07）：管理命令拼写防护——首参命中已知管理命令的真前缀
+# （如 "updat"/"instal"/"stat"）时多为 typo，静默透传前端造成"命令没
+# 反应"的困惑；列出相近命令并拒绝。非命令形首参（agent 文件名、
+# --flag 启动参数）不受影响，正常透传。
+_near=""
+case "$CMD" in
+    ""|-*) ;;
+    *)
+        _exact=""
+        for _cmd in help cli profile monitor status doctor logs uninstall reinstall update; do
+            [ "$_cmd" = "$CMD" ] && { _exact=1; break; }
+            case "$_cmd" in "$CMD"*) _near="$_near $_cmd" ;; esac
+        done
+        if [ -z "$_exact" ] && [ -n "$_near" ]; then
+            log error "未知命令: $CMD（是否想用:${_near}？）"
+            log error "运行 airymaxrt help 查看全部命令"
+            exit 2
+        fi
         ;;
 esac
 # 正常启动：透传剩余参数给 TUI
