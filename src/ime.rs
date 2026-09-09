@@ -83,7 +83,9 @@ impl ImeEngine {
         }
         #[cfg(not(all(feature = "ime", ime_linked)))]
         {
-            let _ = (); // libairy_common.a 未链接：IME 禁用
+            // 库未链接（构建期 libairy_common.a 未定位）——与"词典缺失"
+            // 区分记录，避免排障误导（v0.1.13 实机教训）
+            log::warn!("ime: libairy_common not linked at build time; builtin pinyin IME disabled (F10 unavailable)");
             None
         }
     }
