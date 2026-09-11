@@ -36,7 +36,8 @@ concurrency:
 
 jobs:
   linux-build-test:
-    # 主力腿：全部单测 + 回放回归 + clippy 静态检查，required。
+    # 主力腿：全部单测 + 回放回归 + clippy 静态检查（经 [lints.clippy]
+    # 含 T-18 生产路径 unwrap/expect 门禁，fail-closed），required。
     name: linux / stable / test+clippy
     runs-on: ubuntu-latest
     timeout-minutes: 30

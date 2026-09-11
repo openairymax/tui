@@ -397,6 +397,7 @@ pub(crate) fn choice_len(step: u8) -> usize {
 /// T-18 清单门禁：此 expect 依赖「FieldKey 全部变体均已注册」的封闭
 /// 集合不变量（FieldKey 为本模块闭式枚举，注册表 FORM_STEPS 同模块
 /// 静态声明）；不变量由 tests::field_spec_covers_all_keys 强制。
+#[allow(clippy::expect_used)] // T-18：唯一获准的生产 expect，不变量有守护测试
 pub(crate) fn field_spec(key: FieldKey) -> &'static FieldSpec {
     FORM_STEPS
         .iter()

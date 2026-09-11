@@ -71,6 +71,13 @@ libc = { version = "0.2", optional = true }
 # 记忆模块单测：临时目录
 tempfile = "3"
 
+# T-18 生产路径 unwrap/expect 清单门禁（0.1.15 WS-6 6.5）：
+# 生产代码禁止无论证 unwrap/expect（fail-closed）；测试与 build.rs 的
+# 分级豁免见 clippy.toml。新增例外须就地 #[allow] 并注明不变量与守护测试。
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
 # 制品体积控制（2.11.3）：release 二进制 strip 符号表，
 # agentrt-tui 由 ~11MB 降至 ~4MB；保持 panic=unwind 以便错误可观测。
 [profile.release]

@@ -1,0 +1,15 @@
+# T-18 生产路径 unwrap/expect 分级清单门禁（0.1.15 WS-6 步骤 6.5）。
+#
+# 分级策略（fail-closed，"新代码禁止无论证 unwrap"）：
+#   1. 生产运行时代码（src/** 非 #[cfg(test)]）：禁止无论证 unwrap/expect，
+#      由 Cargo.toml [lints.clippy] unwrap_used/expect_used = "deny" 强制。
+#      确需保留的例外必须就地 #[allow(clippy::expect_used)]，并注明所依赖的
+#      不变量与守护测试（生产基线当前仅一处：wizard/steps.rs::field_spec，
+#      不变量由 tests::field_spec_covers_all_keys 守护）。
+#   2. 测试代码（#[cfg(test)] 模块与 tests/ 集成测试）：断言语义天然使用
+#      unwrap/expect，由下述开关整体豁免（分级放行，非生产路径）。
+#   3. 构建脚本 build.rs：构建期环境契约（OUT_DIR/CARGO_MANIFEST_DIR 由
+#      cargo 保证，缺失即构建环境损坏），非运行时路径，在 build.rs 顶部
+#      #![allow(clippy::expect_used)] 单独分级放行。
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
