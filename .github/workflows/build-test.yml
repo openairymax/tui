@@ -9,9 +9,12 @@
 #   - CARGO_TARGET_DIR 指向源码树之外，构建产物不落在仓库内；
 #   - build.rs fail-closed 依赖 agentrt 仓两份文件（协议 schema 头
 #     airy_run_stream.h 与 VERSION），故并行 checkout agentrt；
-#   - agentrt 仓的 commons/ 等 7 个源码目录均为 git submodule，
-#     checkout 必须带 submodules: recursive，否则 commons 为空目录、
-#     build.rs fail-closed panic（首跑 run #1 两腿 Build 失败根因）；
+#   - agentrt 是 superproject，commons/ 等 7 个源码目录均为 git
+#     submodule；其中 atoms 在 GitHub 上私有，公共 runner 无凭据
+#     克隆失败（run #2 两腿 step3 失败根因），故不走 submodules:
+#     recursive，只精确取 build.rs fail-closed 依赖的两份文件：
+#     agentrt/VERSION（superproject 顶层文件）与 commons 的
+#     include/airy_run_stream.h（单独 checkout 公开的 commons 仓）；
 #   - memoryrovol/ime 静态库 CI 不构建，build.rs 自动降级
 #     （JsonlMemory / IME 禁用），编译与全部测试不受影响。
 
@@ -44,14 +47,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 协议 schema SSoT（airy_run_stream.h，位于 commons submodule）与
-      # 版本 SSoT（VERSION）；submodules 必拉，见文件头约束说明
+      # 版本 SSoT（agentrt/VERSION，superproject 顶层文件）
       - uses: actions/checkout@v4
         with:
           repository: openairymax/agentrt
           ref: main
           path: agentrt
-          submodules: recursive
+
+      # 协议 schema SSoT（airy_run_stream.h，commons 仓 main；agentrt
+      # 以 gitlink 追踪其演进，submodule 取舍见文件头约束说明）
+      - uses: actions/checkout@v4
+        with:
+          repository: openairymax/commons
+          ref: main
+          path: agentrt/commons
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -82,14 +91,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 协议 schema SSoT（airy_run_stream.h，位于 commons submodule）与
-      # 版本 SSoT（VERSION）；submodules 必拉，见文件头约束说明
+      # 版本 SSoT（agentrt/VERSION，superproject 顶层文件）
       - uses: actions/checkout@v4
         with:
           repository: openairymax/agentrt
           ref: main
           path: agentrt
-          submodules: recursive
+
+      # 协议 schema SSoT（airy_run_stream.h，commons 仓 main；agentrt
+      # 以 gitlink 追踪其演进，submodule 取舍见文件头约束说明）
+      - uses: actions/checkout@v4
+        with:
+          repository: openairymax/commons
+          ref: main
+          path: agentrt/commons
 
       - uses: dtolnay/rust-toolchain@stable
 
