@@ -17,7 +17,8 @@
 //!   - Backspace 删拼音（空则退出拼音态）；Enter 提交拼音原文走正常提交
 //!   - 其他可见字符：拼音原文上屏后按正常路径处理
 
-use std::os::raw::c_int;
+// PathBuf 仅 locate_dict 使用（同 cfg）：未链接构建不导入避免 unused
+#[cfg(all(feature = "ime", ime_linked))]
 use std::path::PathBuf;
 
 // ---- FFI 声明（与 commons/utils/ime/airy_ime.h 严格对齐） ----
@@ -25,7 +26,11 @@ use std::path::PathBuf;
 /// C 侧类型定义无条件存在（Rust 结构体引用需要）；extern 函数声明仅在
 /// build.rs 声明 cfg(ime_linked)（成功链接 libairy_common.a）时编译。
 mod ffi {
-    use std::os::raw::{c_char, c_int};
+    use std::os::raw::c_char;
+    // c_int 仅 extern 声明使用：未链接构建（无 cfg ime_linked）不导入，
+    // 避免 unused import（CI 无静态库环境）
+    #[cfg(all(feature = "ime", ime_linked))]
+    use std::os::raw::c_int;
 
     #[repr(C)]
     pub struct airy_ime {
@@ -90,6 +95,8 @@ impl ImeEngine {
         }
     }
 
+    // 仅 ime_linked 构建时被 load() 调用；未链接构建不编译（避免 dead_code）
+    #[cfg(all(feature = "ime", ime_linked))]
     fn locate_dict() -> Option<PathBuf> {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Ok(p) = std::env::var("AIRY_IME_DICT") {

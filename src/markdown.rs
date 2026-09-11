@@ -218,7 +218,7 @@ fn heading_level(s: &str) -> Option<usize> {
         return None;
     }
     // 必须紧跟空格（"#标题" 视为普通文本）
-    if s.as_bytes().get(hashes).map(|b| *b) != Some(b' ') {
+    if s.as_bytes().get(hashes).copied() != Some(b' ') {
         return None;
     }
     Some(hashes)
@@ -461,9 +461,9 @@ fn render_table(rows: &[String], indent: usize, width: usize, base: Style) -> Ve
         }
         let mut spans = vec![Span::styled(" ".repeat(indent), Style::default())];
         let is_header = ri == 0 && !is_sep;
-        for ci in 0..cols {
+        for (ci, cw) in col_w.iter().enumerate() {
             let cell = row.get(ci).cloned().unwrap_or_default();
-            let pad = col_w[ci].saturating_sub(cell.width());
+            let pad = cw.saturating_sub(cell.width());
             // 表头加粗 + 主色；数据行常规
             let style = if is_header {
                 base.fg(theme::text()).add_modifier(Modifier::BOLD)

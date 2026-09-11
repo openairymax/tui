@@ -165,7 +165,7 @@ impl ConversationMemory for JsonlMemory {
                 }
                 true
             })
-            .map(|r| {
+            .filter_map(|r| {
                 let mut score = 0.0f32;
                 for t in &tokens {
                     let lt = t.to_lowercase();
@@ -196,7 +196,6 @@ impl ConversationMemory for JsonlMemory {
                     score: score * decay,
                 })
             })
-            .flatten()
             .collect();
         hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(limit);
@@ -509,10 +508,8 @@ mod tests {
         let rec = m.recent(1).into_iter().next().expect("record");
         assert_eq!(rec.reasoning.as_deref(), Some("思考过程"));
         // 旧格式记录（无 reasoning 字段）反序列化兼容
-        let raw = format!(
-            "{{\"role\":\"assistant\",\"content\":\"旧记录\",\"timestamp\":\"2026-01-01T00:00:00\",\"tags\":\"chat\"}}"
-        );
-        let old: MemoryRecord = serde_json::from_str(&raw).expect("old record parse");
+        let raw = "{\"role\":\"assistant\",\"content\":\"旧记录\",\"timestamp\":\"2026-01-01T00:00:00\",\"tags\":\"chat\"}";
+        let old: MemoryRecord = serde_json::from_str(raw).expect("old record parse");
         assert_eq!(old.reasoning, None);
     }
 

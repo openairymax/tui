@@ -51,7 +51,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 lines.push(Line::from(vec![
                     Span::styled("    ", Style::default()),
                     Span::styled(
-                        format!("{key}"),
+                        key.to_string(),
                         Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(rest, Style::default().fg(theme::dim())),

@@ -138,9 +138,10 @@ fn parse_model_yaml(content: &str) -> ModelYaml {
                 if let Some(prev) = cur_row.take() {
                     out.rows.push(prev);
                 }
-                let mut r = ModelRow::default();
-                r.name = unquote(rest.trim()).to_string();
-                cur_row = Some(r);
+                cur_row = Some(ModelRow {
+                    name: unquote(rest.trim()).to_string(),
+                    ..Default::default()
+                });
                 continue;
             }
         }
@@ -206,10 +207,7 @@ fn set_row_field(row: &mut ModelRow, k: &str, v: &str) {
 /// 返回错误信息（None = 成功）。若文件不存在，按模板重建最小 v2 文件。
 pub fn patch_model_yaml(idx: usize, row: &ModelRow, think: &ThinkCfg) -> Result<(), String> {
     let path = model_yaml_path();
-    let original = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => String::new(),
-    };
+    let original = std::fs::read_to_string(&path).unwrap_or_default();
     let patched = if original.is_empty() {
         build_minimal_yaml(row, think)
     } else {
@@ -238,10 +236,7 @@ fn patch_lines(original: &str, idx: usize, row: &ModelRow, think: &ThinkCfg) -> 
 
     if idx < item_starts.len() {
         let start = item_starts[idx];
-        let end = item_starts
-            .get(idx + 1)
-            .copied()
-            .unwrap_or_else(|| lines.len());
+        let end = item_starts.get(idx + 1).copied().unwrap_or(lines.len());
         // 目标块之前的内容原样保留（文件头注释 / 其他顶层键）
         for l in &lines[..start] {
             out.push(l.to_string());
