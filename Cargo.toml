@@ -1,10 +1,12 @@
 [package]
 name = "agentrt-tui"
-version = "0.1.9"
+# 版本 SSoT（T-06）：二进制内展示版本由 build.rs 经 AIRY_RT_VERSION_FILE 注入
+# agentrt/VERSION；此字段须与产品版本同步 bump，仅作 crate 元数据兜底。
+version = "0.1.15"
 edition = "2021"
 description = "AgentRT TUI - Terminal User Interface for AgentRT intelligent agent runtime"
 license = "AGPL-3.0-or-later OR Apache-2.0"
-repository = "https://github.com/spharx/agentrt"
+repository = "https://github.com/openairymax/agentrt"
 authors = ["SPHARX Ltd."]
 
 [[bin]]

@@ -393,6 +393,10 @@ pub(crate) fn choice_len(step: u8) -> usize {
 }
 
 /// 字段规格（key 全局唯一）
+///
+/// T-18 清单门禁：此 expect 依赖「FieldKey 全部变体均已注册」的封闭
+/// 集合不变量（FieldKey 为本模块闭式枚举，注册表 FORM_STEPS 同模块
+/// 静态声明）；不变量由 tests::field_spec_covers_all_keys 强制。
 pub(crate) fn field_spec(key: FieldKey) -> &'static FieldSpec {
     FORM_STEPS
         .iter()
@@ -493,6 +497,33 @@ mod tests {
         }
         assert_eq!(choice_len(1), LANG_CHOICES.len());
         assert_eq!(choice_len(2), START_CHOICES.len());
+    }
+
+    #[test]
+    fn field_spec_covers_all_keys() {
+        // T-18 清单门禁：field_spec 的 expect 依赖此不变量——新增 FieldKey
+        // 变体而未注册时，本测试先行失败（而非生产环境 panic）。
+        for key in [
+            FieldKey::Provider,
+            FieldKey::Name,
+            FieldKey::Mode,
+            FieldKey::ApiFormat,
+            FieldKey::BaseUrl,
+            FieldKey::ModelId,
+            FieldKey::ApiKey,
+            FieldKey::CtxWindow,
+            FieldKey::MaxOutput,
+            FieldKey::ToolRounds,
+            FieldKey::Vision,
+            FieldKey::Thinking,
+            FieldKey::ThinkEnabled,
+            FieldKey::SlowModel,
+            FieldKey::FastModel,
+            FieldKey::ProfModel,
+        ] {
+            let spec = field_spec(key);
+            assert_eq!(spec.key, key, "注册表 key 与查询一致：{:?}", key);
+        }
     }
 
     #[test]

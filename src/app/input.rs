@@ -350,17 +350,21 @@ impl App {
             return;
         }
         let before = &self.input[..pos];
-        // 先跳过词尾空白，再删到词首
+        // 先跳过词尾空白，再删到词首（T-18：无 unwrap，空切片自然退出）
         let mut end = before.len();
         while end > 0 {
-            let prev = before[..end].chars().next_back().unwrap();
+            let Some(prev) = before[..end].chars().next_back() else {
+                break;
+            };
             if !prev.is_whitespace() {
                 break;
             }
             end -= prev.len_utf8();
         }
         while end > 0 {
-            let prev = before[..end].chars().next_back().unwrap();
+            let Some(prev) = before[..end].chars().next_back() else {
+                break;
+            };
             if prev.is_whitespace() {
                 break;
             }
