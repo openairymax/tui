@@ -241,6 +241,7 @@ fn extract_ime_member(lib: &Path) -> Option<PathBuf> {
 ///   3. MEMORYROVOL_LIB env（兼容旧用法）
 ///   4. $AIRY_HOME/lib/libagentrt_memoryrovol.a（安装前缀）
 ///   5. 伞仓 OSS 构建产物 products/memoryrovol/build_oss/src/libagentrt_memoryrovol.a
+///
 /// 注意：PRO 全功能库（4）依赖 agentrt 运行时符号，TUI 独立二进制无法
 /// 链接；build.sh/install.sh 会先构建 OSS 库部署为 *_oss.a（2），保证
 /// TUI memoryrovol 全功能可用（L1+L2），PRO 留给 agentrt C 侧。
@@ -272,6 +273,7 @@ fn locate_lib() -> Option<PathBuf> {
 ///   2. $AIRY_HOME/lib/libairy_common.a（安装前缀）
 ///   3. agentrt 源码树标准构建产物 agentrt/build/commons/libairy_common.a
 ///   4. AIRYRT_HOME/agentrt/build/commons/libairy_common.a（伞仓环境变量）
+///
 /// 注意：libairy_common.a 必须来自无 sanitizer 构建（ENABLE_SANITIZERS=OFF），
 /// 否则 __asan_* 符号无法被 Rust 独立链接（is_asan_instrumented 兜底拒绝）。
 #[cfg(feature = "ime")]

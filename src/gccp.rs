@@ -157,6 +157,7 @@ impl TaskDag {
 ///   1. 围栏 JSON：```json\n{...}\n```
 ///   2. 显式标记：[DAG]\n{...}\n[/DAG]
 ///   3. 裸 JSON（响应中出现 nodes/edges 键的 JSON 对象）
+///
 /// 解析失败返回 None（调用方降级为纯文本流程图，不影响流程）。
 pub fn parse_dag(resp: &str) -> Option<TaskDag> {
     let body = match extract_dag_block(resp) {
@@ -539,7 +540,7 @@ pub fn build_qn_prompt(state: &GccpState, round: u8) -> String {
         }
         ctx.push_str("\n请思考以上回答（隐含的约束、盲点与歧义），");
     } else {
-        ctx.push_str("请");
+        ctx.push('请');
     }
 
     ctx.push_str(&format!(
@@ -781,9 +782,11 @@ mod tests {
         let s = GccpState::default();
         assert!(build_qn_prompt(&s, 1).contains("Q1:"));
         // 第 2 轮须带上第 1 问的回答上下文
-        let mut s2 = GccpState::default();
-        s2.q1 = "目标".into();
-        s2.a1 = "部署系统".into();
+        let s2 = GccpState {
+            q1: "目标".into(),
+            a1: "部署系统".into(),
+            ..Default::default()
+        };
         assert!(build_qn_prompt(&s2, 2).contains("Q2:"));
         assert!(build_qn_prompt(&s2, 2).contains("A1: 部署系统"));
         assert!(build_qn_prompt(&s2, 5).contains("Q5:"));
@@ -793,11 +796,13 @@ mod tests {
 
     #[test]
     fn facts_concatenates_q_and_a() {
-        let mut s = GccpState::default();
-        s.q1 = "目标".into();
-        s.a1 = "部署".into();
-        s.q2 = "约束".into();
-        s.a2 = "兼容".into();
+        let s = GccpState {
+            q1: "目标".into(),
+            a1: "部署".into(),
+            q2: "约束".into(),
+            a2: "兼容".into(),
+            ..Default::default()
+        };
         let facts = s.facts();
         assert!(facts.contains("Q: 目标"));
         assert!(facts.contains("A: 部署"));
