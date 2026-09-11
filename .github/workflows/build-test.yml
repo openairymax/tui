@@ -9,6 +9,9 @@
 #   - CARGO_TARGET_DIR 指向源码树之外，构建产物不落在仓库内；
 #   - build.rs fail-closed 依赖 agentrt 仓两份文件（协议 schema 头
 #     airy_run_stream.h 与 VERSION），故并行 checkout agentrt；
+#   - agentrt 仓的 commons/ 等 7 个源码目录均为 git submodule，
+#     checkout 必须带 submodules: recursive，否则 commons 为空目录、
+#     build.rs fail-closed panic（首跑 run #1 两腿 Build 失败根因）；
 #   - memoryrovol/ime 静态库 CI 不构建，build.rs 自动降级
 #     （JsonlMemory / IME 禁用），编译与全部测试不受影响。
 
@@ -41,12 +44,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 协议 schema SSoT（airy_run_stream.h）与版本 SSoT（VERSION）
+      # 协议 schema SSoT（airy_run_stream.h，位于 commons submodule）与
+      # 版本 SSoT（VERSION）；submodules 必拉，见文件头约束说明
       - uses: actions/checkout@v4
         with:
           repository: openairymax/agentrt
           ref: main
           path: agentrt
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -77,11 +82,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 协议 schema SSoT（airy_run_stream.h，位于 commons submodule）与
+      # 版本 SSoT（VERSION）；submodules 必拉，见文件头约束说明
       - uses: actions/checkout@v4
         with:
           repository: openairymax/agentrt
           ref: main
           path: agentrt
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
 
