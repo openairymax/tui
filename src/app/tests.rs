@@ -115,8 +115,8 @@ fn resume_session_restores_history() {
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
         .expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
-    // build_memory 在 memoryrovol feature 下优先 MemoryRovol 后端（不读 JSONL），
-    // 此处显式注入 JsonlMemory 以验证 resume_session 的恢复逻辑本身。
+    // App::new 默认 build_memory 指向 $AIRY_HOME 真实目录，此处显式注入
+    // 临时目录的 JsonlMemory，避免测试触碰用户数据并隔离验证恢复逻辑本身。
     app.memory = Box::new(JsonlMemory::new(Some(&mem_dir)).expect("jsonl memory"));
     let n = app.resume_session();
     // user + assistant 共 2 条恢复；system 跳过

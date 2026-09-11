@@ -6,7 +6,7 @@
 // Memory panel rendering.
 //
 // 2.2.1.5 任务 4 强化（2026-08-23）：清晰展示记忆与记忆链——
-//   · 头部：记忆条数 + 后端名（MemoryRovol 时提示 L1-L4 分层语义）；
+//   · 头部：记忆条数 + 后端名（T-09 后为本地 Jsonl / volatile 降级）；
 //   · 按来源（记忆标签 tags）分组，组内按时间序连接成记忆链；
 //   · 每条目：内容摘要 + 时间 + 来源 + 关联链（├/└ + ↳ 承接）+ 思考链标记；
 //   · 无数据时给出引导提示（存储路径 + /mem 语义检索）。
@@ -129,14 +129,6 @@ fn rebuild(view: &mut MemoryView, mem: &dyn ConversationMemory, total: usize) {
         ),
         page_hint(total, window.len()),
     ])];
-
-    // L1-L4 分层记忆（MemoryRovol 后端启用时提示分层语义）
-    if backend == "MemoryRovol" {
-        lines.push(Line::from(Span::styled(
-            "  L1-L4 分层：L1 工作 · L2 情景 · L3 语义 · L4 程序（遗忘衰减 + 语义检索）",
-            Style::default().fg(theme::dim()),
-        )));
-    }
 
     if total == 0 {
         render_empty(&mut lines);

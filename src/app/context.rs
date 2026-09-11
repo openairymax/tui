@@ -53,9 +53,9 @@ impl App {
 
         // 记忆上下文：召回与本次输入相关的历史记忆
         let hits = self.memory.recall(input, 5);
-        // 防自我回灌（MemoryRovol 后端在 C 库内检索，无法在 recall 层排除；
-        // 此处统一过滤与当前输入相同的命中，避免"模型读到自己刚收到的输入
-        // 的记忆"的回声污染，与 JsonlMemory::recall 的排除语义对齐）。
+        // 防自我回灌：统一过滤与当前输入相同的命中，避免"模型读到自己
+        // 刚收到的输入的记忆"的回声污染（与 JsonlMemory::recall 的排除
+        // 语义对齐的双保险）。
         let hits: Vec<_> = hits
             .into_iter()
             .filter(|h| !h.content.trim().eq_ignore_ascii_case(input.trim()))

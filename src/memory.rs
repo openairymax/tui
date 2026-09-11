@@ -5,16 +5,17 @@
 //
 // 对话记忆模块。
 //
-// 设计原则（50 工程标准 E-3 资源确定性 / A-1 极简主义）：
-//   - 默认后端 JsonlMemory：以 JSONL 追加写方式持久化对话记忆，跨会话
-//     "记得住"。每条记录含角色、内容、时间戳与标签，支持按关键词与
-//     时效召回相关记忆，注入后续请求上下文。
-//   - 首选后端 MemoryRovol：通过 C FFI 链接 products/memoryrovol 商业
-//     记忆库（L1-L4 分层 + 遗忘衰减 + 语义检索）。feature `memoryrovol`
-//     默认启用（IRON-8），构建时由 build.rs 定位 libagentrt_memoryrovol.a
-//     （MEMORYROVOL_LIB env → $AIRY_HOME/lib → 伞仓构建产物）并声明
-//     cfg(mr_linked)；库缺失时 FFI 不编译（不产生桩代码），build_memory()
-//     优雅降级为 JsonlMemory。
+// 设计原则（50 工程标准 E-3 资源确定性 / A-1 极简主义；T-09 铁律，
+// 0.1.15 裁决 2026-09-10，方案 §4.7）：
+//   - 唯一后端 JsonlMemory：TUI 本地会话记忆缓存，以 JSONL 追加写方式
+//     持久化对话记忆，跨会话"记得住"。每条记录含角色、内容、时间戳与
+//     标签，支持按关键词与时效召回相关记忆，注入后续请求上下文。仅用
+//     标准库文件 I/O，不触达任何 daemon / 运行时库。
+//   - 平台级长期记忆（分层、遗忘衰减、语义检索等）一律经 gateway
+//     mem.* RPC 由服务端提供（通道在位：见 app/task.rs 的 mem.count /
+//     mem.search 调用）。历史上的 memoryrovol C FFI 直连已于 T-09 收回
+//     ——客户端进程内链接运行时库复制平台记忆，违反"一切客户端功能
+//     走 gateway"铁律。
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -48,8 +49,7 @@ pub trait ConversationMemory: Send + Sync {
     /// 写入一条记忆
     fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()>;
     /// 2.1.1.6：写入一条带思考链（reasoning_content）的助手记忆。
-    /// 默认实现忽略 reasoning（如 MemoryRovol 后端无此字段），
-    /// JSONL 后端重写为持久化 reasoning。
+    /// 默认实现忽略 reasoning；JSONL 后端重写为持久化 reasoning。
     fn push_with_reasoning(
         &mut self,
         role: &str,
@@ -67,7 +67,7 @@ pub trait ConversationMemory: Send + Sync {
     /// 记忆条数
     fn len(&self) -> usize;
     /// 2.2.2.1：当前记忆后端名（TUI 展示用，默认 "Jsonl"）。
-    /// MemoryRovol 覆盖为 "MemoryRovol"，volatile 覆盖为 "volatile"。
+    /// 持久化失败降级 volatile 内存时覆盖为 "volatile"。
     fn backend_name(&self) -> &'static str {
         "Jsonl"
     }
@@ -268,194 +268,9 @@ fn memory_dir() -> PathBuf {
     crate::paths::airy_home_path(&["data", "agentrt", "tui"])
 }
 
-#[cfg(all(feature = "memoryrovol", mr_linked))]
-pub mod memoryrovol {
-    //! MemoryRovol FFI 绑定（商业记忆库，L1-L4 全功能）。
-    //!
-    //! feature `memoryrovol` 默认启用；本模块是否编译由 build.rs 决定：
-    //! build.rs 定位到 libagentrt_memoryrovol.a 时声明 cfg(mr_linked)，
-    //! 否则本模块不编译（无桩代码），build_memory() 降级 JsonlMemory。
-    //!
-    //! 绑定的是 products/memoryrovol/include/memoryrovol.h 的真实 C API，
-    //! 与 `airy_mr_*` 符号一一对应。
-
-    use super::{ConversationMemory, MemoryHit, MemoryRecord};
-    use std::ffi::{CStr, CString};
-    use std::os::raw::{c_char, c_int, c_void};
-
-    // ---- FFI 声明（与 memoryrovol.h 严格对齐） ----
-
-    #[repr(C)]
-    pub struct airy_mr_handle {
-        _private: [u8; 0],
-    }
-
-    #[repr(C)]
-    pub struct airy_mr_memory {
-        pub record_id: *mut c_char,
-        pub data: *mut c_void,
-        pub data_len: usize,
-        pub metadata: *mut c_char,
-        pub score: f32,
-        pub created_at: i64,
-        pub updated_at: i64,
-    }
-
-    // 库链接由 build.rs 全权决定（OSS 优先：libagentrt_memoryrovol_oss.a）。
-    // 不用 #[link(name=...)] 硬编码：会固定拉入 PRO 库（libagentrt_memoryrovol.a，
-    // 依赖 agentrt 运行时符号），与 build.rs 动态库名冲突。
-    extern "C" {
-        fn airy_mr_init(manager: *const c_void, out_handle: *mut *mut airy_mr_handle) -> c_int;
-        fn airy_mr_cleanup(handle: *mut airy_mr_handle);
-        fn airy_mr_add_memory(handle: *mut airy_mr_handle, content: *const c_char, len: usize) -> c_int;
-        fn airy_mr_retrieve(
-            handle: *mut airy_mr_handle,
-            query: *const c_char,
-            limit: usize,
-            out_results: *mut *mut airy_mr_memory,
-            out_count: *mut usize,
-        ) -> c_int;
-        fn airy_mr_stats(handle: *mut airy_mr_handle, out_stats: *mut *mut c_char) -> c_int;
-    }
-
-    /// MemoryRovol 记忆后端（feature 门控）
-    pub struct MemoryRovol {
-        handle: *mut airy_mr_handle,
-    }
-
-    // 句柄跨线程使用（C 库内部持锁，threadsafe）
-    unsafe impl Send for MemoryRovol {}
-    unsafe impl Sync for MemoryRovol {}
-
-    impl MemoryRovol {
-        /// 初始化 MemoryRovol。静态库由 build.rs 在链接期定位（见
-        /// build.rs / cfg(mr_linked)），此处仅做运行时初始化。
-        pub fn new() -> std::io::Result<Self> {
-            unsafe {
-                let mut h: *mut airy_mr_handle = std::ptr::null_mut();
-                let rc = airy_mr_init(std::ptr::null(), &mut h);
-                if rc != 0 || h.is_null() {
-                    return Err(std::io::Error::other("airy_mr_init failed"));
-                }
-                Ok(Self { handle: h })
-            }
-        }
-    }
-
-    impl Drop for MemoryRovol {
-        fn drop(&mut self) {
-            unsafe { airy_mr_cleanup(self.handle) };
-        }
-    }
-
-    impl ConversationMemory for MemoryRovol {
-        fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()> {
-            // MemoryRovol 原始记忆不区分角色，用元数据标记；content 原样存储
-            let _ = (role, tags);
-            let c = CString::new(content).map_err(|_| std::io::Error::other("invalid content"))?;
-            let rc = unsafe { airy_mr_add_memory(self.handle, c.as_ptr(), content.len()) };
-            if rc != 0 {
-                return Err(std::io::Error::other("airy_mr_add_memory failed"));
-            }
-            Ok(())
-        }
-
-        fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit> {
-            let q = match CString::new(query) {
-                Ok(q) => q,
-                Err(_) => return Vec::new(),
-            };
-            let mut results: *mut airy_mr_memory = std::ptr::null_mut();
-            let mut count: usize = 0;
-            let rc = unsafe {
-                airy_mr_retrieve(self.handle, q.as_ptr(), limit, &mut results, &mut count)
-            };
-            if rc != 0 || results.is_null() || count == 0 {
-                return Vec::new();
-            }
-            let mut hits = Vec::with_capacity(count);
-            unsafe {
-                for i in 0..count {
-                    let item = results.add(i).read();
-                    // 2.2.2.1 修复：召回正文取自 item.data（含 data_len 的原始
-                    // 数据），此前误读 record_id——MemoryRovol 启用时注入
-                    // prompt 的"相关记忆"全是 rec_xxx 记录 ID，直接污染对话。
-                    let content = if item.data.is_null() || item.data_len == 0 {
-                        String::new()
-                    } else {
-                        let slice = std::slice::from_raw_parts(
-                            item.data as *const u8,
-                            item.data_len,
-                        );
-                        String::from_utf8_lossy(slice).into_owned()
-                    };
-                    let score = item.score;
-                    // 释放 C 侧分配（mr_free 定义于本模块，原 crate::memory::mr_free
-                    // 路径错误——FFI 首次编译时暴露的存量 bug）
-                    if !item.record_id.is_null() {
-                        mr_free(item.record_id as *mut c_void);
-                    }
-                    if !item.data.is_null() {
-                        mr_free(item.data);
-                    }
-                    if !item.metadata.is_null() {
-                        mr_free(item.metadata as *mut c_void);
-                    }
-                    hits.push(MemoryHit { content, role: "memory".into(), score });
-                }
-                libc::free(results as *mut c_void);
-            }
-            hits
-        }
-
-        fn recent(&self, n: usize) -> Vec<MemoryRecord> {
-            // MemoryRovol 无顺序遍历接口，回退为空（检索能力由 recall 提供）
-            let _ = n;
-            Vec::new()
-        }
-
-        fn len(&self) -> usize {
-            let mut stats: *mut c_char = std::ptr::null_mut();
-            let rc = unsafe { airy_mr_stats(self.handle, &mut stats) };
-            let _ = rc;
-            if stats.is_null() {
-                return 0;
-            }
-            let s = unsafe { CStr::from_ptr(stats) }.to_string_lossy().into_owned();
-            unsafe { libc::free(stats as *mut c_void) };
-            // stats JSON 含 "record_count":N，尽力解析
-            s.split("record_count")
-                .nth(1)
-                .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).nth(1))
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0)
-        }
-
-        fn backend_name(&self) -> &'static str {
-            "MemoryRovol"
-        }
-    }
-
-    /// 释放 C 侧分配内存（libc free）
-    pub(crate) unsafe fn mr_free(ptr: *mut c_void) {
-        libc::free(ptr);
-    }
-}
-
-/// 构造记忆模块：优先 MemoryRovol（feature 启用且 build.rs 定位到静态库、
-/// 即 cfg(mr_linked) 生效时），否则 JSONL。
+/// 构造记忆模块：T-09 后唯一后端为 JsonlMemory（TUI 本地会话缓存，
+/// 纯标准库文件 I/O）；平台级长期记忆一律走 gateway mem.* RPC。
 pub fn build_memory(dir: Option<&Path>) -> Box<dyn ConversationMemory> {
-    #[cfg(all(feature = "memoryrovol", mr_linked))]
-    {
-        use self::memoryrovol::MemoryRovol;
-        match MemoryRovol::new() {
-            Ok(mr) => {
-                log::info!("memory: MemoryRovol backend enabled (L1-L4)");
-                return Box::new(mr);
-            }
-            Err(e) => log::warn!("memory: MemoryRovol init failed ({}), fallback JSONL", e),
-        }
-    }
     match JsonlMemory::new(dir) {
         Ok(m) => Box::new(m),
         Err(e) => {
