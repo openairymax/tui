@@ -1,0 +1,94 @@
+# agentrt-tui 构建与测试流水线（0.1.15 WS-6 6.1）。
+#
+# 门禁定位（方案 §WS-6）：T-01/T-02/T-03 修复用例（多字节字符边界、
+# 终端状态 panic 注入恢复）与 T-04 真实对话回放（agent.run_stream v1
+# 消费链：中文长回复/错误帧/中断帧/网络分片）全部在本流水线实际执行，
+# 任一失败即阻断合并（required）。
+#
+# 构建约束（与 agentrt 仓 BAN-33 同族纪律）：
+#   - CARGO_TARGET_DIR 指向源码树之外，构建产物不落在仓库内；
+#   - build.rs fail-closed 依赖 agentrt 仓两份文件（协议 schema 头
+#     airy_run_stream.h 与 VERSION），故并行 checkout agentrt；
+#   - memoryrovol/ime 静态库 CI 不构建，build.rs 自动降级
+#     （JsonlMemory / IME 禁用），编译与全部测试不受影响。
+
+name: build-test
+
+on:
+  push:
+    branches: [main, "develop/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-build-test:
+    # 主力腿：全部单测 + 回放回归 + clippy 静态检查，required。
+    name: linux / stable / test+clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: /tmp/airymaxtui-build
+      AGENTRT_TUI_RUN_STREAM_H: ${{ github.workspace }}/agentrt/commons/include/airy_run_stream.h
+      AIRY_RT_VERSION_FILE: ${{ github.workspace }}/agentrt/VERSION
+    steps:
+      - uses: actions/checkout@v4
+
+      # 协议 schema SSoT（airy_run_stream.h）与版本 SSoT（VERSION）
+      - uses: actions/checkout@v4
+        with:
+          repository: openairymax/agentrt
+          ref: main
+          path: agentrt
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # 依赖与编译产物缓存（流水线提速：增量构建命中后分钟级完成）
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  macos-build-test:
+    # 终端用户面 macOS 腿：编译 + 全部测试（crossterm/ratatui 跨平台
+    # 行为与 FFI 降级路径验证），required。
+    name: macos / stable / test
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      CARGO_TARGET_DIR: /tmp/airymaxtui-build
+      AGENTRT_TUI_RUN_STREAM_H: ${{ github.workspace }}/agentrt/commons/include/airy_run_stream.h
+      AIRY_RT_VERSION_FILE: ${{ github.workspace }}/agentrt/VERSION
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: openairymax/agentrt
+          ref: main
+          path: agentrt
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
