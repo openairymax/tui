@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 SPHARX Ltd.
 // SPDX-License-Identifier: AGPL-3.0-or-later OR Apache-2.0
 
+// T-18 分级（见 clippy.toml）：build.rs 的 expect 属构建期环境契约
+// （OUT_DIR/CARGO_MANIFEST_DIR 由 cargo 保证，缺失即构建环境损坏），
+// 非运行时生产路径，故整体放行；src/** 生产路径仍由 [lints.clippy] 强制。
+#![allow(clippy::expect_used)]
+
 // MemoryRovol 静态库定位（仅 memoryrovol feature 启用时执行）。
 //
 // 设计（IRON-8）：MemoryRovol 为默认记忆提供商，但 libagentrt_memoryrovol.a
