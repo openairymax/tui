@@ -12,7 +12,6 @@ dependencies = [
  "crossterm",
  "env_logger",
  "futures",
- "libc",
  "log",
  "ratatui",
  "reqwest",

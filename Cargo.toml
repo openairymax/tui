@@ -14,16 +14,13 @@ name = "agentrt-tui"
 path = "src/main.rs"
 
 [features]
-# IRON-8：MemoryRovol（L1-L4 四层记忆卷载）为默认记忆后端。
-# 构建时由 build.rs 定位 libagentrt_memoryrovol.a：
-#   MEMORYROVOL_LIB env → $AIRY_HOME/lib/libagentrt_memoryrovol.a → 伞仓构建产物
-# 库缺失时 FFI 不编译，运行时优雅降级 JsonlMemory（真实可用后备）。
-default = ["memoryrovol", "ime"]
-memoryrovol = ["dep:libc"]
-# IRON-8 内置拼音输入法：FFI 链接 agentrt libairy_common.a（airy_ime 符号）。
-# 构建时由 build.rs 定位静态库：AIRY_COMMON_LIB env → $AIRY_HOME/lib →
-# agentrt 源码树构建产物；库缺失时 IME 降级禁用（F10 无效，英文输入不受影响）。
-ime = ["dep:libc"]
+# T-09（0.1.15 裁决）：收回 TUI 对运行时库的一切 FFI 直连——
+# memoryrovol feature 已删除（记忆读写走 gateway mem.* RPC + 本地
+# JsonlMemory 会话缓存）；ime 保留为空开关，仅维持 src 中
+# all(feature = "ime", ime_linked) 双门控的天然休眠（build.rs 不再
+# 置位 ime_linked，内置拼音 IME 禁用，输入交回终端/OS 输入法）。
+default = []
+ime = []
 
 [dependencies]
 # TUI framework
@@ -63,9 +60,6 @@ futures = "0.3"
 
 # Terminal size detection
 unicode-width = "0.1"
-
-# C FFI（仅 memoryrovol feature 启用时使用）
-libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 # 记忆模块单测：临时目录
