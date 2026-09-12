@@ -850,6 +850,58 @@ fetch_repo_file() { # <repo_path> <dest>
     [ -s "$2" ]
 }
 
+# 「Release 已可见但 manifest 指针滞后」兜底探测（U-01，2026-09-12）。发布
+# 流水线先公开 Release（社区可见），上传全部制品后才翻转 latest/ 指针
+# （publish-release.sh 阶段 5，慢通道耗时可达小时级）——该窗口内裸报「已是最新」
+# 会让用户误以为新版本不存在（社区实机报告的 `已是最新: v0.1.14` 而 v0.1.15
+# Release 已可见即此因）。本函数枚举公开 Release 列表，返回**同通道**内高于
+# manifest 指针的最高 tag；无更新/网络异常/解析失败/无 python3 一律返回空。
+# 全链路 fail-soft：探测仅作可观测性增强，绝不参与「是否更新」的决策，任何
+# 失败都不得改变原有更新语义。
+detect_pending_release() { # <manifest_latest> → stdout 更高同通道 tag；无则空
+    local base="$1" ch="${CHANNEL:-stable}" tmp tags
+    command -v python3 >/dev/null 2>&1 || return 0
+    tmp="$AIRY_HOME/tmp/releases.$$"
+    mkdir -p "$(dirname "$tmp")" 2>/dev/null
+    syscurl -fsSL --max-time 30 -o "$tmp" \
+        "https://api.atomgit.com/api/v5/repos/${AIRY_RELEASE_OWNER:-openairymax/agentrt}/releases?per_page=100" \
+        2>/dev/null || { rm -f "$tmp"; return 0; }
+    tags="$(python3 - "$tmp" <<'PYEOF'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+if not isinstance(data, list):
+    sys.exit(0)
+for r in data:
+    if isinstance(r, dict) and r.get("tag_name"):
+        print(r["tag_name"])
+PYEOF
+)" || { rm -f "$tmp"; return 0; }
+    rm -f "$tmp"
+    # 列表满页时无法确认已含最新条目（按创建顺序返回，截断会丢最新），
+    # 保守放弃探测而不误报。
+    local n; n="$(printf '%s\n' "$tags" | grep -c '[^[:space:]]' 2>/dev/null)"; n="${n:-0}"
+    [ "$n" -ge 100 ] && return 0
+    local t peak=""
+    while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        # 同通道过滤（与 publish-release.sh 通道判定同口径），避免 stable
+        # 用户被 rc/beta 预发布 tag 误报，反之亦然。
+        case "$ch" in
+            rc)   case "$t" in *-rc*) ;; *) continue ;; esac ;;
+            beta) case "$t" in *-beta*) ;; *) continue ;; esac ;;
+            *)    case "$t" in *-rc*|*-beta*) continue ;; esac ;;
+        esac
+        if [ -z "$peak" ] || [ "$(ver_cmp "$peak" "$t")" = "-1" ]; then peak="$t"; fi
+    done <<EOF
+$tags
+EOF
+    [ -n "$peak" ] || return 0
+    [ "$(ver_cmp "$base" "$peak")" = "-1" ] && printf '%s\n' "$peak"
+}
+
 # GPG 验签（独立 homedir，不污染用户 keyring；签名缺失拒绝——fail-closed
 # 防供应链攻击。公钥优先级：发布源 latest/keys/ 在线拉取（支持轮换）→
 # 本地 $AIRY_HOME/keys/ → 内置公钥（首次引导兜底））。
@@ -1302,6 +1354,15 @@ airymaxrt_update() { # update [--check] [--yes] [--channel stable|rc|beta] [--ro
         # manifest 目标版本 == 当前 AIRY_VERSION 但目标制品 sha256 与已装记录
         # 不同即视为可更新；目标 sha 缺失或与已装记录一致 → 已是最新
         if [ -z "$art_sha" ] || [ "$art_sha" = "${cur_sha:-}" ]; then
+            # U-01 滞后兜底探测（2026-09-12）：manifest 指针翻转滞后于 Release
+            # 可见时，裸报「已是最新」会误导用户（社区实机报告即此场景）。
+            # 探测到更高同通道 Release 时显式提示"正在发布中"，不改变退出语义。
+            local pending; pending="$(detect_pending_release "$latest")"
+            if [ -n "$pending" ]; then
+                log warn "检测到更高版本 ${pending} 已发布，但通道 ${CHANNEL} 的 manifest 指针尚未更新"
+                log warn "（发布流水线先公开 Release、上传全部制品后才翻转指针，窗口通常为数十分钟）"
+                log warn "请稍后重试；或查看发布页: https://atomgit.com/${AIRY_RELEASE_OWNER:-openairymax/agentrt}/releases"
+            fi
             log info "已是最新: ${cur_ver:-<未安装>}（最新 ${latest}）"
             rm -rf "$TMPD"; return 0
         fi
