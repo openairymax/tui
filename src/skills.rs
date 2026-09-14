@@ -3,21 +3,41 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// Skills 本地技能库。
+// 可复用技能库（程序性记忆）。
 //
-// 设计原则（50 工程标准 E-3 资源确定性 / A-1 极简主义）：
-//   - 任务成功后自动提炼经验并沉淀为可复用技能，避免"用过即忘"：
-//     任务集完成时调用 LLM 将本次执行过程提炼为 SkillRecord，追加写入本地库，
-//     后续任务在 build_context_prompt 中召回匹配技能注入上下文。
-//   - 默认后端 JsonlSkillStore：JSONL 追加写持久化（崩溃安全），检索按触发
-//     关键词与摘要匹配，无外部依赖。
-//   - 与 memory.rs 同构：先默认 JSONL 后端，后续可平滑替换为商业记忆库 FFI。
+// 设计原则（50 工程标准 E-3 资源确定性 / A-1 极简主义；0.1.16 架构改造，
+// 用户决策 2026-09-13「CLI 是核心，TUI 是可选的增强」）：
+//   - 技能即"程序性记忆"：TUI 不持有任何独立技能存储。唯一权威后端是网关
+//     记忆服务 mem_d，经 `mem.*` RPC 写入/读取——与 CLI 同一后端、同一存储、
+//     同一 schema，二者共享同一记忆库。TUI 只是渲染层。
+//   - 技能记录以 `metadata.kind="skill"` 作为分区标识：与对话记忆（kind 缺省）
+//     同库同流但语义隔离——记忆面板按 kind 过滤只渲染对话轮次，技能库面板按
+//     kind 过滤只渲染技能（见 memory.rs / 本模块 hydrate）。由此实现"TUI 与
+//     CLI 使用一套记忆"，且零新增 gateway 服务面。
+//   - 进程内 mirror 仅作渲染/召回的**同步读缓存**：启动时经 `mem.recent` 水合，
+//     写入经 `mem.write` 异步回投网关。网关不可达时降级为纯内存（volatile），
+//     不落任何本地文件。
+//
+// 历史：0.1.15 及以前 TUI 使用独立本地 JSONL 库
+// （$AIRY_HOME/data/agentrt/tui/skills.jsonl），与网关记忆库互不相通——这正是
+// "CLI 核心 / TUI 增强"决策下必须消除的存储分叉。本模块随 0.1.16 架构改造收敛
+// 为网关单后端（与 memory.rs 同构，依据 0.1.9 §7 W4「记忆面板统一为 gateway」）。
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use crate::client::GatewayClient;
+use crate::memory::{epoch_to_iso, md_str, parse_metadata};
+
+/// 技能镜像保留上限（渲染/召回窗口；网关侧容量由 mem_d 自行管理）。
+const MAX_SKILLS: usize = 500;
+
+/// 启动/面板打开时的水合条数（mem.recent 上限：mem_handlers clamp 0..1000）。
+const HYDRATE_LIMIT: usize = 1000;
+
+/// 记忆分区标识：技能记录（区别于 kind 缺省的对话记忆）。
+pub const KIND_SKILL: &str = "skill";
 
 /// 一条可复用技能（任务经验沉淀的产物）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,11 +86,57 @@ impl SkillRecord {
             success_count: 0,
         }
     }
+
+    /// 序列化为 `mem.write` 的 metadata（kind=skill + 全部索引字段）。
+    ///
+    /// 技能正文（procedure）作为 `data` 单独承载；其余字段进 metadata，使
+    /// 记录在 mem_d 中自描述、可被任何 `mem.*` 消费端（CLI 等）无损还原。
+    fn to_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "source": "tui",
+            "kind": KIND_SKILL,
+            "name": self.name.as_str(),
+            "category": self.category.as_str(),
+            "trigger": self.trigger.as_str(),
+            "summary": self.summary.as_str(),
+            "lessons": self.lessons.as_str(),
+            "tags": self.tags.as_str(),
+            "success_count": self.success_count,
+            "created_at": self.created_at.as_str(),
+        })
+    }
+
+    /// 从 mem.recent 记录（data + metadata）还原技能。
+    ///
+    /// 非技能记录（metadata.kind≠"skill"）或缺 name 时返回 None。
+    fn from_mem_record(created_epoch: i64, data: &str, md: &serde_json::Value) -> Option<Self> {
+        if md_str(md, "kind").as_deref() != Some(KIND_SKILL) {
+            return None;
+        }
+        let name = md_str(md, "name")?;
+        if name.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            name,
+            category: md_str(md, "category").unwrap_or_else(|| "general".to_string()),
+            trigger: md_str(md, "trigger").unwrap_or_default(),
+            summary: md_str(md, "summary").unwrap_or_default(),
+            procedure: data.to_string(),
+            lessons: md_str(md, "lessons").unwrap_or_default(),
+            tags: md_str(md, "tags").unwrap_or_default(),
+            created_at: md_str(md, "created_at").unwrap_or_else(|| epoch_to_iso(created_epoch)),
+            success_count: md
+                .get("success_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+        })
+    }
 }
 
-/// 本地技能库后端 trait（E-4 跨平台一致性：路径统一，不暴露本地绝对路径）
+/// 技能库后端 trait（E-4 跨平台一致性：Linux/macOS/Windows 路径统一）
 pub trait SkillStore: Send + Sync {
-    /// 保存一条技能（追加写；同名技能视为更新成功次数）
+    /// 保存一条技能（同名技能视为再次沉淀，累加复用次数）
     fn save(&mut self, skill: SkillRecord) -> std::io::Result<()>;
     /// 按触发关键词/摘要召回相关技能（按相关度倒序）
     fn find(&self, query: &str, limit: usize) -> Vec<SkillRecord>;
@@ -79,92 +145,106 @@ pub trait SkillStore: Send + Sync {
     fn list(&self) -> Vec<SkillRecord>;
     /// 技能条数
     fn len(&self) -> usize;
+    /// 从权威后端重新水合镜像（网关可用时）。默认后端为纯内存，no-op。
+    fn refresh(&self) {}
+    /// 当前技能后端名（TUI 展示用）。
+    fn backend_name(&self) -> &'static str {
+        "gateway"
+    }
 }
 
-/// JSONL 持久化技能库后端（默认）。
+/// 网关技能后端（TUI 唯一后端）。
 ///
-/// 存储路径：`$AIRY_HOME/tui/skills.jsonl`（默认 `~/.airymaxrt/tui/`）。
-/// 追加写保证崩溃安全；同名技能合并时更新成功次数并重写文件。
-pub struct JsonlSkillStore {
-    path: PathBuf,
-    skills: Vec<SkillRecord>,
-    max_skills: usize,
+/// 权威存储为网关记忆服务 mem_d（`mem.*` RPC，与 CLI 同一后端，技能以
+/// `metadata.kind="skill"` 与对话记忆分区共存）；本结构持有的 mirror 是渲染/
+/// 召回的同步读缓存：启动水合 + 写入回投 + 面板打开时再水合。无 tokio 运行时
+/// （单测）时降级为纯内存 volatile。
+pub struct GatewaySkillStore {
+    /// 网关客户端（refresh 用水合；None = volatile 降级）
+    client: Option<GatewayClient>,
+    /// 同步读缓存（旧→新有序，list 时反向取）
+    mirror: Arc<Mutex<Vec<SkillRecord>>>,
+    /// 写投递通道：save 立即入队，后台任务串行投递 `mem.write`
+    tx: Option<tokio::sync::mpsc::UnboundedSender<SkillRecord>>,
+    /// 后端名（"gateway" / "volatile"），面板展示用
+    backend: &'static str,
 }
 
-impl JsonlSkillStore {
-    /// 创建技能库。dir 未指定时用 $AIRY_HOME/tui 或 ~/.airymaxrt/tui。
-    pub fn new(dir: Option<&Path>) -> std::io::Result<Self> {
-        let dir = match dir {
-            Some(d) => d.to_path_buf(),
-            None => skill_dir(),
+impl GatewaySkillStore {
+    /// 构造网关技能后端。
+    ///
+    /// 需处于 tokio 运行时内（`run_tui` 的 App::new）；同步上下文（单测）
+    /// 无运行时，自动降级为纯内存镜像（volatile，不触网、不落盘）。
+    pub fn new(client: GatewayClient) -> Self {
+        let handle = match tokio::runtime::Handle::try_current() {
+            Ok(h) => h,
+            Err(_) => {
+                log::warn!("skills: 无 tokio 运行时，技能库降级为纯内存镜像（volatile）");
+                return Self::volatile();
+            }
         };
-        fs::create_dir_all(&dir)?;
-        let path = dir.join("skills.jsonl");
-        let mut store = Self {
-            path,
-            skills: Vec::new(),
-            max_skills: 500,
-        };
-        store.load()?;
-        Ok(store)
+        let mirror: Arc<Mutex<Vec<SkillRecord>>> = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        handle.spawn(writer(client.clone(), rx));
+        handle.spawn(hydrate(client.clone(), mirror.clone()));
+        Self {
+            client: Some(client),
+            mirror,
+            tx: Some(tx),
+            backend: "gateway",
+        }
     }
 
-    fn load(&mut self) -> std::io::Result<()> {
-        if !self.path.exists() {
-            return Ok(());
+    /// 纯内存镜像后端（离线/单测）：不触网、不落盘。
+    pub fn volatile() -> Self {
+        Self {
+            client: None,
+            mirror: Arc::new(Mutex::new(Vec::new())),
+            tx: None,
+            backend: "volatile",
         }
-        let f = fs::File::open(&self.path)?;
-        let reader = BufReader::new(f);
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(rec) = serde_json::from_str::<SkillRecord>(&line) {
-                self.skills.push(rec);
-            }
-        }
-        Ok(())
     }
 }
 
-impl SkillStore for JsonlSkillStore {
+impl SkillStore for GatewaySkillStore {
     fn save(&mut self, skill: SkillRecord) -> std::io::Result<()> {
-        // 同名技能视为再次沉淀：合并并累加成功次数，避免重复堆积
-        if let Some(existing) = self
-            .skills
-            .iter_mut()
-            .find(|s| s.name == skill.name)
-        {
-            existing.success_count += 1;
-            existing.procedure = if skill.procedure.trim().is_empty() {
-                existing.procedure.clone()
-            } else {
-                skill.procedure.clone()
-            };
-            existing.lessons = if skill.lessons.trim().is_empty() {
-                existing.lessons.clone()
-            } else {
-                skill.lessons.clone()
-            };
-            existing.trigger = skill.trigger;
-            existing.summary = skill.summary;
-            existing.tags = skill.tags;
-            return self.rewrite();
-        }
-
-        // 追加写：单条记录一次 write + flush
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        writeln!(f, "{}", serde_json::to_string(&skill)?)?;
-        f.flush()?;
-        self.skills.push(skill);
-        if self.skills.len() > self.max_skills {
-            let drain = self.skills.len() - self.max_skills;
-            self.skills.drain(..drain);
-            self.rewrite()?;
+        // 同名技能视为再次沉淀：在镜像内合并并累加复用次数。mem_d 只提供插入
+        // 语义，故采用 append-only：新记录携带**累计后**的 success_count，水合
+        // 时按 name 去重取最新记录即为权威计数（见 hydrate）。
+        let merged = {
+            let mut guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.iter().position(|s| s.name == skill.name) {
+                Some(pos) => {
+                    let mut m = guard[pos].clone();
+                    m.success_count = m.success_count.saturating_add(1);
+                    if !skill.procedure.trim().is_empty() {
+                        m.procedure = skill.procedure.clone();
+                    }
+                    if !skill.lessons.trim().is_empty() {
+                        m.lessons = skill.lessons.clone();
+                    }
+                    m.trigger = skill.trigger.clone();
+                    m.summary = skill.summary.clone();
+                    m.tags = skill.tags.clone();
+                    guard[pos] = m.clone();
+                    m
+                }
+                None => {
+                    guard.push(skill.clone());
+                    if guard.len() > MAX_SKILLS {
+                        let drain = guard.len() - MAX_SKILLS;
+                        guard.drain(..drain);
+                    }
+                    skill
+                }
+            }
+        };
+        // 权威存储在网关：入队后台投递 `mem.write`。投递失败（运行时已退出）
+        // 仅记日志——镜像已乐观更新，用户交互不因此中断。
+        if let Some(tx) = &self.tx {
+            if tx.send(merged).is_err() {
+                log::warn!("skills: 网关写投递通道已关闭，技能仅在镜像");
+            }
         }
         Ok(())
     }
@@ -175,8 +255,8 @@ impl SkillStore for JsonlSkillStore {
             .filter(|t| t.len() >= 2)
             .map(|t| t.to_lowercase())
             .collect();
-        let mut scored: Vec<(SkillRecord, f32)> = self
-            .skills
+        let guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        let mut scored: Vec<(SkillRecord, f32)> = guard
             .iter()
             .map(|s| {
                 let mut score = 0.0f32;
@@ -200,55 +280,116 @@ impl SkillStore for JsonlSkillStore {
             })
             .collect();
         scored.retain(|(_, s)| *s > 0.0);
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
         scored.into_iter().map(|(s, _)| s).collect()
     }
 
     fn list(&self) -> Vec<SkillRecord> {
-        self.skills.iter().rev().cloned().collect()
+        self.mirror
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .rev()
+            .cloned()
+            .collect()
     }
 
     fn len(&self) -> usize {
-        self.skills.len()
+        self.mirror.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    fn refresh(&self) {
+        let (Some(client), Ok(handle)) =
+            (self.client.as_ref(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        handle.spawn(hydrate(client.clone(), self.mirror.clone()));
+    }
+
+    fn backend_name(&self) -> &'static str {
+        self.backend
     }
 }
 
-impl JsonlSkillStore {
-    fn rewrite(&self) -> std::io::Result<()> {
-        let mut f = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&self.path)?;
-        for rec in &self.skills {
-            writeln!(f, "{}", serde_json::to_string(rec)?)?;
+/// 后台写投递：把技能记录逐条经 `mem.write` 持久化到网关记忆服务。
+///
+/// 记录 schema（与 CLI 共享同一存储的唯一约定）：
+///   data     = procedure（可复用执行步骤，技能正文）
+///   metadata = { source:"tui", kind:"skill", name, category, trigger,
+///                summary, lessons, tags, success_count, created_at }
+async fn writer(
+    client: GatewayClient,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<SkillRecord>,
+) {
+    while let Some(rec) = rx.recv().await {
+        // 技能正文以 procedure 为准；其后备为 summary，保证 data 非空。
+        let data = if rec.procedure.trim().is_empty() {
+            rec.summary.clone()
+        } else {
+            rec.procedure.clone()
+        };
+        let params = serde_json::json!({
+            "data": data,
+            "metadata": rec.to_metadata(),
+        });
+        if let Err(e) = client.rpc_call("mem.write", params).await {
+            log::warn!("skills: mem.write 失败（技能仅在镜像，待下次水合）: {}", e);
         }
-        f.flush()?;
-        Ok(())
     }
 }
 
-/// 技能库目录：$AIRY_HOME/data/agentrt/tui（AIRY_HOME 路径体系收敛，2026-08-19）
-fn skill_dir() -> PathBuf {
-    crate::paths::airy_home_path(&["data", "agentrt", "tui"])
-}
-
-/// 构造技能库后端（当前仅 JSONL，后续可扩展 FFI）。
-pub fn build_skill_store(dir: Option<&Path>) -> Box<dyn SkillStore> {
-    match JsonlSkillStore::new(dir) {
-        Ok(s) => Box::new(s),
+/// 从网关记忆服务水合技能镜像：`mem.recent` 取最近 HYDRATE_LIMIT 条，仅保留
+/// `metadata.kind=="skill"` 的记录，按 name 去重取最新（append-only 的累计次数
+/// 由最新记录承载），再按沉淀时间升序重建镜像（旧→新）。失败时保持镜像现状。
+async fn hydrate(client: GatewayClient, mirror: Arc<Mutex<Vec<SkillRecord>>>) {
+    let params = serde_json::json!({ "limit": HYDRATE_LIMIT });
+    let result = match client.rpc_call("mem.recent", params).await {
+        Ok(v) => v,
         Err(e) => {
-            log::warn!("skills: JsonlSkillStore init failed ({}), using volatile store", e);
-            Box::new(JsonlSkillStore {
-                path: PathBuf::from("/dev/null"),
-                skills: Vec::new(),
-                max_skills: 500,
-            })
+            log::warn!("skills: mem.recent 水合失败（离线，镜像保持现状）: {}", e);
+            return;
+        }
+    };
+    let Some(items) = result.get("records").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut recs: Vec<(i64, SkillRecord)> = Vec::new();
+    for it in items {
+        let created = it.get("created_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let data = it.get("data").and_then(|v| v.as_str()).unwrap_or("");
+        let md = parse_metadata(it.get("metadata"));
+        if let Some(rec) = SkillRecord::from_mem_record(created, data, &md) {
+            recs.push((created, rec));
         }
     }
+    // 升序后按 name 去重：后者覆盖前者 = 最新记录胜出（携带累计计数）。
+    recs.sort_by_key(|(t, _)| *t);
+    let mut dedup: Vec<(i64, SkillRecord)> = Vec::new();
+    for (t, rec) in recs {
+        if let Some(slot) = dedup.iter_mut().find(|(_, r)| r.name == rec.name) {
+            *slot = (t, rec);
+        } else {
+            dedup.push((t, rec));
+        }
+    }
+    dedup.sort_by_key(|(t, _)| *t);
+    let mut list: Vec<SkillRecord> = dedup.into_iter().map(|(_, r)| r).collect();
+    if list.len() > MAX_SKILLS {
+        let drain = list.len() - MAX_SKILLS;
+        list.drain(..drain);
+    }
+    let n = list.len();
+    let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = list;
+    log::info!("skills: 自网关水合 {} 条技能（mem.recent, kind=skill）", n);
+}
+
+/// 构造技能库后端：TUI 唯一后端为网关记忆服务（`mem.*` RPC，与 CLI 同一
+/// 存储）；无 tokio 运行时时降级为纯内存镜像（不落盘）。
+pub fn build_skill_store(gateway: &GatewayClient) -> Box<dyn SkillStore> {
+    Box::new(GatewaySkillStore::new(gateway.clone()))
 }
 
 /// 构建经验提炼提示词。
@@ -322,15 +463,13 @@ pub fn parse_distilled_skill(raw: &str) -> Option<SkillRecord> {
 mod tests {
     use super::*;
 
-    fn temp_store() -> (tempfile::TempDir, JsonlSkillStore) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = JsonlSkillStore::new(Some(dir.path())).expect("store");
-        (dir, store)
+    fn store() -> GatewaySkillStore {
+        GatewaySkillStore::volatile()
     }
 
     #[test]
     fn save_and_find_roundtrip() {
-        let (_dir, mut store) = temp_store();
+        let mut store = store();
         let skill = SkillRecord::new(
             "debug_http_timeout",
             "development",
@@ -350,24 +489,68 @@ mod tests {
 
     #[test]
     fn same_name_merges_and_counts() {
-        let (_dir, mut store) = temp_store();
+        let mut store = store();
         let s1 = SkillRecord::new("s", "dev", "a,b", "sum", "step1", "lesson", "t");
         let s2 = SkillRecord::new("s", "dev", "a,b", "sum2", "step2", "lesson2", "t");
         store.save(s1).unwrap();
         store.save(s2).unwrap();
         assert_eq!(store.len(), 1);
         assert_eq!(store.list()[0].success_count, 1);
-        // 最新 procedure 生效
+        // 最新 procedure 生效（非空覆盖）
         assert_eq!(store.list()[0].procedure, "step2");
     }
 
     #[test]
     fn find_empty_query_returns_nothing() {
-        let (_dir, mut store) = temp_store();
+        let mut store = store();
         store
             .save(SkillRecord::new("x", "dev", "k1", "d", "p", "l", "t"))
             .unwrap();
         assert!(store.find("", 5).is_empty());
+    }
+
+    #[test]
+    fn volatile_backend_name() {
+        assert_eq!(store().backend_name(), "volatile");
+    }
+
+    #[test]
+    fn metadata_roundtrip_preserves_fields() {
+        // 技能经 mem.write metadata + data(procedure) 往返后可无损还原
+        // （这是与 CLI 共享同一 mem_d 存储的 schema 契约）。
+        let s = SkillRecord::new(
+            "fix_dns",
+            "ops",
+            "dns,timeout",
+            "DNS 超时处理",
+            "1. 检查 resolv.conf",
+            "优先系统 DNS",
+            "dns",
+        );
+        let md = s.to_metadata();
+        assert_eq!(md_str(&md, "kind").as_deref(), Some(KIND_SKILL));
+        let back = SkillRecord::from_mem_record(1_700_000_000, &s.procedure, &md).expect("restore");
+        assert_eq!(back.name, "fix_dns");
+        assert_eq!(back.category, "ops");
+        assert_eq!(back.trigger, "dns,timeout");
+        assert_eq!(back.summary, "DNS 超时处理");
+        assert_eq!(back.procedure, "1. 检查 resolv.conf");
+        assert_eq!(back.lessons, "优先系统 DNS");
+        assert_eq!(back.tags, "dns");
+        assert_eq!(back.success_count, 0);
+        assert_eq!(back.created_at, s.created_at);
+    }
+
+    #[test]
+    fn from_mem_record_rejects_non_skill() {
+        // 对话记忆（无 kind / kind=chat）不得被技能库消费
+        let chat = serde_json::json!({ "source": "tui", "role": "user", "tags": "chat" });
+        assert!(SkillRecord::from_mem_record(1, "hello", &chat).is_none());
+        let chat_kind = serde_json::json!({ "kind": "chat", "name": "x" });
+        assert!(SkillRecord::from_mem_record(1, "hello", &chat_kind).is_none());
+        // kind=skill 但缺 name → 丢弃
+        let no_name = serde_json::json!({ "kind": KIND_SKILL });
+        assert!(SkillRecord::from_mem_record(1, "hello", &no_name).is_none());
     }
 
     #[test]

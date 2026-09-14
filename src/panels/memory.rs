@@ -6,10 +6,10 @@
 // Memory panel rendering.
 //
 // 2.2.1.5 任务 4 强化（2026-08-23）：清晰展示记忆与记忆链——
-//   · 头部：记忆条数 + 后端名（T-09 后为本地 Jsonl / volatile 降级）；
+//   · 头部：记忆条数 + 后端名（0.1.16 起唯一后端为网关 mem_d，与 CLI 共享）；
 //   · 按来源（记忆标签 tags）分组，组内按时间序连接成记忆链；
 //   · 每条目：内容摘要 + 时间 + 来源 + 关联链（├/└ + ↳ 承接）+ 思考链标记；
-//   · 无数据时给出引导提示（存储路径 + /mem 语义检索）。
+//   · 无数据时给出引导提示（网关记忆库 + /mem 语义检索）。
 //
 // 0.1.9 W8 分组懒加载：条数即版本——记忆库未变化时整段复用已构建的
 // 分组视图（MemoryView），每帧不再克隆记录窗口与重分组；PgUp/PgDn 移动
@@ -27,8 +27,8 @@ use crate::app::App;
 use crate::memory::{ConversationMemory, MemoryRecord};
 use crate::theme;
 
-/// 记忆目录（与 src/memory.rs memory_dir 对齐；文案用，避免魔法路径）
-const MEMORY_DIR_HINT: &str = "$AIRY_HOME/data/agentrt/tui/memory.jsonl";
+/// 记忆后端说明（TUI 无本地存储，统一经网关 mem.* 访问 mem_d）。
+const MEMORY_BACKEND_HINT: &str = "网关记忆服务（mem.*，与 CLI 共享同一记忆库）";
 
 /// 每页展示的记录数（窗口分页粒度）。
 const PAGE_RECORDS: usize = 80;
@@ -89,9 +89,10 @@ fn last_page_start(total: usize) -> usize {
 
 /// Render the memory statistics panel.
 ///
-/// 实时渲染本地对话记忆库（$AIRY_HOME/data/agentrt/tui/memory.jsonl）：
-/// 按来源（标签）分组展示记忆链，无需依赖网关 HTTP 端点。内容整段缓存，
-/// 条数与页码未变时零重建。
+/// 渲染对话记忆库视图：数据来自 `app.memory`（TUI 唯一后端 = 网关记忆
+/// 服务 mem_d，经 gateway `mem.*` 水合的同步读缓存，与 CLI 同一存储）。
+/// 按来源（标签）分组展示记忆链。内容整段缓存，条数与页码未变时零重建；
+/// 打开面板时由 `App::toggle_panel` 触发一次 `refresh()` 重新水合。
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -239,7 +240,7 @@ fn render_empty(lines: &mut Vec<Line<'static>>) {
         Style::default().fg(theme::dim()),
     )));
     lines.push(Line::from(Span::styled(
-        format!("  对话内容将自动持久化到 {}。", MEMORY_DIR_HINT),
+        format!("  对话记忆由 {} 持久化。", MEMORY_BACKEND_HINT),
         Style::default().fg(theme::faint()),
     )));
     lines.push(Line::from(Span::styled(
@@ -249,7 +250,7 @@ fn render_empty(lines: &mut Vec<Line<'static>>) {
     if std::env::var("AIRY_HOME").is_err() {
         lines.push(Line::from(Span::styled(
             format!(
-                "  提示：未设置 AIRY_HOME，记忆将存入 ~{}/data/agentrt/tui/。",
+                "  提示：未设置 AIRY_HOME，网关将使用 ~{}/ 下的记忆库。",
                 crate::paths::DEFAULT_DIR_NAME
             ),
             Style::default().fg(theme::warning()),

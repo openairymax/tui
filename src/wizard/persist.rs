@@ -3,55 +3,55 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 向导持久化：wizard.toml（lang + configured + 版本 + 提供商/模型）、
-// secrets.env（API Key，llm_d 热加载）、首次运行探测与旧目录迁移。
+// 向导落盘与首启探测：全部收敛到统一配置面（0.1.16 架构改造，用户决策
+// 2026-09-13「CLI 是核心，TUI 是可选的增强」）——
+//   - $AIRY_HOME/config/model.yaml（模型表 + default_model + think 段，
+//     llm_d / think_d / gateway_d 共同读取的热加载权威源）；
+//   - $AIRY_HOME/config/secrets.env（API Key，llm_d 热加载、权限 600）。
+// TUI 不持有任何独占配置文件（wizard.toml / config.toml 已随本轮移除），
+// 引导状态由上述两文件的真实内容推导，无额外状态文件。
 
 use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
-
-/// 向导配置文件（$AIRY_HOME/data/agentrt/tui/wizard.toml），存在即非首次运行
-const WIZARD_FILE: &str = "wizard.toml";
 
 /// API Key 写入 secrets.env 使用的变量名（与 model.yaml api_key_env 对应）
 pub(crate) const API_KEY_ENV: &str = "MODEL_1_API_KEY";
 
-#[derive(Serialize, Deserialize)]
-struct WizardConfig {
-    lang: String,
-    configured: String,
-    version: String,
-    provider: String,
-    model: String,
-}
-
-/// 向导目录：$AIRY_HOME/data/agentrt/tui（与 TUI config.toml 同目录约定；
-/// 旧版曾用 $AIRY_HOME/tui，读时自动迁移）
-fn wizard_dir() -> PathBuf {
-    let home = crate::paths::airy_home();
-    let legacy = home.join("tui").join(WIZARD_FILE);
-    let new_dir = home.join("data").join("agentrt").join("tui");
-    if legacy.is_file()
-        && !new_dir.join(WIZARD_FILE).exists()
-        && std::fs::create_dir_all(&new_dir).is_ok()
-    {
-        let _ = std::fs::rename(&legacy, new_dir.join(WIZARD_FILE));
-    }
-    new_dir
-}
-
-/// 运行配置目录：$AIRY_HOME/config（secrets.env 所在目录）
+/// 运行配置目录：$AIRY_HOME/config（model.yaml 与 secrets.env 所在目录）
 fn config_dir() -> PathBuf {
     crate::paths::airy_home_path(&["config"])
 }
 
-fn config_path() -> PathBuf {
-    wizard_dir().join(WIZARD_FILE)
-}
-
-/// 是否首次运行（wizard.toml 不存在）
+/// 是否尚未完成模型配置（首启向导自动激活判据）。
+///
+/// 判据只来自统一配置面，不含任何 TUI 独占状态文件。满足任一即视为
+/// "尚不可用"，入场时引导用户完成配置：
+///   - `model.yaml` 缺失，或未设置顶层 `default_model`；
+///   - `default_model` 指向的模型为 api 模式，但其 `api_key_env`
+///     （缺省 `MODEL_1_API_KEY`）在 secrets.env 中没有非空值。
+///
+/// `local` 模式模型无需 Key，视为已就绪；`default_model` 不在 models 表中
+/// （用户自定义或由网关回落）亦视为已配置，不再打扰。
 pub(crate) fn is_first_run() -> bool {
-    !config_path().exists()
+    let yaml = crate::models_cfg::read_model_yaml();
+    let default_model = yaml.default_model.trim();
+    if default_model.is_empty() {
+        return true;
+    }
+    let row = match yaml.rows.iter().find(|r| r.model_id == default_model) {
+        Some(r) => r,
+        None => return false,
+    };
+    if row.mode.trim() == "local" {
+        return false;
+    }
+    let env = if row.api_key_env.trim().is_empty() {
+        API_KEY_ENV
+    } else {
+        row.api_key_env.trim()
+    };
+    !crate::secrets::read_all()
+        .iter()
+        .any(|(k, v)| k == env && !v.trim().is_empty())
 }
 
 /// 将 API Key 写回 $AIRY_HOME/config/secrets.env（llm_d 热加载，无需重启）。
@@ -105,63 +105,47 @@ pub(crate) fn write_secret(env_name: &str, value: &str) -> bool {
     }
 }
 
-/// 将选择写回 wizard.toml（lang + configured + version + provider + model）
-pub(crate) fn persist(lang: &str, configured: bool, provider: &str, model: &str) {
-    let cfg = WizardConfig {
-        lang: lang.to_string(),
-        configured: if configured {
-            "manual".to_string()
-        } else {
-            "skipped".to_string()
-        },
-        version: env!("AIRY_RT_VERSION").to_string(),
-        provider: provider.to_string(),
-        model: model.to_string(),
-    };
-    if let Some(parent) = config_path().parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::warn!("wizard: create dir failed: {}", e);
-            return;
-        }
-    }
-    match toml::to_string(&cfg) {
-        Ok(s) => {
-            if let Err(e) = std::fs::write(config_path(), s) {
-                log::warn!("wizard: persist failed: {}", e);
-            } else {
-                log::info!("wizard: config saved to {}", config_path().display());
-            }
-        }
-        Err(e) => log::warn!("wizard: serialize failed: {}", e),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn write_model_yaml(body: &str) {
+        let dir = config_dir();
+        std::fs::create_dir_all(&dir).expect("config 目录");
+        std::fs::write(dir.join("model.yaml"), body).expect("写 model.yaml");
+    }
+
+    const API_ROW: &str = "models:\n  - name: DeepSeek\n    mode: api\n    api_format: openai\n    base_url: https://api.deepseek.com\n    model_id: deepseek-chat\n    api_key_env: MODEL_1_API_KEY\ndefault_model: deepseek-chat\n";
+
     #[test]
-    fn first_run_until_persisted() {
-        let home = crate::test_env::Home::new("firstrun");
-        assert!(is_first_run());
-        persist("zh", true, "qwen", "qwen-max");
-        assert!(!is_first_run());
-        let saved =
-            std::fs::read_to_string(home.path().join("data/agentrt/tui/wizard.toml")).expect("已写盘");
-        assert!(saved.contains("lang = \"zh\""));
-        assert!(saved.contains("configured = \"manual\""));
-        assert!(saved.contains("model = \"qwen-max\""));
+    fn first_run_when_model_yaml_missing() {
+        let _home = crate::test_env::Home::new("firstrun-missing");
+        assert!(is_first_run(), "无 model.yaml 应首启");
     }
 
     #[test]
-    fn legacy_dir_migrated_on_read() {
-        let home = crate::test_env::Home::new("migrate");
-        let legacy = home.path().join("tui");
-        std::fs::create_dir_all(&legacy).expect("建旧目录");
-        std::fs::write(legacy.join(WIZARD_FILE), "lang = \"en\"\n").expect("写旧文件");
-        assert!(!is_first_run(), "旧路径文件应被识别并迁移");
-        assert!(!legacy.join(WIZARD_FILE).exists(), "旧文件已移走");
-        assert!(home.path().join("data/agentrt/tui").join(WIZARD_FILE).is_file());
+    fn api_default_without_key_still_first_run() {
+        let _home = crate::test_env::Home::new("firstrun-api");
+        write_model_yaml(API_ROW);
+        assert!(is_first_run(), "api 模型无 Key → 仍需引导");
+        assert!(write_secret(API_KEY_ENV, "sk-abcdef"));
+        assert!(!is_first_run(), "写入 Key 后视为已就绪");
+    }
+
+    #[test]
+    fn local_default_model_ready_without_key() {
+        let _home = crate::test_env::Home::new("firstrun-local");
+        write_model_yaml(
+            "models:\n  - name: Local\n    mode: local\n    base_url: http://localhost:11434/v1\n    model_id: llama3\n    api_key_env: \"\"\ndefault_model: llama3\n",
+        );
+        assert!(!is_first_run(), "本地模型无需 Key，视为已就绪");
+    }
+
+    #[test]
+    fn unknown_default_model_is_ready() {
+        let _home = crate::test_env::Home::new("firstrun-unknown");
+        write_model_yaml("default_model: custom-remote\n");
+        assert!(!is_first_run(), "默认模型不在表中（网关回落）不再打扰");
     }
 
     #[test]

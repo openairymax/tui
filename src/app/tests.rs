@@ -6,7 +6,7 @@
 // 应用状态单元测试：与 app 各职责域子模块共享同一模块视图。
 
 use super::*;
-use crate::memory::{JsonlMemory, MemoryRecord};
+use crate::memory::GatewayMemory;
 
 /// SSE 工具事件渲染：tool_call / tool_result JSON → 过程化状态行。
 /// 只展示动作名与成败，不暴露参数与返回内容（2026-08-17）。
@@ -37,7 +37,7 @@ fn render_tool_event_parses_sse_json() {
     assert!(App::render_tool_event("not json").is_none());
 }
 
-/// 模型名持久化往返：persist_model → load_saved_model 一致。
+/// 模型名持久化往返：persist_model（写 model.yaml default_model）→ load_saved_model 一致。
 #[test]
 fn model_persist_roundtrip() {
     let _h = crate::test_env::Home::new("model-persist");
@@ -46,20 +46,24 @@ fn model_persist_roundtrip() {
     // 再次切换覆盖
     persist_model("gpt-4-turbo");
     assert_eq!(load_saved_model().as_deref(), Some("gpt-4-turbo"));
+    // 其余内容保留（重复写不产生多行 default_model）
+    let raw = std::fs::read_to_string(crate::models_cfg::model_yaml_path()).expect("model.yaml");
+    assert_eq!(raw.matches("default_model:").count(), 1);
 }
 
-/// config.toml 缺失或损坏时 load_saved_model 返回 None（回落默认模型）。
+/// model.yaml 缺失或损坏时 load_saved_model 返回 None（回落默认模型）。
 #[test]
 fn model_load_missing_or_corrupt() {
     let _h = crate::test_env::Home::new("model-load");
     assert_eq!(load_saved_model(), None);
-    let cfg_dir = tui_config_dir();
-    std::fs::create_dir_all(&cfg_dir).expect("create dir");
-    std::fs::write(cfg_dir.join("config.toml"), "not-valid-toml{{").expect("write");
+    let path = crate::models_cfg::model_yaml_path();
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create dir");
+    // 损坏内容：行级容错解析退回空结构 → 无 default_model
+    std::fs::write(&path, "\0\x01 not-valid-yaml{{{").expect("write");
     assert_eq!(load_saved_model(), None);
 }
 
-/// /model 命令：设置模型并持久化；空参显示（不修改）。
+/// /model 命令：设置模型并写回 model.yaml；空参显示（不修改）。
 #[test]
 fn cmd_model_set_and_query() {
     let _h = crate::test_env::Home::new("cmd-model");
@@ -75,49 +79,20 @@ fn cmd_model_set_and_query() {
     assert_eq!(app.model, "deepseek-v4-flash");
 }
 
-/// --resume 会话恢复：记忆库 user/assistant 记录还原到消息列表。
+/// --resume 会话恢复：记忆后端 user/assistant 记录还原到消息列表。
 #[test]
 fn resume_session_restores_history() {
-    let home = crate::test_env::Home::new("resume");
-    let mem_dir = home.path().join("tui");
-    std::fs::create_dir_all(&mem_dir).expect("create mem dir");
-    let recs = [
-        MemoryRecord {
-            role: "user".into(),
-            content: "上次的问题".into(),
-            timestamp: "2026-08-08T10:00:00".into(),
-            tags: "chat".into(),
-            reasoning: None,
-        },
-        MemoryRecord {
-            role: "assistant".into(),
-            content: "上次的回答".into(),
-            timestamp: "2026-08-08T10:00:01".into(),
-            tags: "chat".into(),
-            reasoning: None,
-        },
-        MemoryRecord {
-            role: "system".into(),
-            content: "不应恢复的系统消息".into(),
-            timestamp: "2026-08-08T10:00:02".into(),
-            tags: "chat".into(),
-            reasoning: None,
-        },
-    ];
-    let path = mem_dir.join("memory.jsonl");
-    let mut lines = String::new();
-    for r in &recs {
-        lines.push_str(&serde_json::to_string(r).expect("serialize"));
-        lines.push('\n');
-    }
-    std::fs::write(&path, lines).expect("write memory");
-
+    let _home = crate::test_env::Home::new("resume");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1")
         .expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
-    // App::new 默认 build_memory 指向 $AIRY_HOME 真实目录，此处显式注入
-    // 临时目录的 JsonlMemory，避免测试触碰用户数据并隔离验证恢复逻辑本身。
-    app.memory = Box::new(JsonlMemory::new(Some(&mem_dir)).expect("jsonl memory"));
+    // 显式注入纯内存镜像后端（volatile：不触网、不落盘），隔离验证恢复
+    // 逻辑本身——TUI 记忆统一走网关 mem.*，此处不依赖任何本地文件。
+    let mut mem = GatewayMemory::volatile();
+    mem.push("user", "上次的问题", "chat").expect("push");
+    mem.push("assistant", "上次的回答", "chat").expect("push");
+    mem.push("system", "不应恢复的系统消息", "chat").expect("push");
+    app.memory = Box::new(mem);
     let n = app.resume_session();
     // user + assistant 共 2 条恢复；system 跳过
     assert_eq!(n, 2);

@@ -46,7 +46,7 @@ tui/
 │   ├── gccp.rs              # 任务事实 / 流程确认对话框
 │   ├── markdown.rs          # Markdown 渲染
 │   ├── memory.rs            # 对话记忆
-│   ├── skills.rs            # 本地技能库
+│   ├── skills.rs            # 共享技能库（经网关 mem.*，kind=skill）
 │   ├── models_cfg.rs        # model.yaml 读写（模型表 + 思考系统段）
 │   ├── secrets.rs           # secrets.env 读写
 │   ├── paths.rs             # AIRY_HOME 路径解析单一来源

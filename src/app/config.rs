@@ -3,60 +3,35 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// TUI 本地配置：$AIRY_HOME 配置目录定位与当前模型名持久化（config.toml）。
+// TUI 当前模型读写：统一落到配置权威源 $AIRY_HOME/config/model.yaml 的顶层
+// `default_model:`（与 llm_d / think_d / gateway_d 同源，见 models_cfg）。
+// 0.1.16 架构改造移除 TUI 独占的 $AIRY_HOME/data/agentrt/tui/config.toml，
+// 当前模型不再单独持久化——它只是 model.yaml 的 default_model 的读写视图。
 
-/// 用户配置目录：$AIRY_HOME/data/agentrt/tui（AIRY_HOME 路径体系收敛，2026-08-19）
-pub(super) fn tui_config_dir() -> std::path::PathBuf {
-    crate::paths::airy_home_path(&["data", "agentrt", "tui"])
-}
-
-/// AIRY_HOME（用于展示 model.yaml 用户覆盖配置路径）
+/// AIRY_HOME（用于展示统一配置文件路径）
 pub(super) fn airy_home() -> String {
     crate::paths::airy_home().to_string_lossy().into_owned()
 }
 
-/// TUI 本地配置（config.toml）：目前持久化当前模型名。
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(super) struct TuiConfig {
-    model: String,
-    version: String,
-}
-
-pub(super) fn config_path() -> std::path::PathBuf {
-    tui_config_dir().join("config.toml")
-}
-
-/// 加载上次保存的模型名（config.toml 不存在或损坏时返回 None）。
+/// 加载当前模型名（model.yaml 的 default_model；缺省/为空时返回 None，
+/// 表示由网关 / llm_d 自动回落默认）。
 pub(super) fn load_saved_model() -> Option<String> {
-    let raw = std::fs::read_to_string(config_path()).ok()?;
-    let cfg: TuiConfig = toml::from_str(&raw).ok()?;
-    if cfg.model.is_empty() {
+    let m = crate::models_cfg::read_model_yaml();
+    if m.default_model.trim().is_empty() {
         None
     } else {
-        Some(cfg.model)
+        Some(m.default_model.trim().to_string())
     }
 }
 
-/// 持久化当前模型名到 config.toml（保留版本字段，未来可扩展）。
+/// 持久化当前模型名到 model.yaml 的 default_model（保留文件其余内容）。
 pub(super) fn persist_model(model: &str) {
-    let cfg = TuiConfig {
-        model: model.to_string(),
-        version: env!("AIRY_RT_VERSION").to_string(),
-    };
-    if let Some(parent) = config_path().parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::warn!("model config: create dir failed: {}", e);
-            return;
-        }
-    }
-    match toml::to_string(&cfg) {
-        Ok(s) => {
-            if let Err(e) = std::fs::write(config_path(), s) {
-                log::warn!("model config: persist failed: {}", e);
-            } else {
-                log::info!("model config saved to {}", config_path().display());
-            }
-        }
-        Err(e) => log::warn!("model config: serialize failed: {}", e),
+    match crate::models_cfg::set_default_model(model) {
+        Ok(()) => log::info!(
+            "model config: default_model → {}（{}）",
+            model.trim(),
+            crate::models_cfg::model_yaml_path().display()
+        ),
+        Err(e) => log::warn!("model config: {}", e),
     }
 }

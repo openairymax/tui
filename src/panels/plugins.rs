@@ -18,8 +18,8 @@ use crate::theme;
 
 /// Render the plugins panel.
 ///
-/// 实时渲染本地技能库（$AIRY_HOME/tui/skills.jsonl）：Agent 在任务中
-/// 自我沉淀的可复用技能，无需依赖网关 HTTP 端点。
+/// 实时渲染共享技能库（经网关记忆服务 mem.* 持久化，metadata.kind="skill"；
+/// 与 CLI 同一存储、同一 schema）：Agent 在任务中自我沉淀的可复用技能。
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -34,7 +34,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let text = vec![
             Line::from(Span::styled("  技能库为空", Style::default().fg(theme::dim()))),
             Line::from(Span::styled(
-                "  任务成功后经验会自动沉淀为可复用技能（$AIRY_HOME/tui/skills.jsonl）。",
+                "  任务成功后经验会自动沉淀为可复用技能（经网关 mem.* 与 CLI 共享）。",
                 Style::default().fg(theme::faint()),
             )),
         ];

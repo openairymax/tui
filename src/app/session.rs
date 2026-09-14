@@ -88,9 +88,11 @@ impl App {
         self.wizard.reopen();
     }
 
-    /// 应用首次启动向导的快速配置结果：模型名持久化（config.toml，随请求下发）。
+    /// 应用首次启动向导的快速配置结果：模型名写回 model.yaml 的 default_model
+    /// （统一配置权威源，随 agent.run 请求下发）。
     ///
-    /// API Key 已由向导写回 secrets.env（llm_d 热加载），此处仅记录日志。
+    /// API Key 与模型表已由向导直接写回 secrets.env / model.yaml（llm_d 热加载），
+    /// 此处仅同步当前会话模型并记录日志。
     pub fn apply_wizard_result(&mut self, r: &crate::wizard::WizardResult) {
         if !r.model.is_empty() {
             self.model = r.model.clone();
