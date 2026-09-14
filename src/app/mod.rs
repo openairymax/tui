@@ -180,7 +180,7 @@ pub struct App {
     pub gccp: GccpState,
     /// GCCP 两段式交互第一段挂起状态（P-A，None = 无挂起；见 GccpPending）
     pub gccp_pending: Option<GccpPending>,
-    /// Skills 本地技能库（任务成功后自动沉淀经验）
+    /// Skills 共享技能库（经网关 mem.*，与 CLI 同源；任务成功后自动沉淀经验）
     pub skills: Box<dyn SkillStore>,
     /// 首次启动向导（首次运行自动弹出；/hiairy 随时重开）
     pub wizard: wizard::WizardState,
@@ -378,6 +378,22 @@ pub struct GccpPending {
 
 impl App {
     pub fn new(agent_file: &str, gateway: GatewayClient) -> Self {
+        // 记忆后端需在 gateway move 进 Self 之前取一份 clone
+        // （TUI 记忆统一走网关 mem.*，与 CLI 同一后端）。
+        let memory_backend = memory::build_memory(&gateway);
+        log::info!(
+            "memory: backend={} {} records hydrated",
+            memory_backend.backend_name(),
+            memory_backend.len()
+        );
+        // 技能库同源：统一走网关 mem.*（metadata.kind="skill" 分区），
+        // 与 CLI 共享同一记忆后端；同样需在 gateway move 前进 Self 前构造。
+        let skills_backend = skills::build_skill_store(&gateway);
+        log::info!(
+            "skills: backend={} {} skills loaded",
+            skills_backend.backend_name(),
+            skills_backend.len()
+        );
         Self {
             agent_file: agent_file.to_string(),
             messages: VecDeque::with_capacity(MAX_CHAT_MESSAGES),
@@ -403,11 +419,7 @@ impl App {
             loading: false,
             status_message: "Press Enter to start".to_string(),
             task_mode: false,
-            memory: {
-                let m = memory::build_memory(None);
-                log::info!("memory: {} records loaded", m.len());
-                m
-            },
+            memory: memory_backend,
             ime_engine: {
                 let e = ImeEngine::load();
                 if e.is_none() {
@@ -424,11 +436,7 @@ impl App {
             flow_phase: FlowPhase::Chat,
             gccp: GccpState::default(),
             gccp_pending: None,
-            skills: {
-                let s = skills::build_skill_store(None);
-                log::info!("skills: {} skills loaded", s.len());
-                s
-            },
+            skills: skills_backend,
             wizard: wizard::WizardState::new(),
             pending: None,
             task_control: TaskControl::Running,

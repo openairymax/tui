@@ -218,7 +218,7 @@ fn esc_on_step1_skips_without_persist() {
     assert!(press(&mut w, KeyCode::Esc), "选项步 Esc 直接关闭向导");
     assert!(!w.active);
     assert!(w.result.is_none(), "跳过不产生结果");
-    assert!(persist::is_first_run(), "不写 wizard.toml，下次仍首启");
+    assert!(persist::is_first_run(), "跳过不落任何配置，下次仍首启");
 }
 
 #[test]

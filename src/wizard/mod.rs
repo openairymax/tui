@@ -14,17 +14,18 @@
 //   步骤 5/5：双思考系统（启用开关 + 慢/快/专业三个思考角色模型选择）
 //
 // 触发：
-//   - 首次运行（$AIRY_HOME/data/agentrt/tui/wizard.toml 不存在）自动弹出；
+//   - 模型尚未配置（无 $AIRY_HOME/config/model.yaml 或默认模型缺 Key）自动弹出；
 //   - 对话中输入 /hiairy 随时重开。
 //
-// 完成后的选择写回：
-//   - $AIRY_HOME/data/agentrt/tui/wizard.toml（lang + configured + 提供商/模型）
+// 完成后的选择写回（TUI 无独占配置文件，全部落统一配置面）：
 //   - $AIRY_HOME/config/secrets.env（MODEL_1_API_KEY，llm_d 热加载）
-//   - $AIRY_HOME/config/model.yaml（models[0] 行 + think 段，llm_d/think_d 热加载）
+//   - $AIRY_HOME/config/model.yaml（models[0] 行 + default_model + think 段，
+//     llm_d/think_d 热加载）
 //
 // 模块划分（Unify Design SSoT）：`steps` 步骤/字段注册表是唯一声明源，
 // `state` 状态机与 `view` 渲染都只按注册表 key 取值；`presets` 提供商预设、
-// `lang` 语言检测、`text` 显示宽度文本算法、`persist` 落盘各自独立。
+// `lang` 语言检测、`text` 显示宽度文本算法、`persist` 首启判定与 secrets 落盘
+// 各自独立。
 
 mod lang;
 mod persist;

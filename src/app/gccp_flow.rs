@@ -306,11 +306,11 @@ impl App {
         }
     }
 
-    /// 任务成功收尾：自动提炼经验 → 沉淀为本地技能 → 回到对话模式。
+    /// 任务成功收尾：自动提炼经验 → 沉淀为共享技能 → 回到对话模式。
     ///
-    /// 这是 Skills 本地技能库的核心闭环：任务成功后不"用过即忘"，
-    /// 而是将本次执行过程交给 LLM 提炼为可复用技能存入本地库，
-    /// 后续任务在 build_context_prompt 中召回匹配技能，Agent 越用越强。
+    /// 这是 Skills 共享技能库的核心闭环：任务成功后不"用过即忘"，
+    /// 而是将本次执行过程交给 LLM 提炼为可复用技能（经网关 mem.* 持久化，
+    /// 与 CLI 同源），后续任务在 build_context_prompt 中召回匹配技能，越用越强。
     pub(super) fn complete_task(&mut self) {
         log::info!("complete_task: 任务完成信号触发，开始经验蒸馏");
         // DAG 节点全部完成（P2-C 过程可视化收尾）
@@ -360,7 +360,7 @@ impl App {
                                 MessageRole::System,
                                 format!(
                                     "任务完成。经验已自动沉淀为可复用技能「{}」，\
-                                     本地技能库现有 {} 条（Agent 可用能力 +1）。",
+                                     共享技能库现有 {} 条（Agent 可用能力 +1，与 CLI 同源）。",
                                     skill.name,
                                     self.skills.len()
                                 ),

@@ -57,7 +57,8 @@ pub struct WizardState {
 }
 
 impl WizardState {
-    /// 新建：首次运行（wizard.toml 不存在）自动激活；字段值进入步骤时现取
+    /// 新建：模型尚未配置（model.yaml/secrets.env 判定，见 persist::is_first_run）
+    /// 时自动激活；字段值进入步骤时现取
     pub fn new() -> Self {
         let active = persist::is_first_run();
         if active {
@@ -499,8 +500,8 @@ impl WizardState {
         }
     }
 
-    /// 完成向导：跳过（仅写 wizard.toml）或快速配置（写回 secrets.env +
-    /// model.yaml + wizard.toml，llm_d/think_d 热加载）
+    /// 完成向导：跳过（不落任何配置，下次入场仍会引导）或快速配置（写回
+    /// 统一配置面 secrets.env + model.yaml，llm_d/think_d 热加载）。
     fn finish(&mut self, configured: bool) -> bool {
         self.normalize();
         let lang_code = self.effective_lang.code().to_string();
@@ -555,7 +556,6 @@ impl WizardState {
             if let Err(e) = models_cfg::patch_model_yaml(0, &row, &think) {
                 log::warn!("wizard: model.yaml 写回失败: {}", e);
             }
-            persist::persist(&lang_code, true, &provider, &model_id);
             self.result = Some(WizardResult {
                 configured: true,
                 model: model_id,
@@ -570,7 +570,6 @@ impl WizardState {
                 think_enabled
             );
         } else {
-            persist::persist(&lang_code, false, "", "");
             self.result = Some(WizardResult {
                 configured: false,
                 model: String::new(),

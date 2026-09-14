@@ -38,7 +38,7 @@ impl App {
             ctx.push_str("\n\n");
         }
 
-        // 技能上下文：召回本地技能库中沉淀的相关技能（越用越聪明）
+        // 技能上下文：召回共享技能库中沉淀的相关技能（越用越聪明，与 CLI 同源）
         let skill_hits = self.skills.find(input, 3);
         if !skill_hits.is_empty() {
             ctx.push_str("【可复用技能】\n");
@@ -54,8 +54,8 @@ impl App {
         // 记忆上下文：召回与本次输入相关的历史记忆
         let hits = self.memory.recall(input, 5);
         // 防自我回灌：统一过滤与当前输入相同的命中，避免"模型读到自己
-        // 刚收到的输入的记忆"的回声污染（与 JsonlMemory::recall 的排除
-        // 语义对齐的双保险）。
+        // 刚收到的输入的记忆"的回声污染（与 ConversationMemory::recall 的
+        // 排除语义对齐的双保险）。
         let hits: Vec<_> = hits
             .into_iter()
             .filter(|h| !h.content.trim().eq_ignore_ascii_case(input.trim()))

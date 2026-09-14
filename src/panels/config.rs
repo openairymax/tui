@@ -51,7 +51,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "  切换模型：/model <模型名>（持久化到 $AIRY_HOME/tui/config.toml）",
+            "  切换模型：/model <模型名>（写回 $AIRY_HOME/config/model.yaml 的 default_model）",
             Style::default().fg(theme::dim()),
         )),
         Line::from(Span::styled(

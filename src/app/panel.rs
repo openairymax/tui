@@ -168,7 +168,15 @@ impl App {
                 self.stop_hall_watch();
             }
             if panel == ActivePanel::Memory {
+                // 打开面板时从网关 mem.* 重新水合镜像（异步回投，不阻塞渲染）；
+                // 记忆唯一权威后端是 mem_d，TUI 仅持同步读缓存。
+                self.memory.refresh();
                 self.memory_view.reset();
+            }
+            if panel == ActivePanel::Plugins {
+                // 技能库与记忆同源（mem.* + kind=skill 分区）：打开面板时
+                // 重新水合，反映 CLI 侧或其它会话新沉淀的技能。
+                self.skills.refresh();
             }
         }
     }

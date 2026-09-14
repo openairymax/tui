@@ -6,9 +6,9 @@
 //! 单一事实来源：`$AIRY_HOME/config/model.yaml`（llm_d / think_d / gateway_d
 //! 共同读取）。本模块提供：
 //!   - 读：行级容错解析 `models:` 表（每行一个模型）与 `think:` 段；
-//!   - 写：就地 patch `models[idx]` 字段与 `think:` 段——仅替换/补插已知
-//!     键名所在行，保留注释、自定义键与其余模型行（不整文件重写，
-//!     避免丢失用户手写内容与格式）。
+//!   - 写：就地 patch `models[idx]` 字段、`think:` 段与顶层 `default_model:`
+//!     ——仅替换/补插已知键名所在行，保留注释、自定义键与其余模型行（不整
+//!     文件重写，避免丢失用户手写内容与格式）。
 //!
 //! 供 TUI 向导（wizard 模块）与配置面板（panels/config.rs）共用，保证两处
 //! 对 model.yaml 的读写口径一致（Unify Design SSoT）。
@@ -218,6 +218,58 @@ pub fn patch_model_yaml(idx: usize, row: &ModelRow, think: &ThinkCfg) -> Result<
             .map_err(|e| format!("创建配置目录失败: {}", e))?;
     }
     std::fs::write(&path, patched).map_err(|e| format!("写入 model.yaml 失败: {}", e))
+}
+
+/// 就地更新 model.yaml 顶层 `default_model:`（/model 切换当前对话模型）。
+///
+/// 保留文件其余内容与注释，仅改一行：无该键时插入到 `think:` 段之前
+/// （无 think 段则追加到文件末尾），YAML 顶层键解析不受影响。文件缺失时
+/// 生成仅含 default_model 的最小文件。
+pub fn set_default_model(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("模型名不能为空".to_string());
+    }
+    let path = model_yaml_path();
+    let original = std::fs::read_to_string(&path).unwrap_or_default();
+    let patched = patch_default_model(&original, name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {}", e))?;
+    }
+    std::fs::write(&path, patched).map_err(|e| format!("写入 model.yaml 失败: {}", e))
+}
+
+/// 行级替换/插入顶层 `default_model:`（见 `set_default_model`）。
+fn patch_default_model(original: &str, name: &str) -> String {
+    let mut lines: Vec<String> = if original.is_empty() {
+        vec!["# AgentRT 大语言模型配置（default_model 由 TUI /model 维护）".to_string()]
+    } else {
+        original.lines().map(|l| l.to_string()).collect()
+    };
+    let mut replaced = false;
+    let mut insert_at: Option<usize> = None;
+    for (i, l) in lines.iter().enumerate() {
+        let trimmed = l.trim_start();
+        if l.len() != trimmed.len() {
+            continue; // 仅顶层键（无缩进）
+        }
+        match split_kv(trimmed) {
+            Some(("default_model", _)) => {
+                lines[i] = format!("default_model: {}", name);
+                replaced = true;
+                break;
+            }
+            Some(("think", _)) if insert_at.is_none() => insert_at = Some(i),
+            _ => {}
+        }
+    }
+    if !replaced {
+        match insert_at {
+            Some(i) => lines.insert(i, format!("default_model: {}", name)),
+            None => lines.push(format!("default_model: {}", name)),
+        }
+    }
+    lines.join("\n") + "\n"
 }
 
 /// 行级 patch：替换/补插 models[idx] 字段与 think 段，保留其余内容。
@@ -536,5 +588,33 @@ think:
         assert!(out.contains("models:"));
         assert!(out.contains("mode: local"));
         assert!(out.contains("think2_slow_model: llama3"));
+    }
+
+    #[test]
+    fn set_default_model_replaces_and_preserves() {
+        let patched = patch_default_model(SAMPLE, "GLM-4.7-Flash");
+        assert!(patched.contains("default_model: GLM-4.7-Flash"));
+        assert!(!patched.contains("default_model: \"deepseek-v4-flash\""), "旧默认模型应被替换");
+        assert!(patched.contains("model_id: \"deepseek-v4-flash\""), "模型行本身不动");
+        assert!(patched.contains("# AgentRT 大语言模型配置文件"), "文件头注释保留");
+        assert!(patched.contains("think1_fast_model"), "think 段保留");
+        assert!(patched.contains("name: \"GLM\""), "其余模型行保留");
+    }
+
+    #[test]
+    fn set_default_model_inserts_when_absent() {
+        let src = "# header\nmodels:\n  - name: A\n    model_id: a\n\nthink:\n  enabled: true\n";
+        let patched = patch_default_model(src, "a");
+        let lines: Vec<&str> = patched.lines().collect();
+        let dm = lines.iter().position(|l| *l == "default_model: a").expect("插入 default_model");
+        let th = lines.iter().position(|l| *l == "think:").expect("think 段");
+        assert!(dm < th, "应插入到 think 段之前");
+    }
+
+    #[test]
+    fn set_default_model_creates_minimal_file() {
+        let patched = patch_default_model("", "gpt-4o");
+        assert!(patched.contains("default_model: gpt-4o"));
+        assert!(patched.ends_with('\n'));
     }
 }

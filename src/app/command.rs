@@ -10,8 +10,8 @@ use super::*;
 impl App {
     /// /model 命令：查看（无参数）或设置（/model <模型名>）当前模型。
     ///
-    /// 模型名持久化到 $AIRY_HOME/tui/config.toml，后续 agent.run 请求
-    /// 携带 model 字段；为空时由 gateway/llm_d 依次回落默认模型。
+    /// 模型名写回统一配置权威源 $AIRY_HOME/config/model.yaml 的 default_model，
+    /// 后续 agent.run 请求携带 model 字段；为空时由 gateway/llm_d 依次回落默认。
     pub(super) fn cmd_model(&mut self, input: &str) {
         let arg = input[6..].trim();
         if arg.is_empty() {
@@ -23,7 +23,8 @@ impl App {
             self.add_message(MessageRole::System, format!("当前模型：{}", cur));
             self.add_message(
                 MessageRole::System,
-                "设置模型：/model <模型名>（持久化到 $AIRY_HOME/tui/config.toml）".to_string(),
+                "设置模型：/model <模型名>（写回 $AIRY_HOME/config/model.yaml 的 default_model）"
+                    .to_string(),
             );
             self.add_message(
                 MessageRole::System,
@@ -36,7 +37,7 @@ impl App {
         self.add_log("INFO", format!("模型切换为 {}", self.model));
         self.add_message(
             MessageRole::System,
-            format!("模型已设置为：{}（已持久化）", self.model),
+            format!("模型已设置为：{}（已写回 model.yaml）", self.model),
         );
     }
 
@@ -133,17 +134,19 @@ impl App {
         self.add_log("INFO", "状态查询（/status）".to_string());
     }
 
-    /// /skills 命令：列出本地技能库（任务成功后自动沉淀的可复用技能）。
+    /// /skills 命令：列出共享技能库（任务成功后自动沉淀的可复用技能）。
     pub(super) fn cmd_skills(&mut self) {
         let list = self.skills.list();
         if list.is_empty() {
             self.add_message(
                 MessageRole::System,
-                "本地技能库为空：任务完成后经验会自动沉淀为可复用技能。".to_string(),
+                "共享技能库为空：任务完成后经验会自动沉淀为可复用技能\
+                 （经网关 mem.* 与 CLI 共享同一存储）。"
+                    .to_string(),
             );
             return;
         }
-        let mut text = format!("本地技能库（{} 条）", list.len());
+        let mut text = format!("共享技能库（{} 条，经网关 mem.* 与 CLI 共享）", list.len());
         for s in list.iter().take(12) {
             text.push_str(&format!(
                 "\n  ✓ {}（{} · 复用 {} 次）：{}",
