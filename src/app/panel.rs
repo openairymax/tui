@@ -8,24 +8,28 @@
 use super::*;
 
 impl App {
-    /// F6 看板光标下移（循环）。
+    /// F6 看板光标下移（循环）。上限与渲染窗口一致（只物化前 64 条，
+    /// 光标/选中/渲染三方必须共用同一基数，否则条目超窗后高亮与
+    /// Enter 详情错位——与 events 侧 cap 写法对齐）。
     pub fn board_cursor_down(&mut self) {
         let n = self.board_visible_count();
         if n == 0 {
             self.board_cursor = 0;
             return;
         }
-        self.board_cursor = (self.board_cursor + 1) % n;
+        let cap = n.min(crate::panels::board::MAX_BOARD_ROWS);
+        self.board_cursor = (self.board_cursor + 1) % cap;
     }
 
-    /// F6 看板光标上移（循环）。
+    /// F6 看板光标上移（循环）。上限与渲染窗口一致。
     pub fn board_cursor_up(&mut self) {
         let n = self.board_visible_count();
         if n == 0 {
             self.board_cursor = 0;
             return;
         }
-        self.board_cursor = (self.board_cursor + n - 1) % n;
+        let cap = n.min(crate::panels::board::MAX_BOARD_ROWS);
+        self.board_cursor = (self.board_cursor + cap - 1) % cap;
     }
 
     /// F6 看板状态过滤：空 = 全部；点按过滤后光标回零。
@@ -71,8 +75,13 @@ impl App {
         visible.sort_by_key(|e| {
             crate::panels::board::state_rank(if e.state.is_empty() { "unknown" } else { &e.state })
         });
+        // 选中窗口与渲染窗口同一上限：渲染只物化前 64 条，选中若在全量
+        // 上取模，条目超窗后 Enter 打开的是屏外条目（与光标 cap 同步）。
+        let cap = visible.len().min(crate::panels::board::MAX_BOARD_ROWS);
         visible
-            .get(self.board_cursor % visible.len().max(1))
+            .into_iter()
+            .take(cap)
+            .nth(self.board_cursor % cap.max(1))
             .map(|e| e.execution_id.clone())
             .unwrap_or_default()
     }
