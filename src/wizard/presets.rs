@@ -23,7 +23,7 @@ pub(crate) const PRESETS: &[Preset] = &[
         mode: "api",
         api_format: "openai",
         base_url: "https://api.deepseek.com",
-        models: &["deepseek-chat", "deepseek-reasoner"],
+        models: &["deepseek-flash"],
     },
     Preset {
         id: "openai",

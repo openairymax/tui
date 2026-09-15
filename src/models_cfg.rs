@@ -551,17 +551,17 @@ think:
             mode: "api".into(),
             api_format: "openai".into(),
             base_url: "https://api.deepseek.com".into(),
-            model_id: "deepseek-chat".into(),
+            model_id: "deepseek-flash".into(),
             api_key_env: "MODEL_1_API_KEY".into(),
             ..Default::default()
         };
         let think = ThinkCfg {
             enabled: Some(false),
-            slow_model: "deepseek-chat".into(),
+            slow_model: "deepseek-flash".into(),
             ..Default::default()
         };
         let patched = patch_lines(SAMPLE, 0, &row, &think);
-        assert!(patched.contains("model_id: deepseek-chat"));
+        assert!(patched.contains("model_id: deepseek-flash"));
         assert!(patched.contains("GLM-4.7-Flash"), "第二行模型必须保留");
         assert!(patched.contains("# AgentRT 大语言模型配置文件"));
         assert!(patched.contains("enabled: false"), "think enabled 应更新");
