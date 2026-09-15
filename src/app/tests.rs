@@ -41,8 +41,8 @@ fn render_tool_event_parses_sse_json() {
 #[test]
 fn model_persist_roundtrip() {
     let _h = crate::test_env::Home::new("model-persist");
-    persist_model("deepseek-v4-flash");
-    assert_eq!(load_saved_model().as_deref(), Some("deepseek-v4-flash"));
+    persist_model("deepseek-flash");
+    assert_eq!(load_saved_model().as_deref(), Some("deepseek-flash"));
     // 再次切换覆盖
     persist_model("gpt-4-turbo");
     assert_eq!(load_saved_model().as_deref(), Some("gpt-4-turbo"));
@@ -71,12 +71,12 @@ fn cmd_model_set_and_query() {
         .expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
     assert!(app.model.is_empty());
-    app.cmd_model("/model deepseek-v4-flash");
-    assert_eq!(app.model, "deepseek-v4-flash");
-    assert_eq!(load_saved_model().as_deref(), Some("deepseek-v4-flash"));
+    app.cmd_model("/model deepseek-flash");
+    assert_eq!(app.model, "deepseek-flash");
+    assert_eq!(load_saved_model().as_deref(), Some("deepseek-flash"));
     app.cmd_model("/model");
     // 查询不改变当前模型
-    assert_eq!(app.model, "deepseek-v4-flash");
+    assert_eq!(app.model, "deepseek-flash");
 }
 
 /// --resume 会话恢复：记忆后端 user/assistant 记录还原到消息列表。

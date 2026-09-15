@@ -118,7 +118,7 @@ fn untouched_finish_fills_preset() {
     let m = models_cfg::read_model_yaml();
     let row = m.rows.first().expect("应写入模型行");
     assert_eq!(row.base_url, "https://api.deepseek.com", "空白字段预设补全");
-    assert_eq!(row.model_id, "deepseek-chat");
+    assert_eq!(row.model_id, "deepseek-flash");
     assert_eq!(row.name, "DeepSeek");
 }
 

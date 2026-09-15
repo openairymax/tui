@@ -115,7 +115,7 @@ mod tests {
         std::fs::write(dir.join("model.yaml"), body).expect("写 model.yaml");
     }
 
-    const API_ROW: &str = "models:\n  - name: DeepSeek\n    mode: api\n    api_format: openai\n    base_url: https://api.deepseek.com\n    model_id: deepseek-chat\n    api_key_env: MODEL_1_API_KEY\ndefault_model: deepseek-chat\n";
+    const API_ROW: &str = "models:\n  - name: DeepSeek\n    mode: api\n    api_format: openai\n    base_url: https://api.deepseek.com\n    model_id: deepseek-flash\n    api_key_env: MODEL_1_API_KEY\ndefault_model: deepseek-flash\n";
 
     #[test]
     fn first_run_when_model_yaml_missing() {
