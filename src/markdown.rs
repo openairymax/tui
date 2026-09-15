@@ -9,9 +9,10 @@
 // crate——terminal 渲染需要显示宽度对齐（中文全角），通用库难以满足。
 // 支持：
 //   - 代码块（``` / ```lang，含语言徽章）
+//   - 画板块（```plot：title/xs/ys → braille 点阵函数曲线，0.1.17）
 //   - 表格（| a | b |，含分隔行对齐，P2-A 核心）
 //   - 标题（# ~ ######）
-//   - 列表（- / * / + / 1.，支持嵌套缩进）
+//   - 列表（- / * / + / 1.，支持嵌套缩进；任务列表 [ ]/[x]，0.1.17）
 //   - 引用（> 行，左边框线）
 //   - 行内样式：**粗体** / `行内代码`
 // 其余内容降级为纯文本（绝不出错，绝不截断语义）。
@@ -35,6 +36,9 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
     let mut code_lang: String = String::new();
+    // plot 画板块缓冲：```plot fence 内的 title/xs/ys 数据行
+    let mut in_plot = false;
+    let mut plot_lines: Vec<String> = Vec::new();
     // 表格块缓冲：连续以 | 开头的行（表头+分隔+数据）收集后统一对齐渲染
     let mut table: Vec<String> = Vec::new();
     // 段落缓冲：连续普通文本行（软换行）合并为一段
@@ -79,23 +83,40 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
                 in_code = false;
                 code_lang.clear();
                 out.push(Line::raw(""));
+            } else if in_plot {
+                // 闭合 plot 块 → braille 画板渲染
+                in_plot = false;
+                out.extend(render_plot(&plot_lines, indent, width, base));
+                plot_lines.clear();
+                out.push(Line::raw(""));
             } else {
-                // 开启 fence（```lang 显示语言徽章）
-                in_code = true;
-                code_lang = trimmed.trim_matches('`').trim().to_string();
-                if !code_lang.is_empty() {
-                    out.push(Line::from(vec![
-                        Span::styled(" ".repeat(indent), Style::default()),
-                        Span::styled(
-                            format!("  {}  ", code_lang),
-                            Style::default()
-                                .fg(theme::accent())
-                                .bg(theme::surface_active())
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
+                // 开启 fence：```plot 进入画板模式，其余显示语言徽章
+                let lang = trimmed.trim_matches('`').trim().to_string();
+                if lang == "plot" {
+                    in_plot = true;
+                    plot_lines.clear();
+                } else {
+                    in_code = true;
+                    code_lang = lang;
+                    if !code_lang.is_empty() {
+                        out.push(Line::from(vec![
+                            Span::styled(" ".repeat(indent), Style::default()),
+                            Span::styled(
+                                format!("  {}  ", code_lang),
+                                Style::default()
+                                    .fg(theme::accent())
+                                    .bg(theme::surface_active())
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]));
+                    }
                 }
             }
+            continue;
+        }
+        // ── plot 块内：收集数据行（title/xs/ys），闭合时统一渲染 ──
+        if in_plot {
+            plot_lines.push(trimmed.to_string());
             continue;
         }
         // ── 代码块内：原样（等宽底色） ──
@@ -158,6 +179,32 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
         // ── 列表（- / * / + / 1. 及嵌套缩进） ──
         if let Some((mark, body)) = list_item(trimmed) {
             flush_para(&mut out, &mut para);
+            // 任务列表（[ ] / [x]）：○ 待办 / ● 已完成（弱化+删除线）
+            if let Some((done, rest)) = task_item(body) {
+                let sym = if done { "●" } else { "○" };
+                let sym_style = if done {
+                    base.fg(theme::accent())
+                } else {
+                    base.fg(theme::dim())
+                };
+                let body_style = if done {
+                    base.fg(theme::faint()).add_modifier(Modifier::CROSSED_OUT)
+                } else {
+                    base
+                };
+                let body_indent = indent + mark.width() + 2;
+                for piece in wrap_line(rest, width.saturating_sub(body_indent).max(8)) {
+                    out.push(Line::from(vec![
+                        Span::styled(
+                            format!("{0:width$}{1} ", "", mark, width = indent),
+                            Style::default(),
+                        ),
+                        Span::styled(format!("{sym} "), sym_style),
+                        Span::styled(piece, body_style),
+                    ]));
+                }
+                continue;
+            }
             // 列表正文的缩进 = 整体缩进 + 符号宽度（"• " 与 "12. " 对齐）
             let body_indent = indent + mark.width() + 2;
             let content_width = width.saturating_sub(body_indent).max(8);
@@ -199,9 +246,12 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
             para.push(trimmed.to_string());
         }
     }
-    // 收尾：清空残留段落与表格块
+    // 收尾：清空残留段落、表格块与未闭合的 plot 块
     flush_para(&mut out, &mut para);
     push_table(&mut out, &mut table);
+    if in_plot {
+        out.extend(render_plot(&plot_lines, indent, width, base));
+    }
     out
 }
 
@@ -258,6 +308,177 @@ fn list_item(s: &str) -> Option<(String, &str)> {
         }
         _ => None,
     }
+}
+
+/// 识别任务列表体：返回 (是否完成, 剩余文本)。支持 [ ] / [x] / [X]。
+fn task_item(body: &str) -> Option<(bool, &str)> {
+    let b = body.as_bytes();
+    if b.len() < 3 || b[0] != b'[' || b[2] != b']' {
+        return None;
+    }
+    let done = match b[1] {
+        b' ' => false,
+        b'x' | b'X' => true,
+        _ => return None,
+    };
+    let rest = body[3..].strip_prefix(' ').unwrap_or(&body[3..]);
+    Some((done, rest))
+}
+
+/// braille 点阵写入：一个 braille 字符 = 2 像素列 × 4 像素行，点位按
+/// Unicode braille 标准位序（U+2800 基址）。
+fn braille_set(grid: &mut [u8], cols: usize, rows: usize, px: usize, py: usize) {
+    let cx = px / 2;
+    let cy = py / 4;
+    if cx >= cols || cy >= rows {
+        return;
+    }
+    let bit = match (px % 2, py % 4) {
+        (0, 0) => 0x01,
+        (0, 1) => 0x02,
+        (0, 2) => 0x04,
+        (0, 3) => 0x40,
+        (1, 0) => 0x08,
+        (1, 1) => 0x10,
+        (1, 2) => 0x20,
+        _ => 0x80,
+    };
+    grid[cy * cols + cx] |= bit;
+}
+
+/// 整数 Bresenham 连线（相邻采样点之间补插值，保证曲线连续）。
+fn braille_line(grid: &mut [u8], cols: usize, rows: usize, x0: i64, y0: i64, x1: i64, y1: i64) {
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x1 >= x0 { 1 } else { -1 };
+    let sy = if y1 >= y0 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let (mut x, mut y) = (x0, y0);
+    loop {
+        if x >= 0 && y >= 0 {
+            braille_set(grid, cols, rows, x as usize, y as usize);
+        }
+        if x == x1 && y == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+/// 渲染 ```plot 画板块：解析 tool 输出（title/xs/ys），以 braille 点阵
+/// 绘制 y=f(x) 曲线（null 断线）。解析失败降级为代码块原样输出（绝不
+/// 出错，绝不截断语义）。
+fn render_plot(rows: &[String], indent: usize, width: usize, base: Style) -> Vec<Line<'static>> {
+    let mut title = String::new();
+    let mut xs: Vec<f64> = Vec::new();
+    let mut ys: Vec<Option<f64>> = Vec::new();
+    for line in rows {
+        if let Some(v) = line.strip_prefix("title:") {
+            title = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("xs:") {
+            xs = v
+                .split(',')
+                .filter_map(|t| t.trim().parse::<f64>().ok())
+                .collect();
+        } else if let Some(v) = line.strip_prefix("ys:") {
+            ys = v.split(',').map(|t| t.trim().parse::<f64>().ok()).collect();
+        }
+    }
+    // 解析失败/数据不足 → 降级为代码块原样（保持信息不丢失）
+    if xs.len() < 2 || ys.len() != xs.len() {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        for line in rows {
+            out.push(Line::from(vec![
+                Span::styled(" ".repeat(indent + 1), Style::default()),
+                Span::styled(line.clone(), base.bg(theme::surface())),
+            ]));
+        }
+        return out;
+    }
+
+    // 画布尺寸：8 行 braille（32 像素行）× 可用宽度（braille 每字符 2 像素列）
+    let canvas_rows = 8usize;
+    let avail = width.saturating_sub(indent + 2).max(16);
+    let canvas_cols = avail.min(60);
+    let pw = canvas_cols * 2;
+    let ph = canvas_rows * 4;
+    let mut grid = vec![0u8; canvas_rows * canvas_cols];
+
+    // y 域：忽略 null 与非有限值；退化区间（水平线）扩为 [-1,1]
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+    for v in ys.iter().flatten() {
+        if v.is_finite() {
+            y_min = y_min.min(*v);
+            y_max = y_max.max(*v);
+        }
+    }
+    if !y_min.is_finite() || !y_max.is_finite() {
+        y_min = -1.0;
+        y_max = 1.0;
+    }
+    if (y_max - y_min).abs() < 1e-12 {
+        y_min -= 1.0;
+        y_max += 1.0;
+    }
+
+    // 相邻有效采样点连线（null 断线）
+    let n = xs.len();
+    let to_px = |i: usize, y: f64| -> (i64, i64) {
+        let fx = i as f64 * (pw - 1) as f64 / (n - 1) as f64;
+        let fy = (y_max - y) / (y_max - y_min) * (ph - 1) as f64;
+        (fx.round() as i64, fy.round() as i64)
+    };
+    let mut prev: Option<(i64, i64)> = None;
+    for (i, y) in ys.iter().enumerate().take(n) {
+        let cur = y.filter(|v| v.is_finite()).map(|v| to_px(i, v));
+        if let Some((cx, cy)) = cur {
+            if let Some((px0, py0)) = prev {
+                braille_line(&mut grid, canvas_cols, canvas_rows, px0, py0, cx, cy);
+            } else {
+                braille_set(&mut grid, canvas_cols, canvas_rows, cx.max(0) as usize, cy.max(0) as usize);
+            }
+        }
+        prev = cur;
+    }
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    if !title.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled(" ".repeat(indent + 2), Style::default()),
+            Span::styled(
+                title,
+                base.fg(theme::accent()).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+    for r in 0..canvas_rows {
+        let s: String = grid[r * canvas_cols..(r + 1) * canvas_cols]
+            .iter()
+            .map(|b| char::from_u32(0x2800 + *b as u32).unwrap_or(' '))
+            .collect();
+        out.push(Line::from(vec![
+            Span::styled(" ".repeat(indent + 2), Style::default()),
+            Span::styled(s, base.fg(theme::primary())),
+        ]));
+    }
+    // x 轴域标注（dim 色，提示可读的采样区间）
+    out.push(Line::from(vec![
+        Span::styled(" ".repeat(indent + 2), Style::default()),
+        Span::styled(
+            format!("x: {} … {}", xs[0], xs[n - 1]),
+            base.fg(theme::dim()),
+        ),
+    ]));
+    out
 }
 
 /// 行内样式：**粗体** / `行内代码` / [链接](url) / ~~删除线~~（其余原样）。
@@ -628,5 +849,150 @@ mod tests {
     fn wrap_line_mixed_widths() {
         // "a你好b" = 1+2+2+1 = 6 列，宽度 4 → "a你"（3 列）+ "好b"（3 列）
         assert_eq!(wrap_line("a你好b", 4), vec!["a你", "好b"]);
+    }
+
+    #[test]
+    fn task_item_detection() {
+        assert_eq!(task_item("[ ] 待办"), Some((false, "待办")));
+        assert_eq!(task_item("[x] 完成"), Some((true, "完成")));
+        assert_eq!(task_item("[X] 大写"), Some((true, "大写")));
+        // 缩进体已由 list_item trim，无空格分隔也应识别
+        assert_eq!(task_item("[x]无空格"), Some((true, "无空格")));
+        assert_eq!(task_item("普通文本"), None);
+        assert_eq!(task_item("[y] 非法"), None);
+        assert_eq!(task_item("[ 缺右括号"), None);
+    }
+
+    #[test]
+    fn braille_set_bit_layout() {
+        // 2 像素列 × 4 像素行 = 8 个点，逐点校验位序
+        let cases: [(usize, usize, u8); 8] = [
+            (0, 0, 0x01),
+            (0, 1, 0x02),
+            (0, 2, 0x04),
+            (0, 3, 0x40),
+            (1, 0, 0x08),
+            (1, 1, 0x10),
+            (1, 2, 0x20),
+            (1, 3, 0x80),
+        ];
+        for (px, py, bit) in cases {
+            let mut grid = [0u8; 1];
+            braille_set(&mut grid, 1, 1, px, py);
+            assert_eq!(grid[0], bit, "pixel ({px},{py})");
+        }
+        // 越界写入静默忽略
+        let mut grid = [0u8; 1];
+        braille_set(&mut grid, 1, 1, 2, 0);
+        braille_set(&mut grid, 1, 1, 0, 4);
+        assert_eq!(grid[0], 0);
+    }
+
+    #[test]
+    fn render_plot_draws_braille_canvas() {
+        let rows = vec![
+            "title: sin(x)".to_string(),
+            "xs: 0,1,2,3,4,5,6".to_string(),
+            "ys: 0,1,0,-1,0,1,0".to_string(),
+        ];
+        let lines = render_plot(&rows, 0, 80, Style::default());
+        let joined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // 标题行 + 8 行画布 + x 域标注 = 10 行
+        assert_eq!(lines.len(), 10);
+        assert!(joined.contains("sin(x)"));
+        assert!(joined.contains("x: 0 … 6"));
+        // 画布行应含 braille 字符（U+2800..=U+28FF）
+        let has_braille = lines[1..9].iter().any(|l| {
+            l.to_string()
+                .chars()
+                .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
+        });
+        assert!(has_braille, "canvas should contain braille dots");
+    }
+
+    #[test]
+    fn render_plot_degrades_on_malformed_input() {
+        let rows = vec!["title: bad".to_string(), "xs: 1".to_string()];
+        let lines = render_plot(&rows, 0, 60, Style::default());
+        // 数据不足 → 原样降级为代码块文本
+        assert_eq!(lines.len(), 2);
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(joined.contains("title: bad"));
+        assert!(joined.contains("xs: 1"));
+    }
+
+    #[test]
+    fn render_plot_null_breaks_line() {
+        // ys 含 null：null 断线，渲染不 panic 且正常产出画布
+        let rows = vec![
+            "title: gapped".to_string(),
+            "xs: 0,1,2,3".to_string(),
+            "ys: 1,null,2,null".to_string(),
+        ];
+        let lines = render_plot(&rows, 0, 80, Style::default());
+        assert_eq!(lines.len(), 10);
+    }
+
+    #[test]
+    fn render_plot_degenerate_y_domain() {
+        // 水平线（y 全相等）→ y 域扩为 [-1,1]，不 panic
+        let rows = vec![
+            "title: flat".to_string(),
+            "xs: 0,1,2,3,4".to_string(),
+            "ys: 2,2,2,2,2".to_string(),
+        ];
+        let lines = render_plot(&rows, 0, 80, Style::default());
+        assert_eq!(lines.len(), 10);
+    }
+
+    #[test]
+    fn render_renders_plot_fence() {
+        let md = "```plot\ntitle: f(x)=x\nxs: 0,1,2\nys: 0,1,2\n```";
+        let lines = render(md, 0, 80, Style::default());
+        let joined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("f(x)=x"));
+        assert!(joined.contains("x: 0 … 2"));
+    }
+
+    #[test]
+    fn render_renders_task_list() {
+        let md = "- [ ] 安装依赖\n- [x] 构建核心\n- 普通项";
+        let lines = render(md, 0, 60, Style::default());
+        let joined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains('○'), "pending task symbol");
+        assert!(joined.contains('●'), "done task symbol");
+        assert!(joined.contains("•"), "plain bullet");
+        assert!(joined.contains("构建核心"));
+    }
+
+    #[test]
+    fn render_ignores_plot_like_content_outside_fence() {
+        // plot 关键字出现在普通文本中不应触发画板模式
+        let md = "plot is a word\ntitle: not a plot\nxs: 1,2\nys: 1,2";
+        let lines = render(md, 0, 60, Style::default());
+        let joined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("not a plot"));
+        // 未进画板模式 → 无 braille 画布输出
+        assert!(
+            !joined
+                .chars()
+                .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c) && c != ' ')
+        );
     }
 }
