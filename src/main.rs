@@ -546,6 +546,9 @@ async fn run_app<B: Backend>(
                     if app.active_panel != ActivePanel::Chat => {
                         debug!("Panel: Esc → return to Chat");
                         app.active_panel = ActivePanel::Chat;
+                        // 与 toggle_panel 同源：离开 Board/Events 必须停 SSE，
+                        // 否则订阅泄漏，后台持续收流（空闲态 Esc 路径）。
+                        app.stop_hall_watch();
                     }
                 // IME 拼音态：Esc 取消拼音（微信语义：清空缓冲，放弃组合）
                 KeyCode::Esc if app.ime_visible() => {
@@ -754,6 +757,8 @@ async fn run_app<B: Backend>(
                                         // 在只读面板/看板上也能 Esc 退出，不困在面板里）
                                         KeyCode::Esc => {
                                             app.active_panel = ActivePanel::Chat;
+                                            // busy 态同样必须停 SSE（订阅泄漏同源修复）
+                                            app.stop_hall_watch();
                                         }
                                         // ── 插入对话（2.3.7）：任务执行中输入文本 ──
                                         // 只读面板（Help/Config/Logs/Memory/Plugins）：
