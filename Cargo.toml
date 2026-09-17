@@ -24,6 +24,10 @@ default = []
 ime = []
 
 [dependencies]
+# 协议客户端归一（0.1.17 §3.5 G3）：TUI 不再自带网关协议客户端与 wire 常量，
+# 统一消费 agentrt-rs 的 client/run_stream 抽象，杜绝第三份 wire 字面量。
+agentrt-rs = { path = "../sdk-rust" }
+
 # TUI framework
 ratatui = "0.28"
 crossterm = "0.28"
