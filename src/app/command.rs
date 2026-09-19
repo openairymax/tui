@@ -90,21 +90,14 @@ impl App {
             }
             Err(e) => {
                 self.add_log("ERROR", format!("写入 secrets.env 失败：{}", e));
-                self.add_message(
-                    MessageRole::System,
-                    format!("写入 secrets.env 失败：{}", e),
-                );
+                self.add_message(MessageRole::System, format!("写入 secrets.env 失败：{}", e));
             }
         }
     }
 
     /// /status 命令：展示运行时状态总览（连接/版本/模型/用量/记忆/技能）。
     pub(super) fn cmd_status(&mut self) {
-        let conn = if self.connected {
-            "ONLINE"
-        } else {
-            "OFFLINE"
-        };
+        let conn = if self.connected { "ONLINE" } else { "OFFLINE" };
         let model = if self.model.is_empty() {
             "默认（网关 / llm_d 自动回落）".to_string()
         } else {
@@ -166,10 +159,7 @@ impl App {
     pub(super) fn cmd_chain(&mut self, input: &str) {
         let arg = input[6..].trim().to_string();
         if self.chain_pending.is_some() {
-            self.add_message(
-                MessageRole::System,
-                "决策链查询进行中，请稍候…".to_string(),
-            );
+            self.add_message(MessageRole::System, "决策链查询进行中，请稍候…".to_string());
             return;
         }
         let gw = self.gateway.clone();
@@ -199,10 +189,7 @@ impl App {
     /// 结果异步返回：先给"检查中"提示，poll_ops 消费后渲染进对话区。
     pub(super) fn cmd_daemons(&mut self) {
         if self.ops_pending.is_some() {
-            self.add_message(
-                MessageRole::System,
-                "运维命令执行中，请稍候…".to_string(),
-            );
+            self.add_message(MessageRole::System, "运维命令执行中，请稍候…".to_string());
             return;
         }
         self.ops_label = "daemons".to_string();
@@ -225,17 +212,11 @@ impl App {
     /// 通用运维方法调用（/agents /tools /models /mem /rpc 共用）。
     pub(super) fn cmd_ops_call(&mut self, method: &str, params: serde_json::Value) {
         if self.ops_pending.is_some() {
-            self.add_message(
-                MessageRole::System,
-                "运维命令执行中，请稍候…".to_string(),
-            );
+            self.add_message(MessageRole::System, "运维命令执行中，请稍候…".to_string());
             return;
         }
         self.ops_label = method.to_string();
-        self.add_message(
-            MessageRole::System,
-            format!("正在调用 {} …", method),
-        );
+        self.add_message(MessageRole::System, format!("正在调用 {} …", method));
         let method_owned = method.to_string();
         let gw = self.gateway.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -269,8 +250,7 @@ impl App {
         let params_val = if params.is_empty() {
             serde_json::json!({})
         } else {
-            serde_json::from_str(&params)
-                .unwrap_or_else(|_| serde_json::json!({ "raw": params }))
+            serde_json::from_str(&params).unwrap_or_else(|_| serde_json::json!({ "raw": params }))
         };
         self.cmd_ops_call(&method, params_val);
     }

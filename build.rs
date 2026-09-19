@@ -49,9 +49,9 @@ fn main() {
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .or_else(|| {
-            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
-                "../../agentrt/VERSION",
-            ))
+            std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../agentrt/VERSION"),
+            )
             .ok()
         })
         .map(|s| s.trim().to_string())

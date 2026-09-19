@@ -98,7 +98,9 @@ mod tests {
         assert_eq!(airy_home(), PathBuf::from(DEFAULT_DIR_NAME));
         assert_eq!(
             airy_home_path(&["bin", "gateway_d"]),
-            PathBuf::from(DEFAULT_DIR_NAME).join("bin").join("gateway_d")
+            PathBuf::from(DEFAULT_DIR_NAME)
+                .join("bin")
+                .join("gateway_d")
         );
         match saved_home {
             Some(v) => std::env::set_var("AIRY_HOME", v),
@@ -117,7 +119,10 @@ mod tests {
         let saved_user_home = std::env::var("HOME").ok();
         std::env::set_var("AIRY_HOME", "");
         std::env::set_var("HOME", "/tmp/airy-empty-home");
-        assert_eq!(airy_home(), PathBuf::from("/tmp/airy-empty-home/.airymaxrt"));
+        assert_eq!(
+            airy_home(),
+            PathBuf::from("/tmp/airy-empty-home/.airymaxrt")
+        );
         match saved_home {
             Some(v) => std::env::set_var("AIRY_HOME", v),
             None => std::env::remove_var("AIRY_HOME"),

@@ -72,7 +72,15 @@ impl App {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let r = gateway
-                .send_message(&prompt, &agent_file, model.as_deref(), Some(&sid_for_task), agent, history, gccp_answers.as_deref())
+                .send_message(
+                    &prompt,
+                    &agent_file,
+                    model.as_deref(),
+                    Some(&sid_for_task),
+                    agent,
+                    history,
+                    gccp_answers.as_deref(),
+                )
                 .await;
             let _ = tx.send(PendingOutcome::Run(r));
         });
@@ -82,7 +90,7 @@ impl App {
             prompt_len,
             kind
         );
-        self.loading = true;
+        self.begin_busy();
         self.set_task_control(TaskControl::Running);
         self.pending = Some(PendingTurn {
             rx,
@@ -91,8 +99,6 @@ impl App {
             session_id,
             stream_rx: None,
             tool_rx: None,
-            streamed: false,
-            finish: None,
         });
     }
 
@@ -116,7 +122,11 @@ impl App {
         // prompt：末条 user 消息文本（chat_round 构造的增强 prompt）
         let prompt = messages
             .as_array()
-            .and_then(|a| a.iter().rev().find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user")))
+            .and_then(|a| {
+                a.iter()
+                    .rev()
+                    .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+            })
             .and_then(|m| m.get("content").and_then(|c| c.as_str()))
             .unwrap_or("")
             .to_string();
@@ -146,8 +156,11 @@ impl App {
                 .await;
             let _ = tx.send(PendingOutcome::Run(result));
         });
-        log::info!("start_stream_pending: 流式请求已发起（session={}）", session_id);
-        self.loading = true;
+        log::info!(
+            "start_stream_pending: 流式请求已发起（session={}）",
+            session_id
+        );
+        self.begin_busy();
         self.set_task_control(TaskControl::Running);
         self.pending = Some(PendingTurn {
             rx,
@@ -156,16 +169,15 @@ impl App {
             session_id,
             stream_rx: Some(stream_rx),
             tool_rx: Some(tool_rx),
-            streamed: true,
-            finish: None,
         });
         // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
         self.streaming_text.clear();
         self.streaming_reveal = 0;
+        self.stream_sanitizer.reset();
         self.stream_reasoning.clear();
         self.stream_reasoning_model.clear();
         self.stream_reasoning_start = None;
-        self.pending_reasoning = None;
+        self.last_reasoning = None;
         self.last_reveal_tick = Instant::now();
         self.stream_tool_events.clear();
     }
@@ -179,7 +191,10 @@ impl App {
         history: Option<serde_json::Value>,
         gccp_answers: Option<String>,
     ) {
-        log::debug!("start_connect_then: 未连接，先做健康检查后继续（kind={:?}）", kind);
+        log::debug!(
+            "start_connect_then: 未连接，先做健康检查后继续（kind={:?}）",
+            kind
+        );
         let gateway = self.gateway.clone();
         let prompt = prompt.to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -190,7 +205,7 @@ impl App {
             };
             let _ = tx.send(PendingOutcome::Connect(ok));
         });
-        self.loading = true;
+        self.begin_busy();
         self.set_task_control(TaskControl::Running);
         self.pending = Some(PendingTurn {
             rx,
@@ -205,8 +220,6 @@ impl App {
             session_id: String::new(),
             stream_rx: None,
             tool_rx: None,
-            streamed: false,
-            finish: None,
         });
     }
 
@@ -262,7 +275,7 @@ impl App {
             session_id,
             kind
         );
-        self.loading = true;
+        self.begin_busy();
         self.set_task_control(TaskControl::Running);
         self.pending = Some(PendingTurn {
             rx,
@@ -271,62 +284,75 @@ impl App {
             session_id,
             stream_rx: Some(stream_rx),
             tool_rx: Some(tool_rx),
-            streamed: true,
-            finish: None,
         });
-        // 占位清场：打字机/思考链/工具行本轮从零开始
+        // 占位清场：打字机/思考链/工具行本轮从零开始（B3：净化器状态同步复位）
         self.streaming_text.clear();
         self.streaming_reveal = 0;
+        self.stream_sanitizer.reset();
         self.stream_reasoning.clear();
         self.stream_reasoning_model.clear();
         self.stream_reasoning_start = None;
-        self.pending_reasoning = None;
+        self.last_reasoning = None;
         self.stream_tool_events.clear();
         self.stream_error = None;
     }
 
-    /// 动作短语映射（与 C 版 airy_cli cli_tool_action 对齐）：对话只展示
-    /// "正在做什么"，不暴露工具参数与返回内容；未知工具保留原名。
+    /// 动作短语白名单（与 C 版 airy_cli cli_tool_action 对齐）：对话只展示
+    /// "正在做什么"，不暴露工具参数与返回内容。0.1.18 B3（V3.4）：白名单
+    /// 是唯一事实源——未登记标识符禁止越过渲染边界进入用户面，一律显示
+    /// "未知工具（已隐藏）"并记日志。
+    const TOOL_ACTIONS: &[(&str, &str)] = &[
+        ("web_search", "搜索网络"),
+        ("web_fetch", "抓取网页"),
+        ("fs_read", "读取文件"),
+        ("fs_write", "写入文件"),
+        ("fs_list", "列出目录"),
+        ("fs_ls", "列出目录"),
+        ("fs_info", "查看文件信息"),
+        ("fs_mkdir", "创建目录"),
+        ("fs_rm", "删除文件"),
+        ("agent.spawn", "派生智能体"),
+        ("agent.invoke", "调用智能体"),
+        ("think.depth", "深度思考"),
+        ("memory.get", "读取记忆"),
+        ("memory.put", "写入记忆"),
+    ];
+
+    /// 工具名是否在用户面白名单内（block.rs 角色标签兜底共用同一事实源）。
+    pub(crate) fn tool_known(tool: &str) -> bool {
+        Self::TOOL_ACTIONS.iter().any(|(n, _)| *n == tool)
+    }
+
     pub(super) fn tool_action(tool: &str) -> String {
-        let action = match tool {
-            "web_search" => "搜索网络",
-            "web_fetch" => "抓取网页",
-            "fs_read" => "读取文件",
-            "fs_write" => "写入文件",
-            "fs_list" | "fs_ls" => "列出目录",
-            "fs_info" => "查看文件信息",
-            "fs_mkdir" => "创建目录",
-            "fs_rm" => "删除文件",
-            "agent.spawn" => "派生智能体",
-            "agent.invoke" => "调用智能体",
-            "think.depth" => "深度思考",
-            "memory.get" => "读取记忆",
-            "memory.put" => "写入记忆",
-            _ => return tool.to_string(),
-        };
-        action.to_string()
+        if let Some((_, action)) = Self::TOOL_ACTIONS.iter().find(|(n, _)| *n == tool) {
+            return action.to_string();
+        }
+        log::warn!(
+            "dispatch: 未登记工具标识符已按白名单隐藏（len={}）",
+            tool.len()
+        );
+        "未知工具（已隐藏）".to_string()
     }
 
     /// 将 SSE 工具事件（__airy_evt JSON）渲染为对话内的工具状态行。
     /// 过程化（2026-08-17）：只展示"正在做什么"（动作名），不暴露工具
     /// 参数与返回内容（代码/URL/文件内容等操作细节保留在日志与模型上下文）。
-    /// tool_call  → `[Sub <tool> Agent] <动作>…`
-    /// tool_result→ `[Sub <tool> Agent] <动作> 完成` / `<动作>（失败）[: 短错误]`
+    /// 0.1.18 B3（V3.4）：行内不携带工具原始标识符——未登记名称经
+    /// tool_action 白名单兜底，杜绝内部标识符越过渲染边界。
+    /// tool_call  → `<动作>…`
+    /// tool_result→ `<动作> 完成` / `<动作>（失败）[: 短错误]`
     pub(super) fn render_tool_event(evt_json: &str) -> Option<String> {
         let v: serde_json::Value = serde_json::from_str(evt_json).ok()?;
         let kind = v.get("__airy_evt")?.as_str()?;
         let tool = v.get("tool").and_then(|t| t.as_str()).unwrap_or("tool");
         let action = Self::tool_action(tool);
         match kind {
-            "tool_call" => Some(format!("{} {}…", tool, action)),
+            "tool_call" => Some(format!("{action}…")),
             "tool_result" => {
                 let ok = v.get("ok").and_then(|o| o.as_i64()).unwrap_or(0) != 0;
-                let summary = v
-                    .get("summary")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("");
+                let summary = v.get("summary").and_then(|s| s.as_str()).unwrap_or("");
                 if ok {
-                    Some(format!("{} {} 完成", tool, action))
+                    Some(format!("{action} 完成"))
                 } else {
                     // 失败附首行短错误（≤80 字符），便于诊断；成功不回传内容
                     let err: String = summary
@@ -336,8 +362,14 @@ impl App {
                         .chars()
                         .take(80)
                         .collect();
-                    Some(format!("{} {}（失败）{}", tool, action,
-                                 if err.is_empty() { String::new() } else { format!(" · {err}") }))
+                    Some(format!(
+                        "{action}（失败）{}",
+                        if err.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {err}")
+                        }
+                    ))
                 }
             }
             _ => None,

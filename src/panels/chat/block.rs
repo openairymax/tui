@@ -18,10 +18,11 @@ use crate::app::{App, ChatMessage, MessageRole};
 use crate::theme;
 
 /// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：折叠仅作用于 System
-/// 思考链消息（Agent 最终答复不折叠，完整展示——用户诉求「折叠思考链，
-/// 完整展示结果」）。渲染行数超过 FOLD_MAX_LINES 时，live 视口只显示前
-/// FOLD_KEEP_LINES 行 + 折叠尾；Alt+E 浏览展开（0.1.7：与滚动解耦，
-/// 展开会改变总行数导致视口跳变）。阈值与 C 版 CLI_REPLY_FOLD_MAX=6 一致。
+/// 消息（Agent 最终答复不折叠，完整展示）。渲染行数超过 FOLD_MAX_LINES
+/// 时，live 视口只显示前 FOLD_KEEP_LINES 行 + 折叠尾；Alt+O 浏览展开
+/// （0.1.7：与滚动解耦，展开会改变总行数导致视口跳变）。
+/// 0.1.18 B4：思考链不再生成 System 消息（改由 Alt+E 独立视图按需查看），
+/// 本折叠退化为长错误/提示摘要的收束。阈值与 C 版 CLI_REPLY_FOLD_MAX=6 一致。
 pub(super) const FOLD_MAX_LINES: usize = 6;
 pub(super) const FOLD_KEEP_LINES: usize = 3;
 
@@ -91,19 +92,26 @@ fn push_header(out: &mut Vec<Line<'static>>, msg: &ChatMessage) {
         MessageRole::System => ("[Dual Think]".to_string(), theme::dim()),
         MessageRole::ToolCall | MessageRole::ToolResult => {
             // [Sub <tag> Agent]：tag 取工具名（ToolCall 首 token）；ToolResult
-            // 是工具结果（JSON 等），无工具名可识别时回退 "exec"
+            // 是工具结果（JSON 等），无工具名可识别时回退 "exec"。
+            // 0.1.18 B3（V3.4）：白名单兜底——动作短语行（B3 后的工具状态行
+            // 格式）与未登记标识符一律回退无 tag 形式，内部名称零暴露。
             let first = msg.content.split_whitespace().next().unwrap_or("");
             let is_jsonish =
                 first.starts_with('{') || first.starts_with('[') || first.starts_with('"');
-            let tag = if first.is_empty() || is_jsonish { "exec" } else { first };
-            let tag: String = tag.chars().take(12).collect();
+            let name = if first.is_empty() || is_jsonish {
+                "[Sub exec Agent]".to_string()
+            } else if crate::app::App::tool_known(first) {
+                format!("[Sub {first} Agent]")
+            } else {
+                "[Sub Agent]".to_string()
+            };
             // 工具调用品红（调用侧）· 工具结果青（回传侧），Claude Code 风格
             let c = if msg.role == MessageRole::ToolCall {
                 theme::magenta()
             } else {
                 theme::cyan()
             };
-            (format!("[Sub {} Agent]", tag), c)
+            (name, c)
         }
     };
 
@@ -172,7 +180,8 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
         if msg.role == MessageRole::User {
             for line in rendered.iter_mut() {
                 let bg = theme::surface_active();
-                let spans: Vec<Span<'static>> = line.spans.iter().map(|s| s.clone().bg(bg)).collect();
+                let spans: Vec<Span<'static>> =
+                    line.spans.iter().map(|s| s.clone().bg(bg)).collect();
                 *line = Line::from(spans);
             }
         }
@@ -190,7 +199,7 @@ fn fold_block(out: &mut Vec<Line<'static>>, start: usize, expanded: bool) {
     let more = len - FOLD_KEEP_LINES;
     out.truncate(start + FOLD_KEEP_LINES);
     out.push(Line::from(Span::styled(
-        format!("  └ … {more} more lines · Alt+E 展开"),
+        format!("  └ … {more} more lines · Alt+O 展开"),
         Style::default().fg(theme::faint()),
     )));
 }
@@ -216,7 +225,11 @@ mod tests {
             (MessageRole::User, "[For Thee]", "hi"),
             (MessageRole::Agent, "[Super Agent]", "hello!"),
             (MessageRole::System, "[Dual Think]", "GCCP 提示"),
-            (MessageRole::ToolCall, "[Sub web_fetch Agent]", "web_fetch {\"url\":\"x\"}"),
+            (
+                MessageRole::ToolCall,
+                "[Sub web_fetch Agent]",
+                "web_fetch {\"url\":\"x\"}",
+            ),
             (MessageRole::ToolResult, "[Sub exec Agent]", "{\"ok\":1}"),
         ];
         for (role, expect_head, content) in cases.iter() {
@@ -238,17 +251,29 @@ mod tests {
     #[test]
     fn sub_agent_tag_fallback() {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        render(&mut lines, &msg(MessageRole::ToolResult, ""), 80, false, false);
+        render(
+            &mut lines,
+            &msg(MessageRole::ToolResult, ""),
+            80,
+            false,
+            false,
+        );
         assert!(lines[0].to_string().starts_with("[Sub exec Agent]"));
     }
 
-    /// 超长工具名 tag 截断到 12 字符，保持 "[Sub xxx Agent]" 结构完整。
+    /// B3（V3.4）白名单兜底：未登记工具名回退 "[Sub Agent]"，原始
+    /// 标识符不进角色标签（替代旧版 12 字符截断语义）。
     #[test]
-    fn sub_agent_tag_truncated() {
+    fn sub_agent_tag_unknown_tool_hidden() {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        let m = msg(MessageRole::ToolCall, "very_long_tool_name_that_exceeds_budget args");
+        let m = msg(
+            MessageRole::ToolCall,
+            "very_long_tool_name_that_exceeds_budget args",
+        );
         render(&mut lines, &m, 80, false, false);
-        assert!(lines[0].to_string().starts_with("[Sub very_long_to Agent]"));
+        let head = lines[0].to_string();
+        assert!(head.starts_with("[Sub Agent]"), "head={}", head);
+        assert!(!head.contains("very_long"), "标识符不得出现: head={}", head);
     }
 
     /// 块内折叠：长思考链截断为 KEEP 行 + 折叠尾；展开态/短块/Agent 长文不折叠。
@@ -260,27 +285,65 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         let mut folded: Vec<Line<'static>> = Vec::new();
-        render(&mut folded, &msg(MessageRole::System, &long), 80, false, false);
-        assert_eq!(folded.len(), FOLD_KEEP_LINES + 1, "折叠后 = KEEP 行 + 折叠尾");
+        render(
+            &mut folded,
+            &msg(MessageRole::System, &long),
+            80,
+            false,
+            false,
+        );
+        assert_eq!(
+            folded.len(),
+            FOLD_KEEP_LINES + 1,
+            "折叠后 = KEEP 行 + 折叠尾"
+        );
         let tail = folded.last().unwrap().to_string();
-        assert!(tail.contains("more lines") && tail.contains("展开"), "折叠尾: {tail}");
+        assert!(
+            tail.contains("more lines") && tail.contains("展开"),
+            "折叠尾: {tail}"
+        );
 
         let mut expanded: Vec<Line<'static>> = Vec::new();
-        render(&mut expanded, &msg(MessageRole::System, &long), 80, false, true);
+        render(
+            &mut expanded,
+            &msg(MessageRole::System, &long),
+            80,
+            false,
+            true,
+        );
         assert!(expanded.len() > FOLD_MAX_LINES, "展开态显示全量");
         let joined: String = expanded.iter().map(|l| l.to_string()).collect();
         assert!(joined.contains("para 11"), "展开态含末段");
 
         // 短思考链（≤ 阈值）不折叠（行数 = 头部 + 段落 + 段落留白 + 块留白）
         let mut short: Vec<Line<'static>> = Vec::new();
-        render(&mut short, &msg(MessageRole::System, "one line"), 80, false, false);
-        assert!(short.len() <= FOLD_MAX_LINES, "短块不应触发折叠: {}", short.len());
+        render(
+            &mut short,
+            &msg(MessageRole::System, "one line"),
+            80,
+            false,
+            false,
+        );
+        assert!(
+            short.len() <= FOLD_MAX_LINES,
+            "短块不应触发折叠: {}",
+            short.len()
+        );
         assert!(!short.last().unwrap().to_string().contains("more lines"));
 
         // Agent 最终答复不折叠（完整展示）
         let mut agent: Vec<Line<'static>> = Vec::new();
-        render(&mut agent, &msg(MessageRole::Agent, &long), 80, false, false);
-        assert!(!agent.last().unwrap().to_string().contains("more lines"), "答复不折叠");
+        render(
+            &mut agent,
+            &msg(MessageRole::Agent, &long),
+            80,
+            false,
+            false,
+        );
+        assert!(
+            !agent.last().unwrap().to_string().contains("more lines"),
+            "答复不折叠"
+        );
     }
 
     /// 折叠块与后续块级联：折叠仅作用于自身区间，不侵蚀相邻块。
@@ -293,8 +356,18 @@ mod tests {
         let mut lines: Vec<Line<'static>> = Vec::new();
         render(&mut lines, &msg(MessageRole::User, "q"), 80, false, false);
         let user_len = lines.len();
-        render(&mut lines, &msg(MessageRole::System, &long), 80, false, false);
-        assert_eq!(lines.len(), user_len + FOLD_KEEP_LINES + 1, "System 块折叠后总行数");
+        render(
+            &mut lines,
+            &msg(MessageRole::System, &long),
+            80,
+            false,
+            false,
+        );
+        assert_eq!(
+            lines.len(),
+            user_len + FOLD_KEEP_LINES + 1,
+            "System 块折叠后总行数"
+        );
         // 折叠尾之后继续追加块不受影响
         render(&mut lines, &msg(MessageRole::Agent, "a"), 80, false, false);
         let text: String = lines.iter().map(|l| l.to_string()).collect();

@@ -157,7 +157,11 @@ mod tests {
         assert!(content.contains("MODEL_1_API_KEY=sk-new"));
         assert!(write_secret(API_KEY_ENV, "sk-replaced"));
         let content = std::fs::read_to_string(&env_file).expect("已写盘");
-        assert_eq!(content.matches("MODEL_1_API_KEY=").count(), 1, "原位替换不重复追加");
+        assert_eq!(
+            content.matches("MODEL_1_API_KEY=").count(),
+            1,
+            "原位替换不重复追加"
+        );
         assert!(content.contains("sk-replaced"));
         assert!(!write_secret(API_KEY_ENV, ""), "空值不写");
     }

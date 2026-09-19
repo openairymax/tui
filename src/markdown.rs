@@ -157,10 +157,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
             for piece in wrap_line(text, width.saturating_sub(indent).max(8)) {
                 out.push(Line::from(vec![
                     Span::styled(" ".repeat(indent), Style::default()),
-                    Span::styled(
-                        piece,
-                        base.fg(color).add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(piece, base.fg(color).add_modifier(Modifier::BOLD)),
                 ]));
             }
             out.push(Line::raw(""));
@@ -278,7 +275,11 @@ fn heading_level(s: &str) -> Option<usize> {
 fn list_item(s: &str) -> Option<(String, &str)> {
     let trimmed = s.trim_start();
     // 有前导空白 → 嵌套列表（符号以 · 展示，与一级 • 区分）
-    let mark = if trimmed.len() != s.len() { "·" } else { "•" };
+    let mark = if trimmed.len() != s.len() {
+        "·"
+    } else {
+        "•"
+    };
     let bytes = trimmed.as_bytes();
     match bytes.first()? {
         b'-' | b'*' | b'+' => {
@@ -293,15 +294,8 @@ fn list_item(s: &str) -> Option<(String, &str)> {
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            if i < bytes.len()
-                && bytes[i] == b'.'
-                && i + 1 < bytes.len()
-                && bytes[i + 1] == b' '
-            {
-                Some((
-                    format!("{}.", &trimmed[..i]),
-                    trimmed[i + 2..].trim(),
-                ))
+            if i < bytes.len() && bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+                Some((format!("{}.", &trimmed[..i]), trimmed[i + 2..].trim()))
             } else {
                 None
             }
@@ -444,7 +438,13 @@ fn render_plot(rows: &[String], indent: usize, width: usize, base: Style) -> Vec
             if let Some((px0, py0)) = prev {
                 braille_line(&mut grid, canvas_cols, canvas_rows, px0, py0, cx, cy);
             } else {
-                braille_set(&mut grid, canvas_cols, canvas_rows, cx.max(0) as usize, cy.max(0) as usize);
+                braille_set(
+                    &mut grid,
+                    canvas_cols,
+                    canvas_rows,
+                    cx.max(0) as usize,
+                    cy.max(0) as usize,
+                );
             }
         }
         prev = cur;
@@ -454,10 +454,7 @@ fn render_plot(rows: &[String], indent: usize, width: usize, base: Style) -> Vec
     if !title.is_empty() {
         out.push(Line::from(vec![
             Span::styled(" ".repeat(indent + 2), Style::default()),
-            Span::styled(
-                title,
-                base.fg(theme::accent()).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(title, base.fg(theme::accent()).add_modifier(Modifier::BOLD)),
         ]));
     }
     for r in 0..canvas_rows {
@@ -554,10 +551,7 @@ fn inline_styles(s: &str, base: Style) -> Line<'static> {
                 buf.push_str("**");
                 buf.push_str(&bold);
             } else {
-                spans.push(Span::styled(
-                    bold,
-                    base.add_modifier(Modifier::BOLD),
-                ));
+                spans.push(Span::styled(bold, base.add_modifier(Modifier::BOLD)));
             }
             continue;
         }
@@ -691,10 +685,7 @@ fn render_table(rows: &[String], indent: usize, width: usize, base: Style) -> Ve
             } else {
                 base.fg(theme::text())
             };
-            spans.push(Span::styled(
-                format!("│ {cell}{} ", " ".repeat(pad)),
-                style,
-            ));
+            spans.push(Span::styled(format!("│ {cell}{} ", " ".repeat(pad)), style));
         }
         spans.push(Span::styled("│", base.fg(theme::dim())));
         out.push(Line::from(spans));
@@ -711,7 +702,8 @@ fn is_separator_row(s: &str) -> bool {
     trimmed.split('|').all(|c| {
         let t = c.trim();
         !t.is_empty()
-            && t.chars().all(|ch| ch == '-' || ch == ':' || ch == ' ' || ch == '=')
+            && t.chars()
+                .all(|ch| ch == '-' || ch == ':' || ch == ' ' || ch == '=')
             && t.contains('-')
     })
 }
@@ -820,7 +812,11 @@ mod tests {
     fn render_fenced_code() {
         let md = "```rust\nfn main() {}\n```";
         let lines = render(md, 0, 60, Style::default());
-        let joined: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let joined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("fn main() {}"));
     }
 
@@ -989,10 +985,8 @@ mod tests {
             .join("\n");
         assert!(joined.contains("not a plot"));
         // 未进画板模式 → 无 braille 画布输出
-        assert!(
-            !joined
-                .chars()
-                .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c) && c != ' ')
-        );
+        assert!(!joined
+            .chars()
+            .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c) && c != ' '));
     }
 }

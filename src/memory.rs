@@ -36,10 +36,10 @@ const HYDRATE_LIMIT: usize = 1000;
 /// 单条记忆记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRecord {
-    pub role: String,       // user / assistant / system
+    pub role: String, // user / assistant / system
     pub content: String,
-    pub timestamp: String,  // ISO8601
-    pub tags: String,       // 逗号分隔，如 "task,chat,preference"
+    pub timestamp: String, // ISO8601
+    pub tags: String,      // 逗号分隔，如 "task,chat,preference"
     /// 2.1.1.6：思考链（reasoning_content）随助手回复持久化保留，
     /// 存于网关记录的 metadata.reasoning 字段。
     #[serde(default)]
@@ -52,23 +52,20 @@ pub struct MemoryHit {
     pub content: String,
     pub role: String,
     pub score: f32,
+    /// 0.1.18 B1：归属轮次（写入侧 tags 内 "turn:N" 标注；旧记录无标注
+    /// 为 None）。上下文注入时标注归属，为"按轮检索"铺路。
+    pub turn: Option<u64>,
 }
 
 /// 对话记忆后端 trait（E-4 跨平台一致性：Linux/macOS/Windows 路径统一）
 pub trait ConversationMemory: Send + Sync {
-    /// 写入一条记忆
+    /// 写入一条记忆。
+    ///
+    /// 0.1.18 B4（隐私）：不再提供携带思考链（reasoning_content）的写入
+    /// 路径——思考链是模型内部推理碎片，不得落长期会话记忆，否则会被后续
+    /// 轮次的召回回灌进上下文。历史记忆中的 reasoning 字段仍可被反序列化
+    /// 读取（兼容 CLI 旧记录），但 TUI 侧只写不携带。
     fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()>;
-    /// 2.1.1.6：写入一条带思考链（reasoning_content）的助手记忆。
-    fn push_with_reasoning(
-        &mut self,
-        role: &str,
-        content: &str,
-        reasoning: Option<&str>,
-        tags: &str,
-    ) -> std::io::Result<()> {
-        let _ = reasoning;
-        self.push(role, content, tags)
-    }
     /// 召回与 query 相关、且 time_before 之前的记忆
     fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit>;
     /// 最近 N 条对话（按时间倒序）
@@ -134,19 +131,15 @@ impl GatewayMemory {
         }
     }
 
-    fn push_impl(
-        &mut self,
-        role: &str,
-        content: &str,
-        reasoning: Option<&str>,
-        tags: &str,
-    ) -> std::io::Result<()> {
+    fn push_impl(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()> {
         let rec = MemoryRecord {
             role: role.to_string(),
             content: content.to_string(),
             timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
             tags: tags.to_string(),
-            reasoning: reasoning.map(|s| s.to_string()),
+            // 0.1.18 B4：TUI 写入恒不携带思考链（字段仅为兼容反序列化
+            // CLI 旧记录而保留）。
+            reasoning: None,
         };
         // 权威存储在网关：入队后台投递 `mem.write`。投递失败（运行时已退出）
         // 仅记日志——镜像已乐观更新，用户交互不因此中断。
@@ -167,17 +160,7 @@ impl GatewayMemory {
 
 impl ConversationMemory for GatewayMemory {
     fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()> {
-        self.push_impl(role, content, None, tags)
-    }
-
-    fn push_with_reasoning(
-        &mut self,
-        role: &str,
-        content: &str,
-        reasoning: Option<&str>,
-        tags: &str,
-    ) -> std::io::Result<()> {
-        self.push_impl(role, content, reasoning, tags)
+        self.push_impl(role, content, tags)
     }
 
     fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit> {
@@ -234,14 +217,25 @@ impl ConversationMemory for GatewayMemory {
                 // 时效加权：越近越高（线性衰减 30 天）
                 let age = (now - parse_ts(&r.timestamp)) as f32;
                 let decay = (1.0 - (age / (30.0 * 86400.0))).clamp(0.2, 1.0);
+                // 0.1.18 B1：解析写入侧的轮次标注（"turn:N"），召回侧透传
+                let turn = r.tags.split(',').find_map(|t| {
+                    t.trim()
+                        .strip_prefix("turn:")
+                        .and_then(|n| n.parse::<u64>().ok())
+                });
                 Some(MemoryHit {
                     content: r.content.clone(),
                     role: r.role.clone(),
                     score: score * decay,
+                    turn,
                 })
             })
             .collect();
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         hits.truncate(limit);
         hits
     }
@@ -453,16 +447,17 @@ mod tests {
     }
 
     #[test]
-    fn push_with_reasoning_keeps_reasoning() {
+    fn push_never_records_reasoning() {
+        // 0.1.18 B4（隐私）：思考链不得落长期会话记忆——写入路径不提供
+        // reasoning 入参，落库记录的 reasoning 恒为 None（防止后续轮次召回
+        // 把模型内部推理回灌进上下文）。
         let mut m = GatewayMemory::volatile();
-        m.push_with_reasoning("assistant", "最终回答", Some("思考过程"), "chat")
-            .expect("push");
-        let rec = m.recent(1).into_iter().next().expect("record");
-        assert_eq!(rec.reasoning.as_deref(), Some("思考过程"));
-        // 无 reasoning 的记录保持 None
+        m.push("assistant", "最终回答", "chat").expect("push");
         m.push("user", "无思考链", "chat").expect("push");
-        let rec = m.recent(1).into_iter().next().expect("record");
-        assert_eq!(rec.reasoning, None);
+        assert!(
+            m.recent(2).iter().all(|r| r.reasoning.is_none()),
+            "TUI 写入的记忆不得携带思考链"
+        );
     }
 
     #[test]
@@ -574,38 +569,44 @@ mod tests {
     }
 
     #[test]
-    fn parse_mode_detail_parses_markers() {
-        assert_eq!(
-            crate::app::parse_mode_detail("[MODE:TASK] 执行任务"),
-            (crate::app::ModeMarker::Task, "执行任务".into())
-        );
-        assert_eq!(
-            crate::app::parse_mode_detail("[MODE:CHAT]\n闲聊"),
-            (crate::app::ModeMarker::Chat, "闲聊".into())
-        );
-        assert_eq!(
-            crate::app::parse_mode_detail("普通回复"),
-            (crate::app::ModeMarker::Chat, "普通回复".into())
-        );
+    fn sanitize_reply_parses_markers() {
+        // B3：模式判定能力不回归（V3.2），标记同时从正文剥离入协议段
+        let r = crate::app::sanitize_reply("[MODE:TASK] 执行任务");
+        assert_eq!(r.mode, crate::app::ModeMarker::Task);
+        assert_eq!(r.body, "执行任务");
+        assert!(r.protocol.contains("[MODE:TASK]"));
+
+        let r = crate::app::sanitize_reply("[MODE:CHAT]\n闲聊");
+        assert_eq!(r.mode, crate::app::ModeMarker::Chat);
+        assert_eq!(r.body, "闲聊");
+
+        let r = crate::app::sanitize_reply("普通回复");
+        assert_eq!(r.mode, crate::app::ModeMarker::Chat);
+        assert_eq!(r.body, "普通回复");
+        assert!(r.protocol.is_empty());
     }
 
     #[test]
-    fn parse_mode_detail_tolerates_leading_text() {
+    fn sanitize_reply_tolerates_leading_text() {
         // 容错（2026-08-26）：LLM 输出带简短前导（「好的，」等）时仍能识别
-        // 模式标记；正文提及 [MODE:CHAT]（超 64 字符窗口）不误判。
-        assert_eq!(
-            crate::app::parse_mode_detail("好的，[MODE:TASK]\n开始执行任务"),
-            (crate::app::ModeMarker::Task, "开始执行任务".into())
+        // 模式标记；B3 后前导与标记一并剥离，正文只留纯净内容（V3.3）。
+        let r = crate::app::sanitize_reply("好的，[MODE:TASK]\n开始执行任务");
+        assert_eq!(r.mode, crate::app::ModeMarker::Task);
+        assert_eq!(r.body, "开始执行任务");
+
+        let r = crate::app::sanitize_reply("好的 [MODE:CHAT] 我们聊聊");
+        assert_eq!(r.mode, crate::app::ModeMarker::Chat);
+        assert_eq!(r.body, "我们聊聊");
+        assert!(r.protocol.contains("[MODE:CHAT]"));
+
+        // 正文中（256 字节窗口后）出现的标记样式文字不触发模式切换，
+        // 且字面一律从用户面剥离（V3.1）
+        let body = format!(
+            "这是一段很长的普通对话内容，{}[MODE:TASK] 后续",
+            "x".repeat(300)
         );
-        assert_eq!(
-            crate::app::parse_mode_detail("好的 [MODE:CHAT] 我们聊聊"),
-            (crate::app::ModeMarker::Chat, "我们聊聊".into())
-        );
-        // 正文中（64 字符后）出现的标记样式文字不应触发模式切换
-        let body = format!("这是一段很长的普通对话内容，{}", "x".repeat(80));
-        assert_eq!(
-            crate::app::parse_mode_detail(&body),
-            (crate::app::ModeMarker::Chat, body)
-        );
+        let r = crate::app::sanitize_reply(&body);
+        assert_eq!(r.mode, crate::app::ModeMarker::Chat);
+        assert!(!r.body.contains("[MODE:"));
     }
 }

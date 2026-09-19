@@ -175,7 +175,10 @@ pub fn parse_dag(resp: &str) -> Option<TaskDag> {
     let v: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
-            log::warn!("parse_dag: DAG 块 JSON 解析失败: {}（降级为纯文本流程图）", e);
+            log::warn!(
+                "parse_dag: DAG 块 JSON 解析失败: {}（降级为纯文本流程图）",
+                e
+            );
             return None;
         }
     };
@@ -231,10 +234,10 @@ pub fn parse_dag(resp: &str) -> Option<TaskDag> {
     }
 
     // 依赖边引用的节点必须在节点表中（容忍 LLM 输出引用了未定义节点：丢弃该边）
-    let known: std::collections::HashSet<&str> =
-        dag.nodes.iter().map(|n| n.id.as_str()).collect();
+    let known: std::collections::HashSet<&str> = dag.nodes.iter().map(|n| n.id.as_str()).collect();
     let edges_before = dag.edges.len();
-    dag.edges.retain(|e| known.contains(e.from.as_str()) && known.contains(e.to.as_str()));
+    dag.edges
+        .retain(|e| known.contains(e.from.as_str()) && known.contains(e.to.as_str()));
     let dropped_edges = edges_before - dag.edges.len();
     if dropped_edges > 0 {
         log::warn!(
@@ -348,8 +351,7 @@ pub fn render_dag_lines(dag: &TaskDag, max_width: usize) -> Vec<String> {
     // 3) 计算每层是否有边跨到更深层（决定层间是否画 ↓）
     let mut has_down: Vec<bool> = Vec::with_capacity(layers.len());
     for (i, layer) in layers.iter().enumerate() {
-        let ids: std::collections::HashSet<&str> =
-            layer.iter().map(|n| n.id.as_str()).collect();
+        let ids: std::collections::HashSet<&str> = layer.iter().map(|n| n.id.as_str()).collect();
         let cross = dag
             .edges
             .iter()
@@ -373,7 +375,10 @@ pub fn render_dag_lines(dag: &TaskDag, max_width: usize) -> Vec<String> {
         .max()
         .unwrap_or(0)
         .min(max_width.saturating_sub(4));
-    let top = format!("┌─ 任务依赖图 {}", "─".repeat(inner_w.saturating_sub(5).max(1)));
+    let top = format!(
+        "┌─ 任务依赖图 {}",
+        "─".repeat(inner_w.saturating_sub(5).max(1))
+    );
     out.push(truncate_pad(&top, max_width));
 
     for (i, layer) in layers.iter().enumerate() {
@@ -645,10 +650,7 @@ fn strip_answer_prefix(line: &str) -> String {
     // "A1:" 形式
     let t = line.trim_start();
     let lower_t = t.to_lowercase();
-    if lower_t.starts_with('a')
-        && lower_t.len() >= 2
-        && lower_t.as_bytes()[1].is_ascii_digit()
-    {
+    if lower_t.starts_with('a') && lower_t.len() >= 2 && lower_t.as_bytes()[1].is_ascii_digit() {
         if let Some(idx) = t.find(':') {
             return t[idx + 1..].trim().to_string();
         }
@@ -659,7 +661,10 @@ fn strip_answer_prefix(line: &str) -> String {
 /// 用户输入是否为确认指令（GRAD 通过）
 pub fn is_confirm(input: &str) -> bool {
     let t = input.trim().to_lowercase();
-    matches!(t.as_str(), "确认" | "同意" | "ok" | "okay" | "yes" | "y" | "通过" | "确认执行")
+    matches!(
+        t.as_str(),
+        "确认" | "同意" | "ok" | "okay" | "yes" | "y" | "通过" | "确认执行"
+    )
 }
 
 /// 用户输入是否为任务完成指令（触发技能沉淀）
@@ -761,10 +766,7 @@ mod tests {
     fn task_done_marker_helpers() {
         assert!(has_task_done_marker("已完成\n[TASK:DONE]"));
         assert!(!has_task_done_marker("已完成"));
-        assert_eq!(
-            strip_task_done("任务完成\n[TASK:DONE]"),
-            "任务完成"
-        );
+        assert_eq!(strip_task_done("任务完成\n[TASK:DONE]"), "任务完成");
     }
 
     #[test]
@@ -822,7 +824,13 @@ mod tests {
         assert_eq!(dag.nodes[0].id, "n1");
         assert_eq!(dag.nodes[0].label, "准备环境");
         assert_eq!(dag.edges.len(), 2);
-        assert_eq!(dag.edges[0], DagEdge { from: "n1".into(), to: "n2".into() });
+        assert_eq!(
+            dag.edges[0],
+            DagEdge {
+                from: "n1".into(),
+                to: "n2".into()
+            }
+        );
     }
 
     #[test]
@@ -838,7 +846,13 @@ mod tests {
         // 兼容 source/target 别名字段
         let resp = "[DAG]\n{\"nodes\":[{\"id\":\"x\",\"label\":\"X\"},{\"id\":\"y\",\"label\":\"Y\"}],\"edges\":[{\"source\":\"x\",\"target\":\"y\"}]}\n[/DAG]";
         let dag = parse_dag(resp).expect("dag");
-        assert_eq!(dag.edges[0], DagEdge { from: "x".into(), to: "y".into() });
+        assert_eq!(
+            dag.edges[0],
+            DagEdge {
+                from: "x".into(),
+                to: "y".into()
+            }
+        );
     }
 
     #[test]
@@ -861,13 +875,28 @@ mod tests {
     fn render_dag_layers_and_arrows() {
         let dag = TaskDag {
             nodes: vec![
-                DagNode { id: "n1".into(), label: "准备".into() },
-                DagNode { id: "n2".into(), label: "收集".into() },
-                DagNode { id: "n3".into(), label: "交付".into() },
+                DagNode {
+                    id: "n1".into(),
+                    label: "准备".into(),
+                },
+                DagNode {
+                    id: "n2".into(),
+                    label: "收集".into(),
+                },
+                DagNode {
+                    id: "n3".into(),
+                    label: "交付".into(),
+                },
             ],
             edges: vec![
-                DagEdge { from: "n1".into(), to: "n2".into() },
-                DagEdge { from: "n2".into(), to: "n3".into() },
+                DagEdge {
+                    from: "n1".into(),
+                    to: "n2".into(),
+                },
+                DagEdge {
+                    from: "n2".into(),
+                    to: "n3".into(),
+                },
             ],
         };
         let lines = render_dag_lines(&dag, 60);
@@ -884,13 +913,28 @@ mod tests {
         // n2/n3 无依赖 → 同层并排
         let dag = TaskDag {
             nodes: vec![
-                DagNode { id: "n1".into(), label: "根".into() },
-                DagNode { id: "n2".into(), label: "左支".into() },
-                DagNode { id: "n3".into(), label: "右支".into() },
+                DagNode {
+                    id: "n1".into(),
+                    label: "根".into(),
+                },
+                DagNode {
+                    id: "n2".into(),
+                    label: "左支".into(),
+                },
+                DagNode {
+                    id: "n3".into(),
+                    label: "右支".into(),
+                },
             ],
             edges: vec![
-                DagEdge { from: "n1".into(), to: "n2".into() },
-                DagEdge { from: "n1".into(), to: "n3".into() },
+                DagEdge {
+                    from: "n1".into(),
+                    to: "n2".into(),
+                },
+                DagEdge {
+                    from: "n1".into(),
+                    to: "n3".into(),
+                },
             ],
         };
         let lines = render_dag_lines(&dag, 60);

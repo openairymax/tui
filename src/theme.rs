@@ -93,9 +93,17 @@ fn to_basic(r: u8, g: u8, b: u8) -> u8 {
     } else if lum < 40 {
         0 // 黑
     } else if r >= g && r >= b {
-        if lum > 128 { 9 } else { 1 } // 红
+        if lum > 128 {
+            9
+        } else {
+            1
+        } // 红
     } else if g >= r && g >= b {
-        if lum > 128 { 10 } else { 2 } // 绿
+        if lum > 128 {
+            10
+        } else {
+            2
+        } // 绿
     } else if lum > 128 {
         12 // 蓝
     } else {
@@ -182,23 +190,41 @@ pub fn init_from_env() {
 // ─────────────────────────── 品牌主色（双主题共用） ───────────────────────────
 
 /// 品牌主色：晶蓝（Airymax 主题色，用于品牌/焦点/主操作）
-pub fn primary() -> Color { mapped(56, 102, 250) }
+pub fn primary() -> Color {
+    mapped(56, 102, 250)
+}
 /// 品牌辅助强调：青（用于信息高亮）
-pub fn accent() -> Color { mapped(88, 205, 224) }
+pub fn accent() -> Color {
+    mapped(88, 205, 224)
+}
 /// 成功 / 在线 / 用户消息
-pub fn success() -> Color { mapped(80, 200, 120) }
+pub fn success() -> Color {
+    mapped(80, 200, 120)
+}
 /// 警告 / 等待 / 系统消息
-pub fn warning() -> Color { mapped(238, 178, 70) }
+pub fn warning() -> Color {
+    mapped(238, 178, 70)
+}
 /// 危险 / 离线 / 错误
-pub fn danger() -> Color { mapped(236, 92, 92) }
+pub fn danger() -> Color {
+    mapped(236, 92, 92)
+}
 /// 品红（工具 / GRAD 阶段）
-pub fn magenta() -> Color { mapped(196, 124, 240) }
+pub fn magenta() -> Color {
+    mapped(196, 124, 240)
+}
 /// 工具状态行（SSE tool_call/tool_result，Claude Code 风格工具执行提示）
-pub fn tool_fg() -> Color { mapped(196, 124, 240) }
+pub fn tool_fg() -> Color {
+    mapped(196, 124, 240)
+}
 /// 青（用户角色 [For Thee]，与 C 版 airy_cli CLR_CYAN 对齐）
-pub fn cyan() -> Color { mapped(70, 190, 220) }
+pub fn cyan() -> Color {
+    mapped(70, 190, 220)
+}
 /// 彩色徽章上的文字色（始终深色，保证彩色底对比度，不随主题切换）
-pub fn on_color() -> Color { mapped(15, 18, 24) }
+pub fn on_color() -> Color {
+    mapped(15, 18, 24)
+}
 
 // ─────────────────────────── 中性色（随主题切换） ───────────────────────────
 
@@ -300,7 +326,11 @@ pub fn separator() -> Color {
 fn wcag_luminance(r: u8, g: u8, b: u8) -> f64 {
     let f = |c: u8| {
         let s = c as f64 / 255.0;
-        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
     };
     0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
 }
@@ -338,8 +368,14 @@ mod tests {
         assert_eq!(detect_depth(), ColorDepth::TrueColor);
         std::env::set_var("COLORTERM", "24bit");
         assert_eq!(detect_depth(), ColorDepth::TrueColor);
-        match ct { Some(v) => std::env::set_var("COLORTERM", v), None => std::env::remove_var("COLORTERM") }
-        match term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+        match ct {
+            Some(v) => std::env::set_var("COLORTERM", v),
+            None => std::env::remove_var("COLORTERM"),
+        }
+        match term {
+            Some(v) => std::env::set_var("TERM", v),
+            None => std::env::remove_var("TERM"),
+        }
     }
 
     #[test]
@@ -351,8 +387,14 @@ mod tests {
         assert_eq!(detect_depth(), ColorDepth::Color256);
         std::env::set_var("TERM", "screen-256color");
         assert_eq!(detect_depth(), ColorDepth::Color256);
-        match ct { Some(v) => std::env::set_var("COLORTERM", v), None => std::env::remove_var("COLORTERM") }
-        match term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+        match ct {
+            Some(v) => std::env::set_var("COLORTERM", v),
+            None => std::env::remove_var("COLORTERM"),
+        }
+        match term {
+            Some(v) => std::env::set_var("TERM", v),
+            None => std::env::remove_var("TERM"),
+        }
     }
 
     #[test]
@@ -364,8 +406,14 @@ mod tests {
         assert_eq!(detect_depth(), ColorDepth::Basic);
         std::env::remove_var("TERM");
         assert_eq!(detect_depth(), ColorDepth::Basic);
-        match ct { Some(v) => std::env::set_var("COLORTERM", v), None => std::env::remove_var("COLORTERM") }
-        match term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+        match ct {
+            Some(v) => std::env::set_var("COLORTERM", v),
+            None => std::env::remove_var("COLORTERM"),
+        }
+        match term {
+            Some(v) => std::env::set_var("TERM", v),
+            None => std::env::remove_var("TERM"),
+        }
     }
 
     /// H7 防复发：三档色深映射快照（TrueColor 保真 / 256 立方索引 / 16 色亮度加权）。
@@ -405,7 +453,13 @@ mod tests {
         ];
         for (name, fg, bgc, min) in cases_dark {
             let r = wcag_contrast(source_rgb(fg), bgc);
-            assert!(r >= min, "dark theme {} contrast {:.2} < {:.1}", name, r, min);
+            assert!(
+                r >= min,
+                "dark theme {} contrast {:.2} < {:.1}",
+                name,
+                r,
+                min
+            );
         }
 
         ThemeMode::set(ThemeMode::Light);
@@ -418,7 +472,13 @@ mod tests {
         ];
         for (name, fg, bgc, min) in cases_light {
             let r = wcag_contrast(source_rgb(fg), bgc);
-            assert!(r >= min, "light theme {} contrast {:.2} < {:.1}", name, r, min);
+            assert!(
+                r >= min,
+                "light theme {} contrast {:.2} < {:.1}",
+                name,
+                r,
+                min
+            );
         }
 
         ColorDepth::set(ColorDepth::TrueColor);

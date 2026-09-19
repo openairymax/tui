@@ -319,10 +319,7 @@ impl SkillStore for GatewaySkillStore {
 ///   data     = procedure（可复用执行步骤，技能正文）
 ///   metadata = { source:"tui", kind:"skill", name, category, trigger,
 ///                summary, lessons, tags, success_count, created_at }
-async fn writer(
-    client: GatewayClient,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<SkillRecord>,
-) {
+async fn writer(client: GatewayClient, mut rx: tokio::sync::mpsc::UnboundedReceiver<SkillRecord>) {
     while let Some(rec) = rx.recv().await {
         // 技能正文以 procedure 为准；其后备为 summary，保证 data 非空。
         let data = if rec.procedure.trim().is_empty() {
@@ -437,23 +434,53 @@ pub fn parse_distilled_skill(raw: &str) -> Option<SkillRecord> {
     if name.is_empty() {
         return None;
     }
-    let trigger = v.get("trigger").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let trigger = v
+        .get("trigger")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if trigger.is_empty() {
         return None;
     }
-    let procedure = v.get("procedure").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let procedure = v
+        .get("procedure")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if procedure.is_empty() {
         return None;
     }
 
     Some(SkillRecord {
         name,
-        category: v.get("category").and_then(|x| x.as_str()).unwrap_or("general").trim().to_string(),
+        category: v
+            .get("category")
+            .and_then(|x| x.as_str())
+            .unwrap_or("general")
+            .trim()
+            .to_string(),
         trigger,
-        summary: v.get("summary").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
+        summary: v
+            .get("summary")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
         procedure,
-        lessons: v.get("lessons").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
-        tags: v.get("tags").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
+        lessons: v
+            .get("lessons")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        tags: v
+            .get("tags")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
         created_at: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         success_count: 0,
     })

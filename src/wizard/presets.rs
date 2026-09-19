@@ -184,13 +184,19 @@ mod tests {
         assert_eq!(preset_text(p, PresetSource::Mode), "api");
         assert_eq!(preset_text(p, PresetSource::ApiFormat), "openai");
         assert_eq!(preset_text(p, PresetSource::Label), "OpenAI");
-        assert_eq!(preset_text(p, PresetSource::BaseUrl), "https://api.openai.com/v1");
+        assert_eq!(
+            preset_text(p, PresetSource::BaseUrl),
+            "https://api.openai.com/v1"
+        );
         assert_eq!(preset_text(p, PresetSource::Model), "gpt-4o");
     }
 
     #[test]
     fn provider_of_url_infers_id() {
-        assert_eq!(provider_of_url("https://open.bigmodel.cn/api/paas/v4"), "glm");
+        assert_eq!(
+            provider_of_url("https://open.bigmodel.cn/api/paas/v4"),
+            "glm"
+        );
         assert_eq!(provider_of_url("http://127.0.0.1:8000/v1"), "local");
         assert_eq!(provider_of_url(""), "deepseek");
     }

@@ -70,10 +70,14 @@ impl App {
                 .collect()
         };
         visible.reverse(); // 与面板渲染一致：最新在前
-        // 与渲染同序（board.rs 状态分组稳定排序）：此前仅 reverse 取索引，
-        // 混合状态时高亮行与 Enter 详情错位（2.3.13 F6 看板选中错位）。
+                           // 与渲染同序（board.rs 状态分组稳定排序）：此前仅 reverse 取索引，
+                           // 混合状态时高亮行与 Enter 详情错位（2.3.13 F6 看板选中错位）。
         visible.sort_by_key(|e| {
-            crate::panels::board::state_rank(if e.state.is_empty() { "unknown" } else { &e.state })
+            crate::panels::board::state_rank(if e.state.is_empty() {
+                "unknown"
+            } else {
+                &e.state
+            })
         });
         // 选中窗口与渲染窗口同一上限：渲染只物化前 64 条，选中若在全量
         // 上取模，条目超窗后 Enter 打开的是屏外条目（与光标 cap 同步）。
@@ -141,10 +145,17 @@ impl App {
             return;
         };
         self.active_panel = ActivePanel::Chat;
-        let pretty = serde_json::to_string_pretty(&e.content).unwrap_or_else(|_| e.content.to_string());
+        let pretty =
+            serde_json::to_string_pretty(&e.content).unwrap_or_else(|_| e.content.to_string());
         self.add_message(
             MessageRole::System,
-            format!("[{}:{}] 事件详情（task={}）\n{}", events_category_cn(&e.category), e.gseq, e.task_id, pretty),
+            format!(
+                "[{}:{}] 事件详情（task={}）\n{}",
+                events_category_cn(&e.category),
+                e.gseq,
+                e.task_id,
+                pretty
+            ),
         );
     }
 
@@ -188,6 +199,17 @@ impl App {
                 self.skills.refresh();
             }
         }
+    }
+
+    /// 0.1.18 B4：打开思考链独立视图（Alt+E）。
+    ///
+    /// 思考链默认不上屏、不落长期记忆，本视图是唯一的按需查看入口，故用
+    /// "打开"而非 toggle 语义：已在视图中时再按 Alt+E 只把滚动归零（回到
+    /// 最新思考链顶部），不会意外退回对话。离开 Board/Events 时须停 SSE。
+    pub fn open_think_panel(&mut self) {
+        self.active_panel = ActivePanel::Think;
+        self.think_scroll = 0;
+        self.stop_hall_watch();
     }
 
     /// PgDn：记忆面板向更早方向翻一页（分组窗口懒加载，0.1.9 W8）。

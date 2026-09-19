@@ -47,7 +47,11 @@ pub struct MemoryView {
 impl MemoryView {
     /// PgDn：向更早方向翻一页，越界时钳到最远整页。
     pub fn page_down(&mut self, total: usize) {
-        self.move_to(self.skip.saturating_add(PAGE_RECORDS).min(last_page_start(total)));
+        self.move_to(
+            self.skip
+                .saturating_add(PAGE_RECORDS)
+                .min(last_page_start(total)),
+        );
     }
 
     /// PgUp：向更新方向翻回一页，最新页为界。
@@ -99,7 +103,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 记忆库 ",
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ));
 
     let total = app.memory.len();
@@ -121,12 +127,16 @@ fn rebuild(view: &mut MemoryView, mem: &dyn ConversationMemory, total: usize) {
         Span::styled("  记忆条数  ", Style::default().fg(theme::faint())),
         Span::styled(
             format!("{}", total),
-            Style::default().fg(theme::success()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::success())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ·  后端  ", Style::default().fg(theme::faint())),
         Span::styled(
             backend,
-            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
         ),
         page_hint(total, window.len()),
     ])];
@@ -196,14 +206,20 @@ fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryRecor
         Span::styled("  ", Style::default()),
         Span::styled(
             format!("── 来源：{}（{} 条） ──", src, entries.len()),
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
     let n = entries.len();
     for (i, rec) in entries.iter().enumerate() {
         let speaker = role_cn(&rec.role);
         let content: String = rec.content.chars().take(60).collect();
-        let (stem, conn) = if i + 1 == n { ("└─", "  ") } else { ("├─", "│ ") };
+        let (stem, conn) = if i + 1 == n {
+            ("└─", "  ")
+        } else {
+            ("├─", "│ ")
+        };
         let hhmm = rec.timestamp.chars().take(16).collect::<String>();
         // 关联链标记：含思考链（reasoning）的记忆条目弱化提示
         let has_reasoning = rec
@@ -213,11 +229,18 @@ fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryRecor
             .unwrap_or(false);
         lines.push(Line::from(vec![
             Span::styled(format!("  {} ", stem), Style::default().fg(theme::border())),
-            Span::styled(format!("[{}]", speaker), Style::default().fg(theme::accent())),
+            Span::styled(
+                format!("[{}]", speaker),
+                Style::default().fg(theme::accent()),
+            ),
             Span::styled(format!(" {} ", hhmm), Style::default().fg(theme::faint())),
             Span::styled(content, Style::default().fg(theme::text())),
             Span::styled(
-                if has_reasoning { " · 含思考链" } else { "" },
+                if has_reasoning {
+                    " · 含思考链"
+                } else {
+                    ""
+                },
                 Style::default().fg(theme::faint()),
             ),
         ]));

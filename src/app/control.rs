@@ -33,7 +33,10 @@ impl App {
             _ => "拒绝",
         };
         self.add_message(MessageRole::System, format!("已{label}工具「{}」", tool));
-        self.add_log("INFO", format!("权限决议: {} → {} ({})", request_id, label, tool));
+        self.add_log(
+            "INFO",
+            format!("权限决议: {} → {} ({})", request_id, label, tool),
+        );
         tokio::spawn(async move {
             if let Err(e) = gw.resolve_approval(&request_id, &decision).await {
                 log::warn!("tool.approve 请求失败 ({}): {}", request_id, e);
@@ -57,7 +60,9 @@ impl App {
             .pending
             .take()
             .map(|p| p.kind)
-            .unwrap_or(PendingKind::ChatRound { input: String::new() });
+            .unwrap_or(PendingKind::ChatRound {
+                input: String::new(),
+            });
         self.loading = false;
         // 中止后保持中止态（状态徽章显示「已中止」）；新交互发起时复位 Running
         self.set_task_control(TaskControl::Aborted);
@@ -68,7 +73,11 @@ impl App {
             let gw = self.gateway.clone();
             tokio::spawn(async move {
                 if let Err(e) = gw.cancel_session(&session_id).await {
-                    log::debug!("agent.cancel request failed (session={}): {}", session_id, e);
+                    log::debug!(
+                        "agent.cancel request failed (session={}): {}",
+                        session_id,
+                        e
+                    );
                 }
             });
         }
@@ -80,7 +89,8 @@ impl App {
                 self.set_flow_phase(FlowPhase::GradConfirm);
                 self.add_message(
                     MessageRole::System,
-                    "流程图生成已中止。输入任意内容可重新生成，或输入「退出」放弃任务。".to_string(),
+                    "流程图生成已中止。输入任意内容可重新生成，或输入「退出」放弃任务。"
+                        .to_string(),
                 );
             }
             PendingKind::GradConfirm { confirmed } => {
@@ -107,7 +117,10 @@ impl App {
             }
             PendingKind::AskGccp { .. } => {
                 self.set_flow_phase(FlowPhase::Chat);
-                self.add_message(MessageRole::System, "任务事实确认已中止，任务放弃。".to_string());
+                self.add_message(
+                    MessageRole::System,
+                    "任务事实确认已中止，任务放弃。".to_string(),
+                );
                 self.task_mode = false;
             }
             PendingKind::Distill => {
@@ -118,6 +131,16 @@ impl App {
             }
         }
         self.add_log("INFO", "任务已人工中止（Ctrl+X）".to_string());
+    }
+
+    /// 标记请求已发出（0.1.18 B2-7）：置 busy 并记录发出时刻。
+    ///
+    /// 各 dispatch 入口在发起网络请求的同一刻调用，使对话区状态行能在
+    /// 首个 busy 帧（主循环 50ms 节拍）即显示「已受理 · N.Ns」——请求
+    /// 发出与用户面可见反馈之间不再存在零反馈窗口（V2.3，≤200ms）。
+    pub(super) fn begin_busy(&mut self) {
+        self.loading = true;
+        self.busy_started = Instant::now();
     }
 
     /// 空闲态退出任务集（Ctrl+X 二次按下 / 空闲时 Ctrl+X）。
@@ -161,10 +184,7 @@ impl App {
         if self.task_control == TaskControl::Paused {
             self.set_task_control(TaskControl::Running);
             log::info!("resume_task: 已恢复等待（Ctrl+Z）");
-            self.add_message(
-                MessageRole::System,
-                "▶ 已恢复，继续等待回复。".to_string(),
-            );
+            self.add_message(MessageRole::System, "▶ 已恢复，继续等待回复。".to_string());
             self.add_log("INFO", "任务已恢复（Ctrl+Z）".to_string());
         }
     }
@@ -193,24 +213,105 @@ impl App {
         Ok(())
     }
 
-    /// Scroll up in chat.
+    /// 对话滚动（0.1.18 B11/W14 滚动契约）：偏移钳位到可滚总量
+    /// `chat_scroll_max`（渲染每帧回写）。内容未超出视口时该值为 0，
+    /// 滚动为 no-op——消除"按键无反馈"的脏偏移积累（V11.3）。
     pub fn scroll_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(1);
+        self.scroll_offset = (self.scroll_offset + 1).min(self.chat_scroll_max);
     }
 
-    /// Scroll down in chat.
+    /// 对话下滚：同上钳位，0 封底（最新消息）。
     pub fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 
-    /// Scroll up one page.
+    /// 上翻一页：步长 = `page_step`（= 当前视口高度，渲染每帧回写，
+    /// resize 自动跟随——固定常量翻页已废除，V11.2）。
     pub fn scroll_page_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(10);
+        self.scroll_offset = (self.scroll_offset + self.page_step).min(self.chat_scroll_max);
     }
 
-    /// Scroll down one page.
+    /// 下翻一页：步长同上。
     pub fn scroll_page_down(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+        self.scroll_offset = self.scroll_offset.saturating_sub(self.page_step);
+    }
+
+    /// 视口滚动到顶（Alt+Home）：偏移 = 可滚总量。
+    /// Home 无修饰键语义为输入光标行首（readline 惯例，不在此改写）。
+    pub fn scroll_top(&mut self) {
+        self.scroll_offset = self.chat_scroll_max;
+    }
+
+    /// 视口滚动到底（Alt+End）：偏移归零（最新消息）。
+    pub fn scroll_bottom(&mut self) {
+        self.scroll_offset = 0;
+    }
+
+    /// 鼠标滚轮捕获会话级切换（Ctrl+M）：返回切换后的状态，调用方据此
+    /// 执行 Enable/DisableMouseCapture 终端序列。默认关（不牺牲终端
+    /// 原生文本选择，V11.1）。
+    pub fn toggle_mouse_capture(&mut self) -> bool {
+        self.mouse_capture = !self.mouse_capture;
+        self.mouse_capture
+    }
+
+    /// 鼠标滚轮一行滚动量：Shift 加速 / Ctrl 细粒度（W14）。
+    pub fn wheel_lines(&self, shift: bool, ctrl: bool) -> u16 {
+        if ctrl {
+            1
+        } else if shift {
+            self.page_step
+        } else {
+            3
+        }
+    }
+
+    /// 鼠标滚轮上滚：普通滚动与翻页共用钳位契约。
+    pub fn wheel_up(&mut self, lines: u16) {
+        self.scroll_offset = (self.scroll_offset + lines).min(self.chat_scroll_max);
+    }
+
+    /// 鼠标滚轮下滚。
+    pub fn wheel_down(&mut self, lines: u16) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+
+    /// 焦点视图（Alt+F）：快照最近一条回复进入全屏只读视图。无回复时
+    /// 提示且不切换。快照与滚动独立于对话区，Esc 退出恢复原视口。
+    pub fn focus_open(&mut self) {
+        let Some(m) = self
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Agent)
+        else {
+            self.add_message(MessageRole::System, "暂无可全屏查看的回复。".to_string());
+            return;
+        };
+        self.focus_msg = Some(m.clone());
+        self.focus_scroll = 0;
+        self.active_panel = ActivePanel::Focus;
+    }
+
+    /// 焦点视图滚动（钳位到 `focus_scroll_max`，渲染每帧回写）。
+    pub fn focus_scroll_up(&mut self) {
+        self.focus_scroll = (self.focus_scroll + 1).min(self.focus_scroll_max);
+    }
+
+    /// 焦点视图下滚。
+    pub fn focus_scroll_down(&mut self) {
+        self.focus_scroll = self.focus_scroll.saturating_sub(1);
+    }
+
+    /// 焦点视图上翻一页（步长 = 视口高度 SSoT）。
+    pub fn focus_page_up(&mut self) {
+        let step = self.page_step as usize;
+        self.focus_scroll = (self.focus_scroll + step).min(self.focus_scroll_max);
+    }
+
+    /// 焦点视图下翻一页。
+    pub fn focus_page_down(&mut self) {
+        self.focus_scroll = self.focus_scroll.saturating_sub(self.page_step as usize);
     }
 
     /// F3 日志面板：向更早方向滚一条（距最新的条目偏移 +1）。
@@ -221,6 +322,26 @@ impl App {
     /// F3 日志面板：向最新方向滚一条（偏移减 1，0 封底）。
     pub fn logs_scroll_newer(&mut self) {
         self.logs_scroll = self.logs_scroll.saturating_sub(1);
+    }
+
+    /// 思考链视图：向更早方向滚一行（正文首行下标 +1，顶部为上界由渲染钳位）。
+    pub fn think_scroll_up(&mut self) {
+        self.think_scroll = self.think_scroll.saturating_add(1);
+    }
+
+    /// 思考链视图：向更新方向滚一行（下标减 1，0 封底）。
+    pub fn think_scroll_down(&mut self) {
+        self.think_scroll = self.think_scroll.saturating_sub(1);
+    }
+
+    /// 思考链视图：上翻一页（与 chat 的 PgUp 步长一致，10 行）。
+    pub fn think_page_up(&mut self) {
+        self.think_scroll = self.think_scroll.saturating_add(10);
+    }
+
+    /// 思考链视图：下翻一页。
+    pub fn think_page_down(&mut self) {
+        self.think_scroll = self.think_scroll.saturating_sub(10);
     }
 
     /// Shutdown gracefully.

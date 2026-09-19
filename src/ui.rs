@@ -16,6 +16,11 @@
 // └─ Shortcuts（居中）─────────────────────────────────────┘
 //  F1 帮助  F2 配置  F3 日志  F4 记忆  F5 插件  Ctrl+C 退出
 
+use crate::app::{ActivePanel, App};
+use crate::gccp::FlowPhase;
+use crate::panels;
+use crate::theme;
+use crate::wizard;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -23,11 +28,6 @@ use ratatui::{
     widgets::{Block, Paragraph},
     Frame,
 };
-use crate::app::{ActivePanel, App};
-use crate::gccp::FlowPhase;
-use crate::panels;
-use crate::theme;
-use crate::wizard;
 
 /// 输入光标字符（黑白两色交替闪动，替代终端方块光标）
 const BREATH_CURSOR: &str = "▍";
@@ -113,6 +113,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     } else {
         match app.active_panel {
             ActivePanel::Chat => panels::chat::render(f, main_layout[1], app),
+            ActivePanel::Focus => panels::chat::render_focus(f, main_layout[1], app),
             ActivePanel::Help => panels::help::render(f, main_layout[1], app),
             ActivePanel::Config => panels::config::render(f, main_layout[1], app),
             ActivePanel::Logs => panels::logs::render(f, main_layout[1], app),
@@ -120,6 +121,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             ActivePanel::Plugins => panels::plugins::render(f, main_layout[1], app),
             ActivePanel::Board => panels::board::render(f, main_layout[1], app),
             ActivePanel::Events => panels::events::render(f, main_layout[1], app),
+            ActivePanel::Think => panels::think::render(f, main_layout[1], app),
         }
     }
     let mut idx = 2;
@@ -191,8 +193,7 @@ fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     f.render_widget(
-        Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(theme::surface())),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::surface())),
         area,
     );
 }
@@ -215,19 +216,32 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
     let line1 = Line::from(vec![
         Span::styled(
             " ⚠ ",
-            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::warning())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "工具审批请求",
-            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::warning())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("  ·  主体: {}", if a.agent_id.is_empty() { "unknown" } else { &a.agent_id }),
+            format!(
+                "  ·  主体: {}",
+                if a.agent_id.is_empty() {
+                    "unknown"
+                } else {
+                    &a.agent_id
+                }
+            ),
             Style::default().fg(theme::dim()),
         ),
         Span::styled(
             format!("  ·  工具: {}", a.tool),
-            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(
@@ -246,17 +260,23 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         Span::styled(
             "[a] 允许本次",
-            Style::default().fg(theme::success()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::success())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             "[A] 始终允许",
-            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             "[n] 拒绝",
-            Style::default().fg(theme::danger()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::danger())
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(
@@ -282,8 +302,16 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(
             format!(" {} {} ", i + 1, title),
             Style::default()
-                .fg(if active { theme::on_color() } else { theme::dim() })
-                .bg(if active { theme::primary() } else { theme::surface_3() })
+                .fg(if active {
+                    theme::on_color()
+                } else {
+                    theme::dim()
+                })
+                .bg(if active {
+                    theme::primary()
+                } else {
+                    theme::surface_3()
+                })
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("  ", Style::default()));
@@ -331,12 +359,18 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!(" v{ver} "), Style::default().fg(theme::faint())),
     ];
     // 连接灯 + 时间（窄屏也保留）
-    spans.push(Span::styled(light, Style::default().fg(color).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(
+        light,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ));
     spans.push(Span::styled(
         format!(" {label}"),
         Style::default().fg(color),
     ));
-    spans.push(Span::styled(format!("  {now}"), Style::default().fg(theme::dim())));
+    spans.push(Span::styled(
+        format!("  {now}"),
+        Style::default().fg(theme::dim()),
+    ));
 
     // 宽屏（≥72 列）展开右侧运行数据段（分段分隔符连接）
     if area.width >= 72 {
@@ -348,7 +382,9 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
         spans.push(seg());
         spans.push(Span::styled(
             model_text,
-            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             format!("  {} tok · ${:.4}", app.tokens, app.cost),
@@ -393,10 +429,7 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
 
 /// 状态条分段分隔符（" │ "，主色弱化细竖线）
 fn seg() -> Span<'static> {
-    Span::styled(
-        "  │  ",
-        Style::default().fg(theme::separator()),
-    )
+    Span::styled("  │  ", Style::default().fg(theme::separator()))
 }
 
 /// 阶段徽章配色（对话 / 任务事实确认 / 目标澄清 / 任务流程图确认 / 任务集）
@@ -449,6 +482,8 @@ fn panel_read_hint(p: ActivePanel) -> Option<&'static str> {
         ActivePanel::Logs => Some("日志只读 · ↑↓ 滚动 · Esc 返回对话"),
         ActivePanel::Memory => Some("记忆只读 · PgUp/PgDn 翻页 · Esc 返回对话"),
         ActivePanel::Plugins => Some("插件只读 · Esc 返回对话"),
+        ActivePanel::Think => Some("思考链只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
+        ActivePanel::Focus => Some("焦点视图只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
         _ => None,
     }
 }
@@ -462,10 +497,7 @@ fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
     if app.loading {
         let line = Line::from(vec![
             Span::styled(" ❯ ", Style::default().fg(theme::faint())),
-            Span::styled(
-                app.input.clone(),
-                Style::default().fg(theme::text()),
-            ),
+            Span::styled(app.input.clone(), Style::default().fg(theme::text())),
         ]);
         f.render_widget(
             Paragraph::new(line).style(Style::default().bg(theme::surface())),
@@ -498,10 +530,7 @@ fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::styled(
-                "[英] ",
-                Style::default().fg(theme::faint()),
-            ));
+            spans.push(Span::styled("[英] ", Style::default().fg(theme::faint())));
         }
     }
     spans.push(Span::styled(hint, Style::default().fg(hint_color)));
@@ -589,12 +618,20 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         let active = panel == Some(app.active_panel);
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::default().fg(if active { theme::primary() } else { theme::dim() }),
+            Style::default().fg(if active {
+                theme::primary()
+            } else {
+                theme::dim()
+            }),
         ));
         if !compact {
             spans.push(Span::styled(
                 format!("{label} "),
-                Style::default().fg(if active { theme::primary() } else { theme::faint() }),
+                Style::default().fg(if active {
+                    theme::primary()
+                } else {
+                    theme::faint()
+                }),
             ));
         }
     }
@@ -602,10 +639,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
      * 用主色竖线分隔，避免"一排灰字"失去节奏；窄屏自动收起分组。 */
     if area.width >= 80 {
         spans.push(Span::styled("  ", Style::default()));
-        spans.push(Span::styled(
-            "┃",
-            Style::default().fg(theme::primary()),
-        ));
+        spans.push(Span::styled("┃", Style::default().fg(theme::primary())));
         spans.push(Span::styled(
             "  输入  Enter 发送 · Alt+Enter 换行 · Alt+↑/↓ 历史",
             Style::default().fg(theme::faint()),
@@ -613,10 +647,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
     }
     if area.width >= 52 {
         spans.push(Span::styled("  ", Style::default()));
-        spans.push(Span::styled(
-            "┃",
-            Style::default().fg(theme::primary()),
-        ));
+        spans.push(Span::styled("┃", Style::default().fg(theme::primary())));
         spans.push(Span::styled(
             "  控制  Ctrl+Z 暂停 · Ctrl+X 中止",
             Style::default().fg(theme::faint()),
@@ -624,10 +655,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
     }
     if area.width >= 40 {
         spans.push(Span::styled("  ", Style::default()));
-        spans.push(Span::styled(
-            "┃",
-            Style::default().fg(theme::primary()),
-        ));
+        spans.push(Span::styled("┃", Style::default().fg(theme::primary())));
         spans.push(Span::styled(
             "  Ctrl+C 退出",
             Style::default().fg(theme::faint()),

@@ -46,21 +46,29 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  F6          - 任务看板（work_hall 执行实例 + 在线 agent，实时刷新）".to_string(),
         "  F7          - 事件流（全局 gseq 因果序回放）".to_string(),
         "  F8          - 切换到 CLI（airy_cli；CLI 中 /tui 切回）".to_string(),
+        "  Alt+E       - 查看思考链（独立视图；思考链默认不上屏、不落长期记忆）".to_string(),
+        "  Alt+F       - 焦点视图（全屏只读查看最近一条回复，Esc 返回）".to_string(),
+        "  Alt+O       - 展开/折叠长系统消息".to_string(),
+        "  Ctrl+M      - 鼠标滚轮捕获开关（默认关保终端文本选择；开：滚轮滚动对话，".to_string(),
+        "                Shift 翻页 / Ctrl 单行）".to_string(),
         "  Enter       - 发送消息".to_string(),
         "  Alt+Enter   - 换行（多行输入）".to_string(),
         "  Ctrl+C      - 退出 TUI".to_string(),
         "  Esc         - 返回对话".to_string(),
-        "  Up/Down     - 滚动对话".to_string(),
+        "  Up/Down     - 滚动对话/思考链/焦点视图".to_string(),
         "  Alt+Up/Down - 浏览输入历史（Alt+↓ 可回到手输状态）".to_string(),
-        "  PgUp/PgDn   - 滚动对话（翻页）；记忆面板翻记录窗口".to_string(),
-        "  End         - 回到底部（最新消息）".to_string(),
+        "  PgUp/PgDn   - 对话/焦点视图翻页（步长=视口高度）；记忆面板翻记录窗口；思考链翻页"
+            .to_string(),
+        "  Home/End    - 输入框光标到行首/行尾（readline 惯例）".to_string(),
+        "  Alt+Home/End - 视口滚动到顶/底（End 在空输入时回底部）".to_string(),
         "  Ctrl+X      - 中止当前请求（任务执行/对话等待）".to_string(),
         "  Ctrl+Z      - 暂停/恢复等待（请求继续在后台执行）".to_string(),
         "  Ctrl+T      - 新建会话 tab（多会话；任务执行中不可用）".to_string(),
         "  Alt+1..9    - 切换会话（Alt+1 = 主会话，Alt+N = 第 N 个 tab）".to_string(),
         "  /hiairy     - 重新打开首次启动向导".to_string(),
         "  /model      - 查看当前模型；/model <模型名> 切换并持久化".to_string(),
-        "  /set-key    - 写入模型 API Key：/set-key <KEY> <VALUE>（写回 secrets.env，chmod 600）".to_string(),
+        "  /set-key    - 写入模型 API Key：/set-key <KEY> <VALUE>（写回 secrets.env，chmod 600）"
+            .to_string(),
         "  /status     - 运行时状态总览（连接/版本/模型/用量/记忆/技能）".to_string(),
         "  /skills     - 列出共享技能库（任务成功自动沉淀，与 CLI 同源）".to_string(),
         "  /memory     - 记忆统计面板（F4 等价）".to_string(),
@@ -69,13 +77,15 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  Tab         - 补全 / 命令（Tab 再次循环候选）".to_string(),
         "  /board      - 任务看板面板（F6 等价）".to_string(),
         "  /events     - 事件流面板（F7 等价）".to_string(),
+        "  /think      - 思考链独立视图（Alt+E 等价；思考链默认不上屏）".to_string(),
         "  /chain      - 决策链：无参列任务，/chain <task_id> 回放该任务决策链".to_string(),
         "  /daemons    - 14 个 daemon 在线状态（gateway 自身见顶部连接灯）".to_string(),
         "  /agents     - 已注册智能体（agent.list）".to_string(),
         "  /tools      - 可用工具（tool.list_tools）".to_string(),
         "  /models     - LLM 模型（llm.list_models）".to_string(),
         "  /mem        - 记忆统计；/mem <query> 语义检索".to_string(),
-        "  /rpc        - 通用调用：/rpc <ns>.<method> [json]（如 /rpc tool.list_tools）".to_string(),
+        "  /rpc        - 通用调用：/rpc <ns>.<method> [json]（如 /rpc tool.list_tools）"
+            .to_string(),
         String::new(),
         "任务流:".to_string(),
         "  是否进入任务集由 LLM 判断，状态栏显示当前阶段徽章。".to_string(),
@@ -90,7 +100,8 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  跨会话可召回；TUI 不持有独立本地存储。".to_string(),
         String::new(),
         "Skills 共享技能库:".to_string(),
-        "  任务成功后自动提炼经验并沉淀为可复用技能（经网关 mem.* 与 CLI 共享同一存储，".to_string(),
+        "  任务成功后自动提炼经验并沉淀为可复用技能（经网关 mem.* 与 CLI 共享同一存储，"
+            .to_string(),
         "  metadata.kind=skill 分区）。".to_string(),
         "  区别于社区官方技能库：本地技能是 Agent 在任务中自我总结的，".to_string(),
         "  用得多、沉淀多、可用工具就多，不用重复造技能的轮子。".to_string(),
@@ -117,10 +128,7 @@ pub(super) fn format_thinking_summary(
     th: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<String> {
     let plan = th.get("plan")?;
-    let node_count = plan
-        .get("node_count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let node_count = plan.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0);
     let first_goal = plan
         .get("nodes")
         .and_then(|v| v.as_array())

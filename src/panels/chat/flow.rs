@@ -70,7 +70,11 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                         4 => !app.gccp.a4.trim().is_empty(),
                         _ => !app.gccp.a5.trim().is_empty(),
                     };
-                    if done { "●" } else { "○" }
+                    if done {
+                        "●"
+                    } else {
+                        "○"
+                    }
                 })
                 .collect();
             out.push(Line::from(vec![
@@ -78,7 +82,10 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 Span::styled("任务事实确认", Style::default().fg(theme::primary())),
                 Span::styled(" ", Style::default()),
                 Span::styled(dots, Style::default().fg(theme::primary())),
-                Span::styled(format!("  {answered}/5"), Style::default().fg(theme::faint())),
+                Span::styled(
+                    format!("  {answered}/5"),
+                    Style::default().fg(theme::faint()),
+                ),
             ]));
             out.push(Line::raw(""));
         }
@@ -104,7 +111,11 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                     )];
                     spans.push(Span::styled(
                         format!("{}. {}", i + 1, q.question),
-                        Style::default().fg(if done { theme::faint() } else { theme::accent() }),
+                        Style::default().fg(if done {
+                            theme::faint()
+                        } else {
+                            theme::accent()
+                        }),
                     ));
                     if !q.hint.is_empty() {
                         spans.push(Span::styled(
@@ -122,9 +133,14 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 Span::styled("  ", Style::default()),
                 Span::styled(
                     "任务流程图确认",
-                    Style::default().fg(theme::magenta()).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::magenta())
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  输入「确认」开始执行，或输入修改意见", Style::default().fg(theme::dim())),
+                Span::styled(
+                    "  输入「确认」开始执行，或输入修改意见",
+                    Style::default().fg(theme::dim()),
+                ),
             ]));
             out.push(Line::raw(""));
             // 结构化 DAG 依赖图（LLM 生成 [DAG] 块 → 解析成功时渲染）
@@ -185,12 +201,13 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                         Span::styled(" ", Style::default()),
                         Span::styled(
                             bar.clone(),
-                            Style::default().fg(if done == n { theme::success() } else { theme::warning() }),
+                            Style::default().fg(if done == n {
+                                theme::success()
+                            } else {
+                                theme::warning()
+                            }),
                         ),
-                        Span::styled(
-                            format!("  {done}/{n}"),
-                            Style::default().fg(theme::faint()),
-                        ),
+                        Span::styled(format!("  {done}/{n}"), Style::default().fg(theme::faint())),
                     ]));
                     for (i, node) in dag.nodes.iter().enumerate() {
                         let state = app
@@ -225,7 +242,10 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                         ];
                         if width >= 56 {
                             spans.push(Span::styled("  ", Style::default()));
-                            spans.push(Span::styled(node_state_bar(state), Style::default().fg(color)));
+                            spans.push(Span::styled(
+                                node_state_bar(state),
+                                Style::default().fg(color),
+                            ));
                         }
                         out.push(Line::from(spans));
                     }
@@ -236,7 +256,7 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
     }
 }
 
-/// 流式尾段：工具状态行 + 思考链进度行 + 打字机气泡 + 思考动效。
+/// 流式尾段：工具状态行 + 打字机气泡 + 统一状态行（已受理/思考中/生成中 + 耗时）。
 /// 均为瞬态内容（每帧现算），不参与行高缓存。
 pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize) {
     // 流式工具状态行（SSE tool_call/tool_result 事件，Claude Code 风格：
@@ -245,35 +265,6 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
         out.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(evt.clone(), Style::default().fg(theme::tool_fg())),
-        ]));
-    }
-
-    // 流式思考链状态行（SSE __airy_evt:reasoning → stream_reasoning）：
-    // 思考内容为模型内部推理碎片，逐块上屏无展示价值——流式期间仅显示
-    // 一行状态（字数 + 耗时进度），落定后折叠为摘要行，Alt+E 展开全量。
-    // 标签按模型轨区分（2.3.14）。正文首片到达即隐藏（与 C 版 CLI 的
-    // 思考进度行竞态门控对齐，2026-08-19）。
-    if app.loading
-        && !app.stream_reasoning.is_empty()
-        && app.streaming_text.is_empty()
-    {
-        let secs = app
-            .stream_reasoning_start
-            .map(|t| t.elapsed().as_secs_f64())
-            .unwrap_or(0.0);
-        out.push(Line::from(vec![
-            Span::styled(
-                dual_think_label(&app.stream_reasoning_model).to_string(),
-                Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "  思考中… {} 字 · {:.1}s（Alt+E 查看思考链）",
-                    app.stream_reasoning.chars().count(),
-                    secs
-                ),
-                Style::default().fg(theme::faint()),
-            ),
         ]));
     }
 
@@ -301,16 +292,46 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
     }
 
     if app.loading {
-        // 思考动效：Braille spinner 旋转（0.1s 一帧，与 ui.rs 同一时钟；
-        // Claude 风格轻量旋转——单字符宽度，不跳动文本，克制优雅）
+        // 统一状态行（0.1.18 B2-7）：请求发出后首个 busy 帧（主循环 50ms
+        // 节拍）即出现「已受理」，请求与可见反馈之间不再有零反馈窗口
+        // （V2.3）；随后按阶段演进为「思考中 / 生成中」，并始终附带已耗时
+        // 计数——首字与整轮耗时在用户面同源可读（V2.1 的分段证据之一）。
         let frame = (app.session_start.elapsed().as_millis() / 100) as usize % THINKING.len();
-        out.push(Line::from(vec![
+        let secs = app.busy_started.elapsed().as_secs_f64();
+        let mut spans = vec![
             Span::styled("  ", Style::default()),
             Span::styled(
-                format!(" {}", THINKING[frame]),
+                format!(" {} ", THINKING[frame]),
                 Style::default().fg(theme::faint()),
             ),
-        ]));
+        ];
+        if !app.streaming_text.is_empty() {
+            spans.push(Span::styled("生成中", Style::default().fg(theme::faint())));
+        } else if app.stream_reasoning.is_empty() {
+            spans.push(Span::styled("已受理", Style::default().fg(theme::faint())));
+        } else {
+            // 思考链实时可见：模型轨标签区分快/慢/专业思考，正文在其后到达
+            spans.push(Span::styled(
+                dual_think_label(&app.stream_reasoning_model),
+                Style::default().fg(theme::primary()),
+            ));
+            spans.push(Span::styled(
+                format!(" 思考中 {} 字", app.stream_reasoning.chars().count()),
+                Style::default().fg(theme::faint()),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(" · {:.1}s", secs),
+            Style::default().fg(theme::faint()),
+        ));
+        // 思考链默认不上屏（B4 隐私收口），仅有存量时提示独立视图入口
+        if !app.stream_reasoning.is_empty() && width >= 64 {
+            spans.push(Span::styled(
+                "（Alt+E 查看思考链）",
+                Style::default().fg(theme::faint()),
+            ));
+        }
+        out.push(Line::from(spans));
     }
 }
 

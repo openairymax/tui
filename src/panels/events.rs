@@ -92,7 +92,9 @@ fn content_summary(e: &HallEvent) -> String {
                 .unwrap_or_default();
             format!("{}{}", status, pct)
         }
-        "issue" => pick(&["error_code", "failure_class", "event"]).unwrap_or_else(|| raw_compact(c)),
+        "issue" => {
+            pick(&["error_code", "failure_class", "event"]).unwrap_or_else(|| raw_compact(c))
+        }
         "result" => {
             let ok = pick(&["status", "verdict"]).unwrap_or_default();
             if !ok.is_empty() {
@@ -142,7 +144,8 @@ fn event_row(e: &HallEvent, selected: bool) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             format!(" {} [{}:{}]", marker, label, e.gseq),
-            base.fg(category_color(&e.category)).add_modifier(Modifier::BOLD),
+            base.fg(category_color(&e.category))
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!(" {} ", task), base.fg(theme::accent())),
         Span::styled(content_summary(e), base.fg(theme::text())),
@@ -156,7 +159,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 事件流 ",
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ));
 
     let total = app.hall_events.len();
@@ -164,7 +169,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let filter_tip = if app.events_filter.is_empty() {
         "全部".to_string()
     } else {
-        format!("{} ({} 条)", category_label(&app.events_filter), app.events_visible_count())
+        format!(
+            "{} ({} 条)",
+            category_label(&app.events_filter),
+            app.events_visible_count()
+        )
     };
     let mut lines: Vec<Line> = vec![Line::from(vec![
         Span::styled(
@@ -174,12 +183,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("过滤: ", Style::default().fg(theme::faint())),
         Span::styled(
             filter_tip,
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            if app.connected { "  ● ONLINE" } else { "  ● OFFLINE" },
+            if app.connected {
+                "  ● ONLINE"
+            } else {
+                "  ● OFFLINE"
+            },
             Style::default()
-                .fg(if app.connected { theme::success() } else { theme::danger() })
+                .fg(if app.connected {
+                    theme::success()
+                } else {
+                    theme::danger()
+                })
                 .add_modifier(Modifier::BOLD),
         ),
     ])];
@@ -210,7 +229,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         }
         if events.len() > MAX_EVENT_ROWS {
             lines.push(Line::from(Span::styled(
-                format!("  … 共 {} 条，仅展示最新 {} 条", events.len(), MAX_EVENT_ROWS),
+                format!(
+                    "  … 共 {} 条，仅展示最新 {} 条",
+                    events.len(),
+                    MAX_EVENT_ROWS
+                ),
                 Style::default().fg(theme::faint()),
             )));
         }

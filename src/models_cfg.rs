@@ -19,8 +19,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Default)]
 pub struct ModelRow {
     pub name: String,
-    pub mode: String,        // api | local
-    pub api_format: String,  // openai | anthropic
+    pub mode: String,       // api | local
+    pub api_format: String, // openai | anthropic
     pub base_url: String,
     pub model_id: String,
     pub api_key_env: String,
@@ -214,8 +214,7 @@ pub fn patch_model_yaml(idx: usize, row: &ModelRow, think: &ThinkCfg) -> Result<
         patch_lines(&original, idx, row, think)
     };
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建配置目录失败: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {}", e))?;
     }
     std::fs::write(&path, patched).map_err(|e| format!("写入 model.yaml 失败: {}", e))
 }
@@ -404,7 +403,13 @@ fn write_think_section(out: &mut Vec<String>, think: &ThinkCfg, rest: &[&str]) {
     }
     // rest（原 think 段后续行）：跳过原 think: 头行，保留未知键行
     if !rest.is_empty() {
-        let known = ["enabled", "think2_slow_model", "think1_fast_model", "think1_prof_model", "timeout_ms"];
+        let known = [
+            "enabled",
+            "think2_slow_model",
+            "think1_fast_model",
+            "think1_prof_model",
+            "timeout_ms",
+        ];
         for l in rest.iter().skip(1) {
             let trimmed = l.trim_start();
             if let Some((k, _)) = split_kv(trimmed) {
@@ -565,7 +570,10 @@ think:
         assert!(patched.contains("GLM-4.7-Flash"), "第二行模型必须保留");
         assert!(patched.contains("# AgentRT 大语言模型配置文件"));
         assert!(patched.contains("enabled: false"), "think enabled 应更新");
-        assert!(!patched.contains("deepseek-v4-flash\""), "旧 model_id 应被替换");
+        assert!(
+            !patched.contains("deepseek-v4-flash\""),
+            "旧 model_id 应被替换"
+        );
     }
 
     #[test]
@@ -594,9 +602,18 @@ think:
     fn set_default_model_replaces_and_preserves() {
         let patched = patch_default_model(SAMPLE, "GLM-4.7-Flash");
         assert!(patched.contains("default_model: GLM-4.7-Flash"));
-        assert!(!patched.contains("default_model: \"deepseek-v4-flash\""), "旧默认模型应被替换");
-        assert!(patched.contains("model_id: \"deepseek-v4-flash\""), "模型行本身不动");
-        assert!(patched.contains("# AgentRT 大语言模型配置文件"), "文件头注释保留");
+        assert!(
+            !patched.contains("default_model: \"deepseek-v4-flash\""),
+            "旧默认模型应被替换"
+        );
+        assert!(
+            patched.contains("model_id: \"deepseek-v4-flash\""),
+            "模型行本身不动"
+        );
+        assert!(
+            patched.contains("# AgentRT 大语言模型配置文件"),
+            "文件头注释保留"
+        );
         assert!(patched.contains("think1_fast_model"), "think 段保留");
         assert!(patched.contains("name: \"GLM\""), "其余模型行保留");
     }
@@ -606,7 +623,10 @@ think:
         let src = "# header\nmodels:\n  - name: A\n    model_id: a\n\nthink:\n  enabled: true\n";
         let patched = patch_default_model(src, "a");
         let lines: Vec<&str> = patched.lines().collect();
-        let dm = lines.iter().position(|l| *l == "default_model: a").expect("插入 default_model");
+        let dm = lines
+            .iter()
+            .position(|l| *l == "default_model: a")
+            .expect("插入 default_model");
         let th = lines.iter().position(|l| *l == "think:").expect("think 段");
         assert!(dm < th, "应插入到 think 段之前");
     }

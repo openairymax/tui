@@ -74,7 +74,11 @@ pub(crate) fn state_rank(state: &str) -> u8 {
 
 fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
     let name: String = e.workflow_name.chars().take(24).collect();
-    let state = if e.state.is_empty() { "unknown" } else { &e.state };
+    let state = if e.state.is_empty() {
+        "unknown"
+    } else {
+        &e.state
+    };
     let base = if selected {
         Style::default().bg(theme::surface_active())
     } else {
@@ -86,14 +90,8 @@ fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
             format!(" {} {}  ", marker, state_icon(state)),
             base.fg(state_color(state)).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("{:<24}", name),
-            base.fg(theme::text()),
-        ),
-        Span::styled(
-            format!("{:<12}", state),
-            base.fg(state_color(state)),
-        ),
+        Span::styled(format!("{:<24}", name), base.fg(theme::text())),
+        Span::styled(format!("{:<12}", state), base.fg(state_color(state))),
         Span::styled(
             format!(" {} ", mini_bar(e.progress)),
             base.fg(theme::accent()),
@@ -102,10 +100,7 @@ fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
             format!("{:>3}%", (e.progress * 100.0).round() as u64),
             base.fg(theme::dim()),
         ),
-        Span::styled(
-            format!("  #{}", e.task_id),
-            base.fg(theme::faint()),
-        ),
+        Span::styled(format!("  #{}", e.task_id), base.fg(theme::faint())),
     ])
 }
 
@@ -129,7 +124,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 任务看板 ",
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ));
 
     let mut lines: Vec<Line> = Vec::new();
@@ -142,25 +139,36 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let filter_tip = if app.board_filter.is_empty() {
         "全部".to_string()
     } else {
-        format!("{} ({} 条)", state_cn(&app.board_filter), app.board_visible_count())
+        format!(
+            "{} ({} 条)",
+            state_cn(&app.board_filter),
+            app.board_visible_count()
+        )
     };
     lines.push(Line::from(vec![
         Span::styled(
             format!("  执行实例 {} · 在线 Agent {}  ", entry_count, agent_count),
             Style::default().fg(theme::dim()),
         ),
-        Span::styled(
-            "过滤: ",
-            Style::default().fg(theme::faint()),
-        ),
+        Span::styled("过滤: ", Style::default().fg(theme::faint())),
         Span::styled(
             filter_tip,
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            if app.connected { "  ● ONLINE" } else { "  ● OFFLINE" },
+            if app.connected {
+                "  ● ONLINE"
+            } else {
+                "  ● OFFLINE"
+            },
             Style::default()
-                .fg(if app.connected { theme::success() } else { theme::danger() })
+                .fg(if app.connected {
+                    theme::success()
+                } else {
+                    theme::danger()
+                })
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -171,7 +179,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let mut n_done = 0usize;
         let mut n_bad = 0usize;
         for e in &board.entries {
-            let st = if e.state.is_empty() { "unknown" } else { e.state.as_str() };
+            let st = if e.state.is_empty() {
+                "unknown"
+            } else {
+                e.state.as_str()
+            };
             match st {
                 "running" => n_run += 1,
                 "pending" | "scheduled" => n_wait += 1,
@@ -182,13 +194,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         }
         lines.push(Line::from(vec![
             Span::styled("  概览 ", Style::default().fg(theme::faint())),
-            Span::styled(format!("▶ 执行中 {}", n_run), Style::default().fg(theme::warning())),
+            Span::styled(
+                format!("▶ 执行中 {}", n_run),
+                Style::default().fg(theme::warning()),
+            ),
             Span::styled("   ", Style::default().fg(theme::faint())),
-            Span::styled(format!("○ 待处理 {}", n_wait), Style::default().fg(theme::cyan())),
+            Span::styled(
+                format!("○ 待处理 {}", n_wait),
+                Style::default().fg(theme::cyan()),
+            ),
             Span::styled("   ", Style::default().fg(theme::faint())),
-            Span::styled(format!("✓ 完成 {}", n_done), Style::default().fg(theme::success())),
+            Span::styled(
+                format!("✓ 完成 {}", n_done),
+                Style::default().fg(theme::success()),
+            ),
             Span::styled("   ", Style::default().fg(theme::faint())),
-            Span::styled(format!("✗ 失败/取消 {}", n_bad), Style::default().fg(theme::danger())),
+            Span::styled(
+                format!("✗ 失败/取消 {}", n_bad),
+                Style::default().fg(theme::danger()),
+            ),
         ]));
     }
     lines.push(Line::raw(""));
@@ -199,7 +223,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let mut entries: Vec<&HallBoardEntry> = board.entries.iter().collect();
         entries.reverse();
         entries.sort_by_key(|e| {
-            state_rank(if e.state.is_empty() { "unknown" } else { &e.state })
+            state_rank(if e.state.is_empty() {
+                "unknown"
+            } else {
+                &e.state
+            })
         });
         if !app.board_filter.is_empty() {
             entries.retain(|e| e.state == app.board_filter);
@@ -219,7 +247,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             }
             if entries.len() > MAX_BOARD_ROWS {
                 lines.push(Line::from(Span::styled(
-                    format!("  … 共 {} 条，仅展示前 {} 条", entries.len(), MAX_BOARD_ROWS),
+                    format!(
+                        "  … 共 {} 条，仅展示前 {} 条",
+                        entries.len(),
+                        MAX_BOARD_ROWS
+                    ),
                     Style::default().fg(theme::faint()),
                 )));
             }
@@ -244,7 +276,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(
                 "  ✗ 看板拉取失败 ",
-                Style::default().fg(theme::danger()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::danger())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(msg, Style::default().fg(theme::text())),
         ]));

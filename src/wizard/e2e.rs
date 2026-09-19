@@ -66,7 +66,10 @@ fn cjk_name_edit_roundtrip() {
     assert!(!press(&mut w, KeyCode::Enter), "Enter 进入编辑");
     type_str(&mut w, "智谱");
     assert_eq!(w.form[1].value, "智谱");
-    assert!(!press(&mut w, KeyCode::Backspace), "退格删除整个汉字不 panic");
+    assert!(
+        !press(&mut w, KeyCode::Backspace),
+        "退格删除整个汉字不 panic"
+    );
     assert_eq!(w.form[1].value, "智");
     assert!(!press(&mut w, KeyCode::Enter));
     assert!(!w.editing);
@@ -86,10 +89,16 @@ fn cjk_edit_left_right_home_end() {
     press(&mut w, KeyCode::Left);
     assert_eq!(w.edit_pos, w.form[1].value.len() - 1, "b 为单字节");
     press(&mut w, KeyCode::Left);
-    assert!(w.form[1].value.is_char_boundary(w.edit_pos), "← 落在字符边界");
+    assert!(
+        w.form[1].value.is_char_boundary(w.edit_pos),
+        "← 落在字符边界"
+    );
     press(&mut w, KeyCode::Right);
     press(&mut w, KeyCode::Right);
-    assert!(w.form[1].value.is_char_boundary(w.edit_pos), "→ 落在字符边界");
+    assert!(
+        w.form[1].value.is_char_boundary(w.edit_pos),
+        "→ 落在字符边界"
+    );
 }
 
 #[test]
@@ -155,8 +164,9 @@ fn full_wizard_flow_reaches_finish() {
     assert!(r.configured);
     assert_eq!(r.model, "qwen-max");
     assert!(r.api_key_set, "secrets.env 应写入成功");
-    let secrets = std::fs::read_to_string(std::env::var("AIRY_HOME").unwrap() + "/config/secrets.env")
-        .expect("secrets.env 存在");
+    let secrets =
+        std::fs::read_to_string(std::env::var("AIRY_HOME").unwrap() + "/config/secrets.env")
+            .expect("secrets.env 存在");
     assert!(secrets.contains("MODEL_1_API_KEY=sk-abc123"));
 }
 
@@ -193,7 +203,10 @@ fn esc_roundtrip_keeps_all_three_forms() {
     assert_eq!(w.choice_cursor, 0);
     press(&mut w, KeyCode::Enter); // 快速配置回 3
     assert_eq!(w.step, 3);
-    assert_eq!(w.form[4].value, "https://custom.example/v1", "再次进入仍恢复快照");
+    assert_eq!(
+        w.form[4].value, "https://custom.example/v1",
+        "再次进入仍恢复快照"
+    );
     assert_eq!(w.field_cursor, 0, "重进后光标归零");
 }
 
@@ -202,7 +215,10 @@ fn digit_shortcut_steps_1_and_2() {
     let (_h, mut w) = fresh("digit");
     assert!(!press(&mut w, KeyCode::Char('2')));
     assert_eq!(w.step, 2);
-    assert!(matches!(w.effective_lang, Lang::English), "数字 2 选 English");
+    assert!(
+        matches!(w.effective_lang, Lang::English),
+        "数字 2 选 English"
+    );
     assert!(!press(&mut w, KeyCode::Char('1')));
     assert_eq!(w.step, 3, "数字 1 选快速配置");
     assert_eq!(w.form.len(), 7);

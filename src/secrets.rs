@@ -158,10 +158,15 @@ mod tests {
         set_key_at(&path, "DEEPSEEK_API_KEY", "deep-value").expect("set2");
         set_key_at(&path, "OPENAI_API_KEY", "new-value").expect("set3");
         let pairs = read_all_at(&path);
-        let openai = pairs.iter().find(|(k, _)| k == "OPENAI_API_KEY").expect("openai");
+        let openai = pairs
+            .iter()
+            .find(|(k, _)| k == "OPENAI_API_KEY")
+            .expect("openai");
         assert_eq!(openai.1, "new-value", "同名变量原位替换");
         assert_eq!(pairs.len(), 2, "不产生重复行");
-        assert!(pairs.iter().any(|(k, v)| k == "DEEPSEEK_API_KEY" && v == "deep-value"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| k == "DEEPSEEK_API_KEY" && v == "deep-value"));
     }
 
     #[test]

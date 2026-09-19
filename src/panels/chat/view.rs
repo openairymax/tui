@@ -133,9 +133,8 @@ impl ChatView {
         } else {
             0
         };
-        let compact = idx > 0
-            && block::is_tool(app.messages[idx - 1].role)
-            && block::is_tool(msg.role);
+        let compact =
+            idx > 0 && block::is_tool(app.messages[idx - 1].role) && block::is_tool(msg.role);
         let body = match self.heights.get(&msg.id) {
             Some((c, h)) if *c == compact => *h,
             _ => self.measure(app, idx, width, compact),
@@ -163,9 +162,8 @@ impl ChatView {
         if msg.role == MessageRole::User && idx > 0 {
             block::push_turn_separator(out, app);
         }
-        let compact = idx > 0
-            && block::is_tool(app.messages[idx - 1].role)
-            && block::is_tool(msg.role);
+        let compact =
+            idx > 0 && block::is_tool(app.messages[idx - 1].role) && block::is_tool(msg.role);
         block::render(out, msg, width, compact, self.expanded);
     }
 
@@ -264,9 +262,14 @@ mod tests {
                 "from_top(scroll={scroll})"
             );
             let end = (win.from_top + 30).min(all.total);
-            assert_eq!(win.lines.len(), end - win.from_top, "窗口行数(scroll={scroll})");
             assert_eq!(
-                win.lines, all.lines[win.from_top..end],
+                win.lines.len(),
+                end - win.from_top,
+                "窗口行数(scroll={scroll})"
+            );
+            assert_eq!(
+                win.lines,
+                all.lines[win.from_top..end],
                 "虚拟窗口与全量切片不一致(scroll={scroll})"
             );
         }
@@ -332,5 +335,53 @@ mod tests {
         let frame = view.layout(&app, 40, 12, false);
         let text: String = frame.lines.iter().map(|l| l.to_string()).collect();
         assert!(text.contains("AirymaxRT"), "窄屏欢迎行: {text}");
+    }
+
+    /// B2（0.1.18）V2.3 / V2.1：请求发出后的**任意一帧**尾部都已有可见受理
+    /// 状态与已耗时计数——零反馈窗口不存在；状态随流阶段演进为
+    /// 「思考中 → 生成中」，落定后状态行消失（不残留瞬态）。
+    #[test]
+    fn busy_tail_exposes_state_and_elapsed() {
+        let (mut app, _h) = make_app();
+        let mut view = ChatView::new();
+        let text = |view: &mut ChatView, app: &App| {
+            view.layout(app, 80, 30, true)
+                .lines
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 请求刚发出（begin_busy 语义）：首帧即受理 + 已耗时
+        app.loading = true;
+        app.busy_started = std::time::Instant::now();
+        let t = text(&mut view, &app);
+        let line = t
+            .lines()
+            .find(|l| l.contains("已受理"))
+            .expect("busy 帧应有「已受理」状态行");
+        assert!(
+            line.trim_end().ends_with('s'),
+            "受理状态行应附已耗时计数: {line:?}"
+        );
+
+        // 思考链增量到达 → 思考中（含字数）
+        app.stream_reasoning = "推演".into();
+        let t = text(&mut view, &app);
+        assert!(t.contains("思考中"), "思考链到达应显示思考中: {t}");
+
+        // 正文增量到达 → 生成中
+        app.streaming_text = "答案".into();
+        let t = text(&mut view, &app);
+        assert!(t.contains("生成中"), "正文到达应显示生成中: {t}");
+
+        // 落定：瞬态状态行随之消失
+        app.loading = false;
+        let t = text(&mut view, &app);
+        assert!(
+            !t.contains("已受理") && !t.contains("生成中"),
+            "落定后不应残留状态行: {t}"
+        );
     }
 }
