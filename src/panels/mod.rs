@@ -13,3 +13,4 @@ pub mod help;
 pub mod logs;
 pub mod memory;
 pub mod plugins;
+pub mod think;

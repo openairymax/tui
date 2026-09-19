@@ -28,7 +28,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " 运行时日志 ",
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ));
 
     if app.logs.is_empty() {
@@ -62,8 +64,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::with_capacity(view_rows);
     for entry in app.logs.iter().rev().skip(offset).take(view_rows) {
         let level_style = match entry.level.as_str() {
-            "ERROR" => Style::default().fg(theme::danger()).add_modifier(Modifier::BOLD),
-            "WARN" => Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
+            "ERROR" => Style::default()
+                .fg(theme::danger())
+                .add_modifier(Modifier::BOLD),
+            "WARN" => Style::default()
+                .fg(theme::warning())
+                .add_modifier(Modifier::BOLD),
             "INFO" => Style::default().fg(theme::accent()),
             _ => Style::default().fg(theme::text()),
         };
@@ -91,14 +97,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" "),
         ];
         if !daemon_head.is_empty() {
-            spans.push(Span::styled(daemon_head, Style::default().fg(theme::faint())));
+            spans.push(Span::styled(
+                daemon_head,
+                Style::default().fg(theme::faint()),
+            ));
         }
         spans.push(Span::styled(msg, Style::default().fg(theme::dim())));
         lines.push(Line::from(spans));
     }
 
-    f.render_widget(
-        Paragraph::new(Text::from(lines)).block(block),
-        area,
-    );
+    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }

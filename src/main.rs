@@ -8,6 +8,10 @@
 // Terminal-based user interface for AgentRT.
 // Communicates with the gateway via HTTP API for all runtime operations.
 //
+// 职责边界（0.1.18 拆分）：本文件只管启动编排（日志/主题/参数/网关连接、
+// F8 exec 切 CLI）与主循环骨架（渲染节拍、鼠标捕获执行点、事件分派）；
+// 键位分派在 keys，终端生命周期（日志初始化/panic 钩子/RAII 守卫）在 term。
+//
 // Logging:
 //   TUI 使用全屏渲染，stderr 日志会直接污染画面（alt screen 共用终端）。
 //   因此详细日志写入文件（$AIRY_HOME/logs/agentrt-tui.log，可 RUST_LOG 调级）；
@@ -19,6 +23,7 @@ mod app;
 mod client;
 mod gccp;
 mod ime;
+mod keys;
 mod markdown;
 mod memory;
 mod models_cfg;
@@ -26,6 +31,7 @@ mod panels;
 mod paths;
 mod secrets;
 mod skills;
+mod term;
 mod theme;
 mod ui;
 mod wizard;
@@ -77,12 +83,8 @@ pub(crate) mod test_env {
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    cursor::{Hide, MoveTo, Show},
-    event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
-    },
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind},
     execute,
-    terminal::{Clear, disable_raw_mode, enable_raw_mode, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use log::{debug, error, info, warn};
 use ratatui::prelude::*;
@@ -91,7 +93,6 @@ use std::time::{Duration, Instant};
 
 use crate::app::{ActivePanel, App};
 use crate::client::GatewayClient;
-use crate::gccp::TaskControl;
 
 /// AgentRT Terminal User Interface
 #[derive(Parser)]
@@ -136,14 +137,12 @@ fn default_gateway_url() -> String {
 #[tokio::main]
 async fn main() {
     // ── Phase 0: Initialize logging（写入文件，避免污染 TUI 画面）──
-    if let Err(e) = init_file_logger() {
+    if let Err(e) = term::init_file_logger() {
         // 日志文件不可用时退回 stderr（仅启动期，进入 TUI 前）
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("warn")
-        )
-        .format_timestamp_millis()
-        .target(env_logger::Target::Stderr)
-        .init();
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+            .format_timestamp_millis()
+            .target(env_logger::Target::Stderr)
+            .init();
         eprintln!("⚠ 日志文件不可用（{}），回退 stderr（warn 级）", e);
     }
 
@@ -158,10 +157,7 @@ async fn main() {
     // 0.1.6h 修复：gateway 实际端口从 run/gateway.port 读取（完整启动器在
     // 端口漂移后固化；缺省 8080），并固定 127.0.0.1（localhost 可能解析
     // 到 ::1，而 gateway 只绑 IPv4 → 新安装"网关拉取不到"根因之一）。
-    let gateway_url = cli
-        .gateway_url
-        .clone()
-        .unwrap_or_else(default_gateway_url);
+    let gateway_url = cli.gateway_url.clone().unwrap_or_else(default_gateway_url);
     info!("CLI args parsed:");
     info!("  gateway_url = {}", gateway_url);
     info!("  agent_file  = {}", cli.agent_file);
@@ -173,8 +169,10 @@ async fn main() {
 
     // Check if agent file exists
     if !std::path::Path::new(&cli.agent_file).exists() {
-        warn!("Agent file '{}' not found on disk, will pass name to gateway",
-              cli.agent_file);
+        warn!(
+            "Agent file '{}' not found on disk, will pass name to gateway",
+            cli.agent_file
+        );
     }
 
     // ── Phase 2: Gateway client ──
@@ -217,137 +215,19 @@ async fn main() {
     }
 }
 
-/// 初始化文件日志（避免 stderr 污染全屏 TUI）。
-///
-/// 路径优先级：`AGENTRT_TUI_LOG` → `$AIRY_HOME/logs/agentrt-tui.log` →
-/// `$HOME/.airymaxrt/logs/agentrt-tui.log`。
-fn init_file_logger() -> Result<(), Box<dyn std::error::Error>> {
-    let path = if let Ok(p) = std::env::var("AGENTRT_TUI_LOG") {
-        p
-    } else {
-        // 原语义：AIRY_HOME/HOME 均缺失（极端环境）→ Err → 调用方回退
-        // stderr。不能落到 paths::airy_home() 的相对回退，否则日志会写进
-        // 当前工作目录。
-        if std::env::var_os("AIRY_HOME").is_none() && std::env::var_os("HOME").is_none() {
-            return Err("AIRY_HOME/HOME unset".into());
-        }
-        crate::paths::airy_home()
-            .join("logs")
-            .join("agentrt-tui.log")
-            .to_string_lossy()
-            .into_owned()
-    };
-
-    if let Some(parent) = std::path::Path::new(&path).parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    )
-    .format_timestamp_millis()
-    .target(env_logger::Target::Pipe(Box::new(file)))
-    .init();
-    Ok(())
-}
-
-/// T-03（P0-8）：崩溃路径终端还原（panic hook 专用）。只还原 raw mode /
-/// 备用屏 / 光标，**不清屏**——保住 panic 报文可见。所有步骤独立容错。
-fn restore_terminal_on_panic() {
-    let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste);
-    let _ = execute!(io::stdout(), Show);
-}
-
-/// T-03（P0-8）：panic hook——先还原终端（否则 raw mode 下报文不可读、
-/// 备用屏吞掉全部输出，用户终端看似死机），再走默认报文输出。
-/// 与 `TerminalGuard` 幂等协作（重复还原无害）。
-fn install_panic_hook() {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore_terminal_on_panic();
-        default_hook(info);
-    }));
-}
-
-/// T-03（P0-8）：RAII 终端守卫。构造即进入 TUI 终端态（raw mode、备用屏、
-/// 括号粘贴、隐藏光标）；`restore`/Drop 完整还原且每步独立容错——
-/// 修复原 `run_tui` 还原链 `?` 短路（首步失败即跳过后续全部步骤）与
-/// `Terminal::new` 失败时 raw mode 泄漏两条缺陷路径。
-///
-/// WS-1 出口 DoD：panic/Err/exec/正常退出四条路径终端状态均还原。
-struct TerminalGuard {
-    active: bool,
-}
-
-impl TerminalGuard {
-    fn acquire() -> Result<Self> {
-        enable_raw_mode()
-            .map_err(|e| {
-                error!("Failed to enable raw mode: {}", e);
-                error!("  → This usually means you're not in a real terminal.");
-                error!("  → Try running in a terminal emulator, not an IDE panel.");
-                e
-            })?;
-        let res = execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            Hide
-        );
-        if let Err(e) = res {
-            error!("Failed to enter alternate screen: {}", e);
-            // 已进入 raw mode：必须先退出再返回错误（acquire 自身不泄漏）
-            let _ = disable_raw_mode();
-            return Err(e.into());
-        }
-        Ok(Self { active: true })
-    }
-
-    /// 完整还原。幂等：重复调用安全（守卫 restore + Drop 兜底协作）。
-    /// 每步独立容错，绝不短路。
-    fn restore(&mut self) {
-        if !self.active {
-            return;
-        }
-        self.active = false;
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableBracketedPaste
-        );
-        let _ = execute!(io::stdout(), Show);
-        /* 2.2.1.2 修复沿用：F8 切 CLI / 正常退出前清空主屏，CLI 从干净
-         * 画布开始（panic 路径不走此处，见 restore_terminal_on_panic）。 */
-        let _ = execute!(io::stdout(), Clear(ClearType::All), MoveTo(0, 0));
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        self.restore();
-    }
-}
-
 async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     // T-03（P0-8）：崩溃瞬间先还原终端再打印 panic 报文，用户保住 shell。
-    install_panic_hook();
+    term::install_panic_hook();
 
     // Setup terminal —— RAII 守卫：acquire 失败/任何后续路径（run_app Err、
     // panic、exec）退出作用域时 Drop 完整还原，终端状态永不滞留。
-    let mut guard = TerminalGuard::acquire()?;
+    let mut guard = term::TerminalGuard::acquire()?;
 
     let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)
-        .map_err(|e| {
-            error!("Failed to create terminal backend: {}", e);
-            e
-        })?;
+    let mut terminal = Terminal::new(backend).map_err(|e| {
+        error!("Failed to create terminal backend: {}", e);
+        e
+    })?;
     // 此处起 guard 已在作用域：Terminal::new 失败经 `?` 返回时 Drop 还原
     // （修复原代码 raw mode 已开但还原链不可达的泄漏路径）。
 
@@ -374,8 +254,10 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     if let Err(e) = app.check_connection().await {
         debug!("Initial connection check returned error (non-fatal): {}", e);
     }
-    info!("App state initialized. connected={}, version={:?}",
-          app.connected, app.gateway_version);
+    info!(
+        "App state initialized. connected={}, version={:?}",
+        app.connected, app.gateway_version
+    );
 
     // Main event loop
     let result = run_app(&mut terminal, &mut app).await;
@@ -433,15 +315,29 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()> {
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     // 空闲帧率：100ms 一帧。呼吸灯光标、宿主机时间、thinking 动效都依赖
     // 持续重绘——阻塞式 event::read() 会让画面在无按键时静止。
     let idle_frame = Duration::from_millis(100);
 
+    // 0.1.18 B11（V11.1）：鼠标捕获终端序列的唯一执行点。Ctrl+M 只翻转
+    // app.mouse_capture 状态，循环头检测到与当前终端态不一致时才发送
+    // Enable/DisableMouseCapture——状态与序列不散落（SSoT）。
+    let mut mouse_on = app.mouse_capture;
+
     loop {
+        if app.mouse_capture != mouse_on {
+            let res = if app.mouse_capture {
+                execute!(io::stdout(), EnableMouseCapture)
+            } else {
+                execute!(io::stdout(), DisableMouseCapture)
+            };
+            if let Err(e) = res {
+                warn!("mouse capture switch failed: {}", e);
+            }
+            mouse_on = app.mouse_capture;
+        }
+
         terminal.draw(|f| ui::render(f, app))?;
 
         // 看板/事件流面板数据拉取 + /chain 异步结果消费（空闲节拍轮询）
@@ -464,612 +360,42 @@ async fn run_app<B: Backend>(
                 } else {
                     app.input_insert_text(&text);
                 }
-                continue;
             }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-            match key.code {
-                KeyCode::Char('c') | KeyCode::Char('C')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        info!("User pressed Ctrl+C, shutting down...");
-                        app.shutdown().await?;
-                        return Ok(());
-                    }
-                // Ctrl+X：人工中止当前后台请求（任务执行/对话等待）
-                KeyCode::Char('x') | KeyCode::Char('X')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        if app.is_busy() {
-                            info!("User pressed Ctrl+X, aborting pending request");
-                            app.abort_task();
-                        } else if app.task_mode {
-                            // 空闲态且处于任务集：Ctrl+X 退出任务集（回到普通对话）
-                            info!("User pressed Ctrl+X, exiting task mode");
-                            app.exit_task_mode();
-                        }
-                    }
-                // Ctrl+Z：暂停/恢复后台请求等待（请求继续在网关执行）
-                KeyCode::Char('z') | KeyCode::Char('Z')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        if app.is_busy() {
-                            info!("User pressed Ctrl+Z, toggling pause");
-                            if app.task_control == TaskControl::Paused {
-                                app.resume_task();
-                            } else {
-                                app.pause_task();
-                            }
-                        }
-                    }
-                // 首次启动向导激活：按键全部交给向导
-                // （↑↓ 移动 · 1-3 直达 · Enter 确认/编辑 · Esc 跳过/返回）
-                _ if app.wizard.active => {
-                    if app.wizard.handle_key(&key) {
-                        // 向导完成：快速配置 → 应用配置并打开配置面板；跳过 → 留在对话
-                        if let Some(r) = app.wizard.result.take() {
-                            if r.configured {
-                                app.apply_wizard_result(&r);
-                                app.active_panel = ActivePanel::Config;
-                                let model_txt = if r.model.is_empty() {
-                                    "默认模型（网关自动回落）".to_string()
-                                } else {
-                                    r.model.clone()
-                                };
-                                let key_txt = if r.api_key_set {
-                                    "API Key 已写入 secrets.env，可直接开始对话。".to_string()
-                                } else {
-                                    "未填写 API Key：请编辑模型配置（model.yaml）\
-                                     或设置对应环境变量后开始对话。"
-                                        .to_string()
-                                };
-                                app.add_message(
-                                    app::MessageRole::System,
-                                    format!(
-                                        "模型配置完成：{}（{}）。{}",
-                                        model_txt, r.provider, key_txt
-                                    ),
-                                );
-                            } else {
-                                app.add_message(
-                                    app::MessageRole::System,
-                                    "欢迎使用 AirymaxRT！已跳过模型配置，\
-                                     输入 /hiairy 可随时重新打开首次启动向导。"
-                                        .to_string(),
-                                );
-                            }
-                        }
-                    }
-                    continue;
-                }
-                KeyCode::Esc
-                    if app.active_panel != ActivePanel::Chat => {
-                        debug!("Panel: Esc → return to Chat");
-                        app.active_panel = ActivePanel::Chat;
-                        // 与 toggle_panel 同源：离开 Board/Events 必须停 SSE，
-                        // 否则订阅泄漏，后台持续收流（空闲态 Esc 路径）。
-                        app.stop_hall_watch();
-                    }
-                // IME 拼音态：Esc 取消拼音（微信语义：清空缓冲，放弃组合）
-                KeyCode::Esc if app.ime_visible() => {
-                    app.ime_cancel();
-                }
-                KeyCode::F(1) => {
-                    debug!("Panel: toggle Help");
-                    app.toggle_panel(ActivePanel::Help);
-                }
-                KeyCode::F(2) => {
-                    debug!("Panel: toggle Config");
-                    app.toggle_panel(ActivePanel::Config);
-                }
-                KeyCode::F(3) => {
-                    debug!("Panel: toggle Logs");
-                    app.toggle_panel(ActivePanel::Logs);
-                }
-                KeyCode::F(4) => {
-                    debug!("Panel: toggle Memory");
-                    app.toggle_panel(ActivePanel::Memory);
-                }
-                KeyCode::F(5) => {
-                    debug!("Panel: toggle Plugins");
-                    app.toggle_panel(ActivePanel::Plugins);
-                }
-                KeyCode::F(6) => {
-                    debug!("Panel: toggle Board");
-                    // 进入看板：强制立即刷新 + 订阅 hall.watch SSE 推送
-                    app.active_panel = ActivePanel::Board;
-                    app.force_hall_refresh();
-                    app.start_hall_watch();
-                }
-                KeyCode::F(7) => {
-                    debug!("Panel: toggle Events");
-                    app.active_panel = ActivePanel::Events;
-                    app.force_hall_refresh();
-                    app.start_hall_watch();
-                }
-                // F8：切换到 CLI（airy_cli）——恢复终端后 exec 替换进程
-                KeyCode::F(8) => {
-                    debug!("F8: switching to CLI (airy_cli)");
-                    app.switch_to_cli = true;
+                // 键位分派 SSoT 在 keys（空闲态全量 match + busy 插入对话泵）；
+                // Exit 信号即退出主循环（终端守卫 Drop 兜底还原）。
+                if matches!(keys::idle_key(terminal, app, key).await?, keys::Flow::Exit) {
                     return Ok(());
                 }
-                // F10：内置拼音输入法 中/英 切换（词典缺失时无效果）
-                KeyCode::F(10) => {
-                    app.ime_toggle();
-                }
-                // F9：IME 备键（与 C CLI tui_ime.c 对齐，F10 被终端占用时可用）
-                KeyCode::F(9) => {
-                    app.ime_toggle();
-                }
-                KeyCode::Enter => {
-                    // 面板激活（Board/Events）：Enter = 查看选中条目详情
-                    if app.active_panel == ActivePanel::Board {
-                        debug!("Board: Enter → view selected decision chain");
-                        app.board_view_selected();
-                        continue;
-                    }
-                    if app.active_panel == ActivePanel::Events {
-                        debug!("Events: Enter → view selected event detail");
-                        app.events_view_selected();
-                        continue;
-                    }
-                    // 只读面板（Help/Config/Logs/Memory/Plugins）：Enter 不提交、
-                    // Alt+Enter 不换行——共享输入只属于对话面板，防止切到面板后
-                    // 误触 Enter 把输入框内容真的发出去（Board/Events 上面已处理）
-                    if read_only_panel(app.active_panel) {
-                        debug!("Panel: Enter 在只读面板被忽略（不提交共享输入）");
-                        continue;
-                    }
-                    // Alt+Enter 换行（多行输入，光标处插入），Enter 发送
-                    if key.modifiers.contains(event::KeyModifiers::ALT) {
-                        app.input_insert_text("\n");
-                        continue;
-                    }
-                    // 拼音态：先提交拼音原文（随后提交整行）
-                    app.ime_commit_enter();
-                    let input = std::mem::take(&mut app.input);
-                    app.cursor = 0;
-                    debug!("User submitted input: '{}' ({} chars)",
-                           truncate_str(&input, 80), input.len());
-                    if let Err(e) = app.submit_input(&input) {
-                        warn!("submit_input error: {}", e);
-                        app.add_message(
-                            app::MessageRole::System,
-                            format!("Error: {}", e),
-                        );
-                    }
-                    // 后台 LLM 请求进行中 → 每 50ms 渲染 + 轮询：
-                    //   - thinking... 动效（chat.rs / ui.rs 按时间取帧，50ms 一帧更丝滑）
-                    //   - 回复到达后自动上屏（add_message 自动回到底部）
-                    //   - Ctrl+X 中止 / Ctrl+Z 暂停（等待期间可人工控制）
-                    //   - 工具权限审批：a=允许本次 · A=始终允许 · n=拒绝（Claude Code 风格）
-                    // 后台请求进行中 → 每 50ms 渲染 + 轮询（等待期间可插入对话）。
-                    // 任务完成后若有插入对话队列，逐条 pop 处理（单 pending 槽，
-                    // 每条等其完成再处理下一条，逻辑链连续不割裂）。
-                    loop {
-                        // ── 等待当前请求完成（期间可输入插入对话）──
-                        while app.is_busy() {
-                            terminal.draw(|f| ui::render(f, app))?;
-                            // 等待期间轮询按键：Ctrl+X 中止、Ctrl+Z 暂停/恢复、审批决议、
-                            // 任务执行中输入文本（Enter 提交 → 插入对话队列，任务不打断）
-                            if event::poll(Duration::ZERO)? {
-                                match event::read()? {
-                                    Event::Paste(text) => {
-                                        // busy 期间粘贴 → 插入输入框（Enter 提交为插入对话）
-                                        app.input_insert_text(&text);
-                                    }
-                                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                                    match key.code {
-                                        // 与空闲态一致：busy（等待回复/任务执行）期间按
-                                        // Ctrl+C 同样退出 TUI，不再被 busy 内层循环吞键
-                                        KeyCode::Char('c') | KeyCode::Char('C')
-                                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            info!("User pressed Ctrl+C while busy, shutting down...");
-                                            app.shutdown().await?;
-                                            return Ok(());
-                                        }
-                                        KeyCode::Char('x') | KeyCode::Char('X')
-                                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            app.abort_task();
-                                        }
-                                        KeyCode::Char('z') | KeyCode::Char('Z')
-                                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            if app.task_control == TaskControl::Paused {
-                                                app.resume_task();
-                                            } else {
-                                                app.pause_task();
-                                            }
-                                        }
-                                        // 工具级权限审批（Claude Code 风格 permission prompt）
-                                        // 0.1.7：仅当存在待审批请求时生效——此前无条件拦截
-                                        // a/y/n/d/A，busy 期间输入含这些字母的文本会被吞字并
-                                        // 向对话区插入"没有待决议的权限请求"污染聊天。
-                                        KeyCode::Char('a') | KeyCode::Char('y')
-                                            if !app.approvals.is_empty()
-                                                && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            app.approve_request("allow");
-                                        }
-                                        KeyCode::Char('A')
-                                            if !app.approvals.is_empty()
-                                                && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            app.approve_request("always");
-                                        }
-                                        KeyCode::Char('n') | KeyCode::Char('N')
-                                            | KeyCode::Char('d') | KeyCode::Char('D')
-                                            if !app.approvals.is_empty()
-                                                && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                                        {
-                                            app.approve_request("deny");
-                                        }
-                                        // ── 2.3.13：等待回复（busy）期间 F6/F7 可切换看板/事件流 ──
-                                        // 此前 F 键仅在非 busy 主循环处理，LLM 请求进行中（可能
-                                        // 数十秒）按键落入 _ => {} 被吞，用户感知"看板不可操作"。
-                                        // busy 中切换面板只改视图，不打断正在进行的请求。
-                                        KeyCode::F(6) => {
-                                            app.active_panel = ActivePanel::Board;
-                                            app.force_hall_refresh();
-                                            app.start_hall_watch();
-                                        }
-                                        KeyCode::F(7) => {
-                                            app.active_panel = ActivePanel::Events;
-                                            app.force_hall_refresh();
-                                            app.start_hall_watch();
-                                        }
-                                        // F10：内置拼音输入法切换（busy 插入对话场景同样可用）
-                                        KeyCode::F(10) => {
-                                            app.ime_toggle();
-                                        }
-                                        // 0.1.7：busy 期间（LLM 生成可达数十秒）允许滚动阅读旧
-                                        // 消息与展开/折叠思考链——此前落入 _ => {} 被吞，长生成
-                                        // 期间用户无法回看上下文。
-                                        KeyCode::Up if app.ime_visible() => {
-                                            app.ime_move_sel(-1);
-                                        }
-                                        KeyCode::Down if app.ime_visible() => {
-                                            app.ime_move_sel(1);
-                                        }
-                                        KeyCode::Up => app.scroll_up(),
-                                        KeyCode::Down => app.scroll_down(),
-                                        KeyCode::PageUp if app.ime_visible() => {
-                                            app.ime_page_flip(-1);
-                                        }
-                                        KeyCode::PageDown if app.ime_visible() => {
-                                            app.ime_page_flip(1);
-                                        }
-                                        KeyCode::PageUp => app.scroll_page_up(),
-                                        KeyCode::PageDown => app.scroll_page_down(),
-                                        KeyCode::Char('e') | KeyCode::Char('E')
-                                            if key.modifiers.contains(event::KeyModifiers::ALT)
-                                                && !app.ime_visible() =>
-                                        {
-                                            app.browse_expanded = !app.browse_expanded;
-                                        }
-                                        // IME 拼音态：Esc 取消拼音（微信语义）
-                                        KeyCode::Esc if app.ime_visible() => {
-                                            app.ime_cancel();
-                                        }
-                                        // 非拼音态 Esc：与空闲态一致返回对话（busy 期间
-                                        // 在只读面板/看板上也能 Esc 退出，不困在面板里）
-                                        KeyCode::Esc => {
-                                            app.active_panel = ActivePanel::Chat;
-                                            // busy 态同样必须停 SSE（订阅泄漏同源修复）
-                                            app.stop_hall_watch();
-                                        }
-                                        // ── 插入对话（2.3.7）：任务执行中输入文本 ──
-                                        // 只读面板（Help/Config/Logs/Memory/Plugins）：
-                                        // Enter 不入插入队列——共享输入只属于对话面板
-                                        KeyCode::Enter if read_only_panel(app.active_panel) => {}
-                                        KeyCode::Enter => {
-                                            // 拼音态：先提交拼音原文（随后提交整行）
-                                            app.ime_commit_enter();
-                                            let input =
-                                                std::mem::take(&mut app.input);
-                                            app.cursor = 0;
-                                            if !input.trim().is_empty() {
-                                                app.queue_insert_chat(&input);
-                                            }
-                                        }
-                                        KeyCode::Backspace => {
-                                            if !app.ime_backspace() {
-                                                app.input_backspace();
-                                            }
-                                        }
-                                        KeyCode::Delete => {
-                                            app.input_delete_after();
-                                        }
-                                        KeyCode::Left => {
-                                            // ←：IME 拼音态移动候选高亮（微信式）
-                                            if app.ime_visible() {
-                                                app.ime_move_sel(-1);
-                                            } else {
-                                                app.cursor_left();
-                                            }
-                                        }
-                                        KeyCode::Right => {
-                                            if app.ime_visible() {
-                                                app.ime_move_sel(1);
-                                            } else {
-                                                app.cursor_right();
-                                            }
-                                        }
-                                        KeyCode::Home => {
-                                            app.cursor_home();
-                                        }
-                                        KeyCode::End => {
-                                            app.cursor_end();
-                                        }
-                                        // 0.1.7：带修饰键的字符（Alt+E 展开/折叠、Ctrl+E 光标到行尾、
-                                        // Alt+1..9 切换标签）不能落入普通字符插入——此前 busy 期间
-                                        // 按 Alt+E/Ctrl+E 被当 'e' 插入输入框，交互动作静默丢失。
-                                        // 只读面板（Help/Config/Logs/Memory/Plugins）同样
-                                        // 不写入共享输入。
-                                        KeyCode::Char(c)
-                                            if (key.modifiers.is_empty()
-                                                || key.modifiers == event::KeyModifiers::SHIFT)
-                                                && !read_only_panel(app.active_panel) =>
-                                        {
-                                            // ime_input_char 带副作用（消费候选/推进拼音串），
-                                            // 不可上提进 match guard（clippy 建议在此不适用）
-                                            #[allow(clippy::collapsible_match)]
-                                            if !app.ime_input_char(c) {
-                                                // 普通字符插入输入框（光标感知；IME 拼音态已消费时跳过）
-                                                app.input_insert_char(c);
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            app.poll_pending();
-                            if app.is_busy() {
-                                tokio::time::sleep(Duration::from_millis(50)).await;
-                            }
-                        }
-                        // 队列空：结束处理；否则取一条提交（submit_input 会置 busy）
-                        let Some(msg) = app.insert_queue.pop_front() else {
-                            break;
-                        };
-                        if let Err(e) = app.submit_input(&msg) {
-                            log::warn!("insert queue submit failed: {}", e);
-                            app.add_message(
-                                app::MessageRole::System,
-                                format!("插入对话处理失败：{}", e),
-                            );
-                        }
-                    }
-                    terminal.draw(|f| ui::render(f, app))?;
-                }
-                // ── 输入编辑：光标感知（readline 风格）──
-                KeyCode::Tab => {
-                    // Tab 补全：/ 命令 + 技能名（仅对话面板）
-                    if app.active_panel == ActivePanel::Chat {
-                        app.tab_complete();
-                    }
-                }
-                KeyCode::Backspace => {
-                    // 删除光标前一个字符（IME 拼音态：删拼音缓冲）
-                    if !app.ime_backspace() {
-                        app.input_backspace();
-                    }
-                }
-                KeyCode::Delete => {
-                    // 删除光标后一个字符
-                    app.input_delete_after();
-                }
-                KeyCode::Left => {
-                    // ←：IME 拼音态移动候选高亮；否则光标左移（微信式）
-                    if app.ime_visible() {
-                        app.ime_move_sel(-1);
-                    } else {
-                        app.cursor_left();
-                    }
-                }
-                KeyCode::Right => {
-                    // →：IME 拼音态移动候选高亮；否则光标右移（微信式）
-                    if app.ime_visible() {
-                        app.ime_move_sel(1);
-                    } else {
-                        app.cursor_right();
-                    }
-                }
-                KeyCode::Home => {
-                    // Home：光标到输入开头
-                    app.cursor_home();
-                }
-                KeyCode::End => {
-                    // End：输入非空 → 光标到末尾；空输入 → 回到底部（最新消息）
-                    if app.input.is_empty() {
-                        app.scroll_offset = 0;
-                    } else {
-                        app.cursor_end();
-                    }
-                }
-                KeyCode::Char('a') | KeyCode::Char('A')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    // Ctrl+A：光标到输入开头
-                    app.cursor_home();
-                }
-                KeyCode::Char('e') | KeyCode::Char('E')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    // Ctrl+E：光标到输入末尾
-                    app.cursor_end();
-                }
-                KeyCode::Char('w') | KeyCode::Char('W')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    // Ctrl+W：删除光标前一个词
-                    app.input_delete_word_before();
-                }
-                KeyCode::Char('u') | KeyCode::Char('U')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    // Ctrl+U：删除光标前全部内容
-                    app.input_delete_to_start();
-                }
-                // Ctrl+T：新建会话 tab（多会话；请求进行中不可用，见 app 守卫）
-                KeyCode::Char('t') | KeyCode::Char('T')
-                    if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    app.new_session_tab();
-                }
-                // Alt+1..9：切换会话 tab（Alt+1 = 主会话；优先于面板数字过滤）
-                KeyCode::Char(c)
-                    if key.modifiers.contains(event::KeyModifiers::ALT)
-                        && c.is_ascii_digit()
-                        && c != '0' =>
-                {
-                    app.switch_tab((c as u8 - b'0') as usize);
-                }
-                // Alt+E：展开/折叠全部思考链与长回复（0.1.7：折叠与滚动解耦，
-                // 滚动基于稳定折叠视图；Ctrl+E 保留光标到行尾的 readline 惯例）
-                KeyCode::Char('e') | KeyCode::Char('E')
-                    if key.modifiers.contains(event::KeyModifiers::ALT) =>
-                {
-                    app.browse_expanded = !app.browse_expanded;
-                }
-                KeyCode::Char(c) if app.active_panel == ActivePanel::Board => {
-                    // F6 看板：0=全部 · 1-6=状态过滤（completed/running/pending/scheduled/failed/canceled）
-                    match c {
-                        '0' => app.board_set_filter(""),
-                        '1' => app.board_set_filter("completed"),
-                        '2' => app.board_set_filter("running"),
-                        '3' => app.board_set_filter("pending"),
-                        '4' => app.board_set_filter("scheduled"),
-                        '5' => app.board_set_filter("failed"),
-                        '6' => app.board_set_filter("canceled"),
-                        _ => {}
-                    }
-                }
-                KeyCode::Char(c) if app.active_panel == ActivePanel::Events => {
-                    // F7 事件流：0=全部 · 1-7=类别过滤（blueprint/command/progress/result/issue/verify/chain）
-                    match c {
-                        '0' => app.events_set_filter(""),
-                        '1' => app.events_set_filter("blueprint"),
-                        '2' => app.events_set_filter("command"),
-                        '3' => app.events_set_filter("progress"),
-                        '4' => app.events_set_filter("result"),
-                        '5' => app.events_set_filter("issue"),
-                        '6' => app.events_set_filter("verify"),
-                        '7' => app.events_set_filter("chain"),
-                        _ => {}
-                    }
-                }
-                KeyCode::Char(c) if app.active_panel == ActivePanel::Chat => {
-                    // 普通字符插入到光标位置（IME 拼音态：先经拼音输入法）。
-                    // 仅对话面板可写入共享输入；只读面板（Help/Config/Logs/
-                    // Memory/Plugins）不汇入输入框，Board/Events 由上方数字
-                    // 过滤分支消费、不落入此处。
-                    if !app.ime_input_char(c) {
-                        app.input_insert_char(c);
-                    }
-                }
-                KeyCode::Up => {
-                    // F6/F7 面板：↑ 移动选中光标（循环）；F3 日志面板滚动；
-                    // 其余场景滚对话/浏览历史
-                    if app.active_panel == ActivePanel::Board {
-                        app.board_cursor_up();
-                    } else if app.active_panel == ActivePanel::Events {
-                        app.events_cursor_up();
-                    } else if app.active_panel == ActivePanel::Logs {
-                        app.logs_scroll_older();
-                    } else if key.modifiers.contains(event::KeyModifiers::ALT) {
-                        app.history_prev();
-                    } else {
-                        app.scroll_up();
-                    }
-                }
-                KeyCode::Down => {
-                    if app.active_panel == ActivePanel::Board {
-                        app.board_cursor_down();
-                    } else if app.active_panel == ActivePanel::Events {
-                        app.events_cursor_down();
-                    } else if app.active_panel == ActivePanel::Logs {
-                        app.logs_scroll_newer();
-                    } else if key.modifiers.contains(event::KeyModifiers::ALT) {
-                        app.history_next();
-                    } else {
-                        app.scroll_down();
-                    }
-                }
-                KeyCode::PageUp => {
-                    // PgUp：IME 拼音态翻上一页（微信式）；记忆面板翻记录窗口；否则滚动上翻
-                    if app.ime_visible() {
-                        app.ime_page_flip(-1);
-                    } else if app.active_panel == ActivePanel::Memory {
-                        app.memory_page_up();
-                    } else {
-                        app.scroll_page_up();
-                    }
-                }
-                KeyCode::PageDown => {
-                    // PgDn：IME 拼音态翻下一页（微信式）；记忆面板翻记录窗口；否则滚动下翻
-                    if app.ime_visible() {
-                        app.ime_page_flip(1);
-                    } else if app.active_panel == ActivePanel::Memory {
-                        app.memory_page_down();
-                    } else {
-                        app.scroll_page_down();
-                    }
-                }
-                _ => {}
             }
+            // 0.1.18 B11（V11.1）：滚轮滚动对话。捕获未开启时多数终端不
+            // 投递鼠标事件；收到也安全（滚动契约钳位兜底）。修饰键语义：
+            // Shift 翻页 / Ctrl 单行 / 默认 3 行（wheel_lines）。
+            Event::Mouse(m) => {
+                let shift = m.modifiers.contains(event::KeyModifiers::SHIFT);
+                let ctrl = m.modifiers.contains(event::KeyModifiers::CONTROL);
+                match m.kind {
+                    MouseEventKind::ScrollUp => {
+                        if app.active_panel == ActivePanel::Focus {
+                            app.focus_scroll_up();
+                        } else {
+                            app.wheel_up(app.wheel_lines(shift, ctrl));
+                        }
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if app.active_panel == ActivePanel::Focus {
+                            app.focus_scroll_down();
+                        } else {
+                            app.wheel_down(app.wheel_lines(shift, ctrl));
+                        }
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
-    }
-}
-
-fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    // T-02（P0-7 同族修复）：字节截断可能落在 UTF-8 多字节字符中间导致
-    // panic（中文输入 > max 字节必现）。回退到最近的前序字符边界。
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-/// 只读展示面板：Help/Config/Logs/Memory/Plugins 无输入语义，Enter 与
-/// 普通字符键不应写入或提交对话面板的共享输入（Board/Events 有各自的
-/// 选中/过滤键位，不在此列）。
-fn read_only_panel(p: ActivePanel) -> bool {
-    matches!(
-        p,
-        ActivePanel::Help
-            | ActivePanel::Config
-            | ActivePanel::Logs
-            | ActivePanel::Memory
-            | ActivePanel::Plugins
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::truncate_str;
-
-    #[test]
-    fn truncate_str_never_splits_multibyte_chars() {
-        // T-02（P0-7 同族）：中文输入 80 字节截断窗——修复前第 80 字节
-        // 落在多字节字符中间时 panic。
-        let s = "汉".repeat(40); // 120 字节
-        let out = truncate_str(&s, 80);
-        assert_eq!(out, "汉".repeat(26)); // 78 字节处边界回退
-        assert_eq!(out.len(), 78);
-
-        // 短文本原样返回
-        assert_eq!(truncate_str("hello", 80), "hello");
-        assert_eq!(truncate_str("中文", 80), "中文");
-        // 恰好在边界
-        assert_eq!(truncate_str("中", 3), "中");
-        // 截断点为 4 字节 emoji 中间时回退到 0
-        assert_eq!(truncate_str("\u{1F600}", 2), "");
-        // 空串
-        assert_eq!(truncate_str("", 10), "");
     }
 }

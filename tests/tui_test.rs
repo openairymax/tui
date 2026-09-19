@@ -158,7 +158,11 @@ impl TestApp {
 fn test_app_initial_state() {
     let app = TestApp::new();
 
-    assert_eq!(app.active_panel, TestPanel::Chat, "Default panel should be Chat");
+    assert_eq!(
+        app.active_panel,
+        TestPanel::Chat,
+        "Default panel should be Chat"
+    );
     assert_eq!(app.messages.len(), 0, "No messages initially");
     assert_eq!(app.input, "", "Input should be empty");
     assert_eq!(app.scroll_offset, 0, "Scroll should be at top");
@@ -175,7 +179,10 @@ fn test_app_session_start() {
     let app = TestApp::new();
     let elapsed = app.session_start.elapsed();
     // Session should have started very recently
-    assert!(elapsed.as_secs() < 1, "Session should have started just now");
+    assert!(
+        elapsed.as_secs() < 1,
+        "Session should have started just now"
+    );
 }
 
 // ============================================================================
@@ -218,7 +225,11 @@ fn test_next_panel_cycling() {
 
     for &expected in &expected_sequence {
         app.next_panel();
-        assert_eq!(app.active_panel, expected, "Next panel should be {:?}", expected);
+        assert_eq!(
+            app.active_panel, expected,
+            "Next panel should be {:?}",
+            expected
+        );
     }
 }
 
@@ -239,7 +250,11 @@ fn test_prev_panel_cycling() {
 
     for &expected in &expected_sequence {
         app.prev_panel();
-        assert_eq!(app.active_panel, expected, "Prev panel should be {:?}", expected);
+        assert_eq!(
+            app.active_panel, expected,
+            "Prev panel should be {:?}",
+            expected
+        );
     }
 }
 
@@ -272,7 +287,11 @@ fn test_complete_panel_cycle() {
     }
 
     // Should be back at Chat
-    assert_eq!(app.active_panel, TestPanel::Chat, "Full cycle should return to Chat");
+    assert_eq!(
+        app.active_panel,
+        TestPanel::Chat,
+        "Full cycle should return to Chat"
+    );
 }
 
 // ============================================================================
@@ -555,7 +574,11 @@ fn test_rapid_panel_switching() {
         app.prev_panel();
     }
 
-    assert_eq!(app.active_panel, TestPanel::Chat, "Should return to Chat after rapid switching");
+    assert_eq!(
+        app.active_panel,
+        TestPanel::Chat,
+        "Should return to Chat after rapid switching"
+    );
 }
 
 #[test]

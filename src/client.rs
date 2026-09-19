@@ -49,12 +49,9 @@ impl GatewayClient {
         let url = format!("{}/health", self.base_url);
         debug!("GET {}", url);
         // 健康检查必须快速失败（2s 超时），否则离线时阻塞 TUI 启动
-        let resp = tokio::time::timeout(
-            Duration::from_secs(2),
-            self.http.get(&url).send(),
-        )
-        .await
-        .context("Gateway health check timed out (2s)")??;
+        let resp = tokio::time::timeout(Duration::from_secs(2), self.http.get(&url).send())
+            .await
+            .context("Gateway health check timed out (2s)")??;
         let status = resp.status();
         let body = resp.text().await?;
         debug!("← health {} ({} bytes)", status, body.len());
@@ -145,30 +142,38 @@ impl GatewayClient {
         let body = resp.text().await?;
 
         if !status.is_success() {
-            error!("← agent/run FAILED: HTTP {} ({}ms) → {}", status.as_u16(),
-                   elapsed.as_millis(), body);
+            error!(
+                "← agent/run FAILED: HTTP {} ({}ms) → {}",
+                status.as_u16(),
+                elapsed.as_millis(),
+                body
+            );
             // 2.3.4：完整 body 可能含 daemon 内部细节（路径/panic/响应原文），
             // 已写入日志（上方 error!）。界面错误链只保留状态码，body 不上屏。
             anyhow::bail!("Gateway error (HTTP {})", status.as_u16());
         }
 
         // 解析 JSON-RPC：优先 result，出错时透出 error.message
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .context("Failed to parse run response")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse run response")?;
         if let Some(err) = json.get("error") {
-            let msg = err.get("message")
+            let msg = err
+                .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error");
             anyhow::bail!("Gateway error: {}", msg);
         }
-        let result = json.get("result")
+        let result = json
+            .get("result")
             .context("Missing result in JSON-RPC response")?;
 
-        let response = result.get("response")
+        let response = result
+            .get("response")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let session_id = result.get("session_id")
+        let session_id = result
+            .get("session_id")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -192,13 +197,15 @@ impl GatewayClient {
             .unwrap_or_default();
 
         // Agent 工具调用轨迹（可选）
-        let tool_trace = result.get("tool_trace").and_then(|v| {
-            serde_json::from_value::<Vec<ToolTrace>>(v.clone()).ok()
-        });
+        let tool_trace = result
+            .get("tool_trace")
+            .and_then(|v| serde_json::from_value::<Vec<ToolTrace>>(v.clone()).ok());
 
-        info!("← agent/run OK ({}ms, {} tokens)",
-              elapsed.as_millis(),
-              tokens_used.unwrap_or(0));
+        info!(
+            "← agent/run OK ({}ms, {} tokens)",
+            elapsed.as_millis(),
+            tokens_used.unwrap_or(0)
+        );
         Ok(RunResponse {
             session_id,
             response,
@@ -229,10 +236,13 @@ impl GatewayClient {
         if !status.is_success() {
             anyhow::bail!("agent.cancel HTTP {}: {}", status.as_u16(), body);
         }
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .context("Failed to parse cancel response")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse cancel response")?;
         if let Some(err) = json.get("error") {
-            let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
             // 请求已完成（未找到活动条目）属于正常情况，仅记录
             debug!("agent.cancel: {}", msg);
             return Ok(());
@@ -256,8 +266,8 @@ impl GatewayClient {
         });
         let resp = self.http.post(&url).json(&request).send().await?;
         let body = resp.text().await?;
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .context("Failed to parse pending approvals response")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse pending approvals response")?;
         if json.get("error").is_some() {
             debug!("tool.pending returned error: {}", body);
             return Ok(Vec::new());
@@ -267,15 +277,18 @@ impl GatewayClient {
         };
         // 形态 1: {"pending": [...]}
         if let Some(arr) = result.get("pending").and_then(|v| v.as_array()) {
-            return Ok(serde_json::from_value(serde_json::Value::Array(arr.clone()))
-                .unwrap_or_default());
+            return Ok(
+                serde_json::from_value(serde_json::Value::Array(arr.clone())).unwrap_or_default(),
+            );
         }
         // 形态 2: result 本身是内嵌 JSON 字符串
         if let Some(s) = result.as_str() {
             if let Ok(inner) = serde_json::from_str::<serde_json::Value>(s) {
                 if let Some(arr) = inner.get("pending").and_then(|v| v.as_array()) {
-                    return Ok(serde_json::from_value(serde_json::Value::Array(arr.clone()))
-                        .unwrap_or_default());
+                    return Ok(
+                        serde_json::from_value(serde_json::Value::Array(arr.clone()))
+                            .unwrap_or_default(),
+                    );
                 }
                 if let Ok(list) = serde_json::from_value::<Vec<PendingApproval>>(inner) {
                     return Ok(list);
@@ -284,8 +297,9 @@ impl GatewayClient {
         }
         // 形态 3: result 直接是数组
         if let Some(arr) = result.as_array() {
-            return Ok(serde_json::from_value(serde_json::Value::Array(arr.clone()))
-                .unwrap_or_default());
+            return Ok(
+                serde_json::from_value(serde_json::Value::Array(arr.clone())).unwrap_or_default(),
+            );
         }
         Ok(Vec::new())
     }
@@ -304,13 +318,16 @@ impl GatewayClient {
         });
         let resp = self.http.post(&url).json(&request).send().await?;
         let body = resp.text().await?;
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .context("Failed to parse approve response")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse approve response")?;
         if json.get("error").is_some() {
             debug!("tool.approve error: {}", body);
             return Ok(false);
         }
-        info!("tool.approve OK (request_id={}, decision={})", request_id, decision);
+        info!(
+            "tool.approve OK (request_id={}, decision={})",
+            request_id, decision
+        );
         Ok(true)
     }
 
@@ -403,7 +420,10 @@ impl GatewayClient {
                 // tool_start / tool_end：工具进度行（克制：只显示动作名与
                 // 成败，不暴露参数与结果内容）
                 gen::AIRY_RS_TYPE_TOOL_START => {
-                    let tool = ev.data_str(gen::AIRY_RS_K_TOOL).unwrap_or("tool").to_string();
+                    let tool = ev
+                        .data_str(gen::AIRY_RS_K_TOOL)
+                        .unwrap_or("tool")
+                        .to_string();
                     if let Some(tid) = ev.data_str(gen::AIRY_RS_K_TOOL_ID) {
                         tool_names.insert(tid.to_string(), tool.clone());
                     }
@@ -414,7 +434,10 @@ impl GatewayClient {
                     on_tool(&line.to_string());
                 }
                 gen::AIRY_RS_TYPE_TOOL_END => {
-                    let tid = ev.data_str(gen::AIRY_RS_K_TOOL_ID).unwrap_or("").to_string();
+                    let tid = ev
+                        .data_str(gen::AIRY_RS_K_TOOL_ID)
+                        .unwrap_or("")
+                        .to_string();
                     let tool = tool_names.get(&tid).cloned().unwrap_or_else(|| {
                         if tid.is_empty() {
                             "tool".to_string()
@@ -485,6 +508,22 @@ impl GatewayClient {
                     tokens = ev.data_i64(gen::AIRY_RS_K_USE_TICKS).map(|t| t as u64);
                     let status = ev.data_str(gen::AIRY_RS_K_STATUS).unwrap_or("completed");
                     debug!("agent.run_stream: run_end (status={})", status);
+                    // B2（0.1.18）V2.1：引擎三段耗时（think/llm/tool，毫秒）
+                    // 随 run_end 透传。首字延迟不达标时，这三项即归因证据
+                    // （区分模型长思考 / 网关串行 / 工具阻塞）；旧引擎无此
+                    // 三键时不记录，保持日志安静。
+                    let seg = |k: &str| ev.data_i64(k);
+                    if let (Some(think), Some(llm), Some(tool)) = (
+                        seg(gen::AIRY_RS_K_THINK_MS),
+                        seg(gen::AIRY_RS_K_LLM_MS),
+                        seg(gen::AIRY_RS_K_TOOL_MS),
+                    ) {
+                        info!(
+                            "agent.run_stream: 分段耗时 think_ms={think} llm_ms={llm} \
+                             tool_ms={tool} total_ms={}",
+                            ev.data_i64(gen::AIRY_RS_K_DURATION).unwrap_or(-1)
+                        );
+                    }
                 }
                 // 其余（run_start / 未知）：宽容忽略（§2.4.4）
                 _ => {}
@@ -523,7 +562,11 @@ impl GatewayClient {
     ///
     /// 公开给运维命令（/daemons /agents /tools /models /mem /rpc）复用；
     /// 方法须在 gateway 转发白名单内（agent.* / tool.* / llm.* / mem.* / hall.* 等）。
-    pub async fn rpc_call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn rpc_call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let url = format!("{}/", self.base_url);
         let request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -542,7 +585,10 @@ impl GatewayClient {
                 .unwrap_or("unknown error");
             anyhow::bail!("{}: {}", method, msg);
         }
-        Ok(json.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        Ok(json
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
     }
 
     /// 任务看板（hall.board）：work_hall 持久化执行实例 + agent_d 在线 agent 名单。
@@ -566,7 +612,11 @@ impl GatewayClient {
     /// 单任务事件回放（hall.replay）：按 (ts_utc, seq) 全局因果序。
     ///
     /// `category` 为空时合并该任务全部类别（决策链语义）。
-    pub async fn hall_replay(&self, task_id: &str, category: Option<&str>) -> Result<Vec<HallEvent>> {
+    pub async fn hall_replay(
+        &self,
+        task_id: &str,
+        category: Option<&str>,
+    ) -> Result<Vec<HallEvent>> {
         let params = match category {
             Some(c) if !c.is_empty() => serde_json::json!({ "task_id": task_id, "category": c }),
             _ => serde_json::json!({ "task_id": task_id }),
@@ -715,8 +765,25 @@ mod tests {
     /// 按 Content-Length 读满请求体，防止带未读数据 close 触发 RST）
     /// 后按给定字节块序列回放响应体（模拟任意 TCP 分片），随后关闭。
     fn spawn_sse_server(chunks: Vec<Vec<u8>>) -> String {
+        spawn_sse_server_timed(chunks).0
+    }
+
+    /// 同 `spawn_sse_server`，额外回传**写出首个含 `token_delta` 帧的字节块**
+    /// 后的时刻（`Instant` 单调单调、跨线程可比）——B2 V2.4「服务端首字节 →
+    /// 首字上屏」时差取证的基准点。字节块未含该帧时保持 `None`。
+    fn spawn_sse_server_timed(
+        chunks: Vec<Vec<u8>>,
+    ) -> (String, Arc<Mutex<Option<std::time::Instant>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
         let addr = listener.local_addr().expect("local_addr");
+        let first_delta: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+        let mark = first_delta.clone();
+        let needle = format!(
+            "\"{}\":\"{}\"",
+            gen::AIRY_RS_K_TYPE,
+            gen::AIRY_RS_TYPE_TOKEN_DELTA
+        )
+        .into_bytes();
         std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().expect("accept");
             let _ = conn.set_read_timeout(Some(std::time::Duration::from_secs(5)));
@@ -728,10 +795,7 @@ mod tests {
                     Ok(0) | Err(_) => return,
                     Ok(n) => req.extend_from_slice(&buf[..n]),
                 }
-                if let Some(pos) = req
-                    .windows(4)
-                    .position(|w| w == b"\r\n\r\n")
-                {
+                if let Some(pos) = req.windows(4).position(|w| w == b"\r\n\r\n") {
                     break pos + 4;
                 }
             };
@@ -760,10 +824,16 @@ mod tests {
                     break;
                 }
                 let _ = conn.flush();
+                if c.windows(needle.len()).any(|w| w == needle.as_slice()) {
+                    let mut g = mark.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(std::time::Instant::now());
+                    }
+                }
             }
             // conn drop → FIN → 客户端 bytes_stream 结束
         });
-        format!("http://{}", addr)
+        (format!("http://{}", addr), first_delta)
     }
 
     /// 构造 v1 事件信封（字段键走 gen SSoT 常量）。
@@ -782,13 +852,7 @@ mod tests {
         format!("data: {}\n\n", v).into_bytes()
     }
 
-    async fn drive_turn(
-        base_url: &str,
-    ) -> (
-        Result<RunResponse>,
-        Vec<String>,
-        Vec<String>,
-    ) {
+    async fn drive_turn(base_url: &str) -> (Result<RunResponse>, Vec<String>, Vec<String>) {
         let text_seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let tool_seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let client = GatewayClient::new(base_url).expect("client 构造");
@@ -824,7 +888,11 @@ mod tests {
             "最后汇总执行计划并给出结论。",
         ];
         let authoritative = deltas.concat();
-        let mut body = frame_bytes(&frame_envelope(gen::AIRY_RS_TYPE_RUN_START, 0, serde_json::json!({})));
+        let mut body = frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({}),
+        ));
         for (i, d) in deltas.iter().enumerate() {
             body.extend(frame_bytes(&frame_envelope(
                 gen::AIRY_RS_TYPE_TOKEN_DELTA,
@@ -862,7 +930,11 @@ mod tests {
         // 可读（UI 只呈现可读消息，不暴露内部栈）。
         let err_text = "模型服务暂时不可用，请稍后重试";
         let body = [
-            frame_bytes(&frame_envelope(gen::AIRY_RS_TYPE_RUN_START, 0, serde_json::json!({}))),
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_RUN_START,
+                0,
+                serde_json::json!({}),
+            )),
             frame_bytes(&frame_envelope(
                 gen::AIRY_RS_TYPE_ERROR,
                 1,
@@ -873,7 +945,11 @@ mod tests {
         let url = spawn_sse_server(vec![body]);
         let (result, _text, tool) = drive_turn(&url).await;
         let err = result.expect_err("error 帧必须转 Err");
-        assert!(err.to_string().contains(err_text), "错误消息原文可见: {}", err);
+        assert!(
+            err.to_string().contains(err_text),
+            "错误消息原文可见: {}",
+            err
+        );
         assert!(
             tool.iter().any(|l| l.contains("\"__airy_evt\":\"error\"")),
             "错误事件进入工具通道供 UI 呈现"
@@ -885,7 +961,11 @@ mod tests {
         // 场景 3：中断帧——cancelled 收尾且无 message 时，保留已收到的
         // 增量输出（用户中断不应丢失已生成内容）。
         let body = [
-            frame_bytes(&frame_envelope(gen::AIRY_RS_TYPE_RUN_START, 0, serde_json::json!({}))),
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_RUN_START,
+                0,
+                serde_json::json!({}),
+            )),
             frame_bytes(&frame_envelope(
                 gen::AIRY_RS_TYPE_TOKEN_DELTA,
                 1,
@@ -915,7 +995,11 @@ mod tests {
         // message，必须报「agent.run_stream: empty result」（社区用户
         // 实测报障原文），不得静默成功。
         let body = [
-            frame_bytes(&frame_envelope(gen::AIRY_RS_TYPE_RUN_START, 0, serde_json::json!({}))),
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_RUN_START,
+                0,
+                serde_json::json!({}),
+            )),
             frame_bytes(&frame_envelope(
                 gen::AIRY_RS_TYPE_RUN_END,
                 1,
@@ -934,7 +1018,11 @@ mod tests {
         // 场景 5：工具进度——tool_start/tool_end 经本地 tool_id 映射回填
         // 工具名，成功态 ok=1，进入工具通道渲染。
         let body = [
-            frame_bytes(&frame_envelope(gen::AIRY_RS_TYPE_RUN_START, 0, serde_json::json!({}))),
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_RUN_START,
+                0,
+                serde_json::json!({}),
+            )),
             frame_bytes(&frame_envelope(
                 gen::AIRY_RS_TYPE_TOOL_START,
                 1,
@@ -985,7 +1073,11 @@ mod tests {
         // 中间截断）逐块到达，解析结果必须与单块一致（TCP 不保证按帧
         // 分段；回归网络层半帧粘包处理）。
         let deltas = ["第一段中文。", "第二段中文。", "第三段中文。"];
-        let mut body = frame_bytes(&frame_envelope(gen::AIRY_RS_TYPE_RUN_START, 0, serde_json::json!({})));
+        let mut body = frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({}),
+        ));
         for (i, d) in deltas.iter().enumerate() {
             body.extend(frame_bytes(&frame_envelope(
                 gen::AIRY_RS_TYPE_TOKEN_DELTA,
@@ -1018,7 +1110,11 @@ mod tests {
     async fn replay_trailing_frame_without_newline_still_delivers_message() {
         // 场景 7：尾部残行——末帧 message 无 "\n\n" 收尾连接即关闭，
         // 残行仍须被采纳（防上游网关省略流结束符时丢权威内容）。
-        let mut body = frame_bytes(&frame_envelope(gen::AIRY_RS_TYPE_RUN_START, 0, serde_json::json!({})));
+        let mut body = frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({}),
+        ));
         let mut last = frame_bytes(&frame_envelope(
             gen::AIRY_RS_TYPE_MESSAGE,
             1,
@@ -1031,6 +1127,122 @@ mod tests {
         let (result, _text, _tool) = drive_turn(&url).await;
         let resp = result.expect("残行 message 必须被采纳");
         assert_eq!(resp.response, "结尾无换行的权威内容");
+    }
+
+    #[tokio::test]
+    async fn replay_delta_fragments_count_and_concat_exact() {
+        // B2（0.1.18）V2.2：长回答必须由**多个** token_delta 分片构成
+        // （禁止整段截断为单帧/512 字节上限截断），且分片拼接结果与最终
+        // message 权威全文**逐字符一致**。此处显式断言分片计数 > 1。
+        let deltas = [
+            "第一段：正在核对网关连接状态。",
+            "第二段：读取 agent 编排配置与模型参数。",
+            "第三段：汇总执行计划。",
+            "第四段：给出最终结论与后续建议。",
+        ];
+        let authoritative = deltas.concat();
+        let mut body = frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({}),
+        ));
+        for (i, d) in deltas.iter().enumerate() {
+            body.extend(frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_TOKEN_DELTA,
+                (i + 1) as i64,
+                serde_json::json!({ gen::AIRY_RS_K_DELTA: d }),
+            )));
+        }
+        body.extend(frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_MESSAGE,
+            5,
+            serde_json::json!({ gen::AIRY_RS_K_CONTENT: authoritative }),
+        )));
+        body.extend(frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_END,
+            6,
+            serde_json::json!({ gen::AIRY_RS_K_STATUS: "completed" }),
+        )));
+        let url = spawn_sse_server(vec![body]);
+        let (result, text, _tool) = drive_turn(&url).await;
+        let resp = result.expect("真增量流应成功");
+        assert!(
+            text.len() > 1,
+            "长回答必须分片多次下发，实测分片数 {}",
+            text.len()
+        );
+        assert_eq!(
+            text.concat(),
+            authoritative,
+            "分片拼接须与权威全文逐字符一致"
+        );
+        assert_eq!(resp.response, authoritative, "message 帧为权威全文");
+    }
+
+    #[tokio::test]
+    async fn replay_delta_first_char_within_100ms() {
+        // B2（0.1.18）V2.4：关闭打字机后，TUI 不得对增量做缓冲/节流——
+        // 服务端写出含 token_delta 的字节块到首字上屏回调的时差须 ≤100ms
+        // （打字机默认关闭由 app::typewriter_default_off_and_env_gated 锁定，
+        // 客户端侧此处取证传输/解码/回调链无附加延迟）。
+        let delta = "首字即可见的答案。";
+        let body = [
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_RUN_START,
+                0,
+                serde_json::json!({}),
+            )),
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_TOKEN_DELTA,
+                1,
+                serde_json::json!({ gen::AIRY_RS_K_DELTA: delta }),
+            )),
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_MESSAGE,
+                2,
+                serde_json::json!({ gen::AIRY_RS_K_CONTENT: delta }),
+            )),
+            frame_bytes(&frame_envelope(
+                gen::AIRY_RS_TYPE_RUN_END,
+                3,
+                serde_json::json!({ gen::AIRY_RS_K_STATUS: "completed" }),
+            )),
+        ]
+        .concat();
+        let (url, server_wrote) = spawn_sse_server_timed(vec![body]);
+        let first_char: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+        let fc = first_char.clone();
+        let client = GatewayClient::new(&url).expect("client 构造");
+        let result = client
+            .run_stream_turn(
+                "请分析当前任务",
+                "agents/main.agent.yaml",
+                None,
+                "sess_t04",
+                None,
+                None,
+                None,
+                move |_c| {
+                    let mut g = fc.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(std::time::Instant::now());
+                    }
+                },
+                |_e| {},
+            )
+            .await;
+        result.expect("回放应成功");
+        let t0 = server_wrote
+            .lock()
+            .unwrap()
+            .expect("服务端应写出含 token_delta 的字节块");
+        let t1 = first_char.lock().unwrap().expect("首字回调应触发");
+        let gap = t1.duration_since(t0);
+        assert!(
+            gap.as_millis() <= 100,
+            "服务端首字节 → 首字上屏时差须 ≤100ms，实测 {:?}",
+            gap
+        );
     }
 }
 

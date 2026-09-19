@@ -425,7 +425,9 @@ impl WizardState {
     }
 
     fn cycle_provider(&mut self) {
-        let Some(i) = self.key_idx(FieldKey::Provider) else { return };
+        let Some(i) = self.key_idx(FieldKey::Provider) else {
+            return;
+        };
         let next = match presets::preset_index(&self.form[i].value) {
             Some(p) => presets::PRESETS[(p + 1) % presets::PRESETS.len()].id,
             None => presets::PRESETS[0].id,

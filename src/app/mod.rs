@@ -9,7 +9,10 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::client::{GccpQuestion, GatewayClient, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval, RunResponse};
+use crate::client::{
+    GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
+    RunResponse,
+};
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
 use crate::ime::ImeEngine;
 use crate::memory::{self, ConversationMemory};
@@ -32,8 +35,8 @@ mod session;
 mod task;
 mod text;
 
-pub use mode::{parse_mode_detail, ModeMarker};
 use config::*;
+pub use mode::{sanitize_reply, ModeMarker, StreamSanitizer};
 use text::*;
 
 /// Maximum number of chat messages to keep in memory.
@@ -44,6 +47,19 @@ pub(crate) const MAX_CHAT_MESSAGES: usize = 2000;
 
 /// Maximum number of log entries to keep.
 const MAX_LOG_ENTRIES: usize = 200;
+
+/// 打字机动效开关（0.1.18 B2-6）。
+///
+/// 默认**关闭**：服务端增量到达即整块上屏（真流式下天然逐字），既不门控
+/// 落定，也不在服务端结果到达后引入任何附加上屏延迟。仅当用户显式设置
+/// `AIRY_TUI_TYPEWRITER=1|true|on|yes` 时开启，属纯观感效果——开启后动画
+/// 仍只作用于流式期间，落定不因动画延后。
+fn typewriter_enabled() -> bool {
+    matches!(
+        std::env::var("AIRY_TUI_TYPEWRITER").as_deref(),
+        Ok("1") | Ok("true") | Ok("on") | Ok("yes")
+    )
+}
 
 /// Active panel for the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +74,12 @@ pub enum ActivePanel {
     Board,
     /// 事件流（hall.stream：全局 gseq 因果序回放）
     Events,
+    /// 思考链独立视图（0.1.18 B4）：模型推理原文默认不上屏、不落记忆，
+    /// 仅在用户显式请求（Alt+E）时于本视图中按需取用。
+    Think,
+    /// 焦点视图（0.1.18 B11/W14）：最近一条回复的全屏只读覆盖层，
+    /// 独立滚动，Esc 退出恢复原视口。
+    Focus,
 }
 
 /// Represents a chat message in the conversation.
@@ -123,8 +145,28 @@ pub struct App {
     pub active_panel: ActivePanel,
     /// Scroll position in chat
     pub scroll_offset: u16,
-    /// 浏览态是否展开全部折叠（思考链/长回复）。0.1.7：折叠与滚动解耦——
-    /// 滚动基于稳定的折叠视图，不再"一滚就展开导致视口跳变"；Ctrl+E 切换。
+    /// 翻页步长 SSoT（0.1.18 B11/W14）：= 对话区当前视口高度，渲染每帧
+    /// 回写，终端 resize 后自动跟随（V11.2）；PgUp/PgDn 与鼠标翻页均消费
+    /// 此值，固定常量翻页已废除。首帧前缺省值仅作兜底。
+    pub page_step: u16,
+    /// 对话内容可滚总量（0.1.18 B11/W14）：总行数 - 视口高度，渲染每帧
+    /// 回写。滚动步进据此钳位：内容未超出视口时（=0）滚动为 no-op，
+    /// 不再积累脏偏移（V11.3）。
+    pub chat_scroll_max: u16,
+    /// 鼠标滚轮捕获开关（0.1.18 B11/W14）：默认关（不牺牲终端原生文本
+    /// 选择）；Ctrl+M 会话级切换。开启后滚轮滚动对话（Shift 加速 /
+    /// Ctrl 细粒度），关闭即还原捕获（V11.1）。
+    pub mouse_capture: bool,
+    /// 焦点视图消息快照（0.1.18 B11/W14）：Alt+F 打开时取最近一条回复
+    /// 克隆，渲染与滚动均基于快照，不受后续消息影响；Esc 退出即弃。
+    pub focus_msg: Option<ChatMessage>,
+    /// 焦点视图滚动偏移（正文首行下标，0 = 顶部）。
+    pub focus_scroll: usize,
+    /// 焦点视图可滚总量（总行数 - 视口高度，渲染每帧回写，钳位用）。
+    pub focus_scroll_max: usize,
+    /// 浏览态是否展开全部折叠（长系统消息）。0.1.7：折叠与滚动解耦——
+    /// 滚动基于稳定的折叠视图，不再"一滚就展开导致视口跳变"。
+    /// 0.1.18 B4：Alt+E 改用于打开思考链独立视图，本开关改由 Alt+O 切换。
     pub browse_expanded: bool,
     /// Gateway client
     pub gateway: GatewayClient,
@@ -156,6 +198,10 @@ pub struct App {
     pub config_file: String,
     /// Whether we are currently loading (waiting for response)
     pub loading: bool,
+    /// 本次请求发出时刻（0.1.18 B2-7：`begin_busy` 置位）。状态行据此
+    /// 即时展示「已受理 · N.Ns」，使请求发出后立刻有可见反馈并给出
+    /// 分段时间证据（V2.3；与上一回合结算的 `last_turn_elapsed` 分开）。
+    pub busy_started: Instant,
     /// Status message
     pub status_message: String,
     /// LLM 判定的当前模式：true = 任务集（多步任务编排），false = 普通对话
@@ -199,25 +245,40 @@ pub struct App {
     pub streaming_reveal: usize,
     /// 打字机推进节拍（距上次 reveal 推进的时长；50ms tick 一字符）
     last_reveal_tick: Instant,
+    /// 打字机动效开关（0.1.18 B2-6；见 `typewriter_enabled`）。
+    /// 关闭（默认）时 reveal 恒等于已到达文本长度——到达即上屏、结果即
+    /// 落定；开启时按 24ms 节拍推进，仅影响观感，不影响落定时机。
+    pub typewriter: bool,
     /// 流式工具循环事件（SSE __airy_evt 渲染行，如 `[Sub web_search Agent] …`）
     pub stream_tool_events: Vec<String>,
     /// 流式思考链（SSE `__airy_evt:reasoning` 事件携带的 reasoning_content，
-    /// thinking 模型的思考过程）。默认折叠为一行，浏览时展开全量。
+    /// thinking 模型的思考过程）。
+    /// 0.1.18 B4：原文**默认不上屏**（chat 区仅显示一行"思考中…"进度），
+    /// 也不再生成 System 消息；仅由用户显式请求（Alt+E / `/think`）打开的
+    /// 思考链独立视图取用，流式期间即该视图的实时数据源。
     /// 2026-08-17 F6 新增（gateway 透传 reasoning_content）。
     pub stream_reasoning: String,
     /// 流式思考链的模型轨（SSE reasoning 事件 model 字段，2.3.14）：
     /// 匹配 AIRY_MODEL_T2/T1F/T1P 显示 [Dual Slow/Fast/Prof Think]。
     pub stream_reasoning_model: String,
-    /// 思考阶段开始时刻（首个 reasoning 增量到达时记录；chat.rs 状态行
+    /// 思考阶段开始时刻（首个 reasoning 增量到达时记录；chat 流式状态行
     /// 显示耗时，2026-08-19 与 C 版 CLI 的 "N 字 · T.Ts" 进度对齐）。
     pub stream_reasoning_start: Option<Instant>,
-    /// 2.1.1.6：本轮流式思考链待持久化副本（apply_stream_result 落屏后
-    /// 保留，apply_chat_result 写记忆时随 assistant 记录落盘）。
-    pub pending_reasoning: Option<String>,
+    /// 0.1.18 B4：最近一轮思考链原文（仅内存副本，会话结束即弃）。
+    /// 思考链不再上屏、不再随 assistant 记录落盘，本字段只供思考链独立
+    /// 视图（ActivePanel::Think）按需取用，保证 Alt+E 查看能力不丢失。
+    pub last_reasoning: Option<String>,
+    /// 0.1.18 B4：思考链独立视图的正文滚动偏移（正文首行下标，0 = 顶部）。
+    /// 打开视图（Alt+E）时归零；↑/↓ 步进、PgUp/PgDn 翻页。
+    pub think_scroll: usize,
     /// 0.1.8：本轮流式错误（SSE `__airy_evt:error` 事件携带的 message，
     /// gateway 把 llm_d 错误信封/不可达转为可读文本）。落定时以 Err 形式
     /// 呈现（System 一行摘要），杜绝原始 JSON 上屏。
     pub stream_error: Option<String>,
+    /// 0.1.18 B3：流式控制面净化器——[MODE:*] 标记与前导元话语在流式
+    /// 中间态亦零上屏（V3.1），剥出文本暂存 protocol_buf，落定时入
+    /// F3 诊断通道（V3.2）。
+    stream_sanitizer: StreamSanitizer,
     /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
@@ -299,8 +360,8 @@ enum OpsOutcome {
 /// monit），列入即同一 daemon 重复计数；gateway_d 自身以顶部连接状态呈现
 /// （连接断开时 /daemons 本就不可达）；maths_d 随 0.1.9 M4 补入。
 const OPS_DAEMON_NS: [&str; 14] = [
-    "agent", "tool", "think", "monit", "sched", "channel", "market", "llm",
-    "cupolas", "mem", "notify", "hook", "a2a", "maths",
+    "agent", "tool", "think", "monit", "sched", "channel", "market", "llm", "cupolas", "mem",
+    "notify", "hook", "a2a", "maths",
 ];
 
 /// 后台 LLM 请求的类型（决定结果如何应用）。
@@ -343,13 +404,6 @@ struct PendingTurn {
     stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     /// 流式工具事件接收端（tool_call/tool_result JSON，option：非流式请求为 None）
     tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
-    /// 事件流式轮标记（0.1.9 M5 W1）：true = 打字机 reveal 追平后才落定
-    /// 结果（StreamRound 与 agent.run_stream 执行轮均走此语义）。oneshot
-    /// 结果先到而 reveal 未追平时暂存 finish，等逐字动效完整走完再 apply。
-    streamed: bool,
-    /// 流式最终结果暂存（打字机上屏完成前收到结果时先存这里，
-    /// 等 reveal 追平文本长度后再 apply——保证逐字动效完整走完）。
-    finish: Option<PendingOutcome>,
 }
 
 /// 后台请求的结果载荷（LLM 调用结果 / 连接检查结果）。
@@ -401,6 +455,12 @@ impl App {
             cursor: 0,
             active_panel: ActivePanel::Chat,
             scroll_offset: 0,
+            page_step: 10,
+            chat_scroll_max: 0,
+            mouse_capture: false,
+            focus_msg: None,
+            focus_scroll: 0,
+            focus_scroll_max: 0,
             browse_expanded: false,
             gateway,
             connected: false,
@@ -417,6 +477,7 @@ impl App {
             model: load_saved_model().unwrap_or_default(),
             config_file: format!("{}/config/model.yaml", airy_home()),
             loading: false,
+            busy_started: Instant::now(),
             status_message: "Press Enter to start".to_string(),
             task_mode: false,
             memory: memory_backend,
@@ -445,12 +506,15 @@ impl App {
             streaming_text: String::new(),
             streaming_reveal: 0,
             last_reveal_tick: Instant::now(),
+            typewriter: typewriter_enabled(),
             stream_tool_events: Vec::new(),
             stream_reasoning: String::new(),
             stream_reasoning_model: String::new(),
             stream_reasoning_start: None,
-            pending_reasoning: None,
+            last_reasoning: None,
+            think_scroll: 0,
             stream_error: None,
+            stream_sanitizer: StreamSanitizer::new(),
             approvals: Vec::new(),
             project_context: String::new(),
             last_approval_poll: Instant::now(),

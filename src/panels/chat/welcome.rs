@@ -39,7 +39,9 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
         out.push(Line::from(vec![
             Span::styled(
                 "◈ AirymaxRT",
-                Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::primary())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  极境智能体运行平台 · 输入消息开始对话",
@@ -57,7 +59,9 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
     let brand = Line::from(vec![
         Span::styled(
             "◈ AirymaxRT",
-            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  极境智能体运行平台", Style::default().fg(theme::dim())),
     ]);
@@ -76,7 +80,8 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
             tag.push('─');
         }
     }
-    let tag_pad = content_max.saturating_sub(unicode_width::UnicodeWidthStr::width(tag.as_str())) / 2;
+    let tag_pad =
+        content_max.saturating_sub(unicode_width::UnicodeWidthStr::width(tag.as_str())) / 2;
     hero.push(Line::from(vec![
         Span::raw(" ".repeat(tag_pad)),
         Span::styled(tag, Style::default().fg(theme::separator())),
@@ -91,15 +96,15 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
         ("tool", theme::magenta()),
         ("board", theme::primary()),
     ];
-    let mut caps_line = Line::from(vec![
-        Span::styled("核心链路  ", Style::default().fg(theme::faint())),
-    ]);
+    let mut caps_line = Line::from(vec![Span::styled(
+        "核心链路  ",
+        Style::default().fg(theme::faint()),
+    )]);
     for (i, (name, c)) in chain.iter().enumerate() {
         if i > 0 {
-            caps_line.spans.push(Span::styled(
-                " ",
-                Style::default().fg(theme::faint()),
-            ));
+            caps_line
+                .spans
+                .push(Span::styled(" ", Style::default().fg(theme::faint())));
         }
         caps_line.spans.push(Span::styled(
             format!(" {} ", name),
@@ -109,7 +114,10 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    let caps_pad = content_max.saturating_sub(2).saturating_sub(caps_line.width()) / 2;
+    let caps_pad = content_max
+        .saturating_sub(2)
+        .saturating_sub(caps_line.width())
+        / 2;
     let mut padded_caps = caps_line.spans.clone();
     padded_caps.insert(0, Span::raw(" ".repeat(caps_pad)));
     hero.push(Line::from(padded_caps));
@@ -129,9 +137,10 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
     }
 
     // 5. 引导行 + 项目上下文行
-    hero.push(Line::from(vec![
-        Span::styled("输入消息开始对话 · F1 帮助 · F2 配置 · F10 输入法", Style::default().fg(theme::faint())),
-    ]));
+    hero.push(Line::from(vec![Span::styled(
+        "输入消息开始对话 · F1 帮助 · F2 配置 · F10 输入法",
+        Style::default().fg(theme::faint()),
+    )]));
     let proj_disp: String = proj.chars().take(content_max.saturating_sub(4)).collect();
     if !proj_disp.is_empty() {
         hero.push(Line::from(vec![

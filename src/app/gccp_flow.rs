@@ -5,6 +5,7 @@
 //
 // GCCP 任务事实确认与 GRAD 双思考：澄清、计划、确认、收尾与技能沉淀。
 
+use super::context::HistoryPolicy;
 use super::*;
 
 impl App {
@@ -65,7 +66,9 @@ impl App {
         // 重发同一请求（第二段）：原始用户输入作为 ChatRound.input（保持
         // 记忆/模式判定语义），增强 prompt + 历史保持一致，答案透传 gateway。
         self.dispatch_with_agent(
-            PendingKind::ChatRound { input: pending.raw_input },
+            PendingKind::ChatRound {
+                input: pending.raw_input,
+            },
             &pending.prompt,
             None,
             pending.history,
@@ -106,9 +109,7 @@ impl App {
                     }
                 }
                 self.add_message(MessageRole::Agent, r.response.clone());
-                if let Err(e) = self.memory.push("assistant", &r.response, "task") {
-                    log::warn!("memory push(assistant) failed: {}", e);
-                }
+                self.mem_push_tagged("assistant", &r.response, "task");
                 self.add_message(
                     MessageRole::System,
                     format!("请输入第 {} 问的回答：", round),
@@ -124,7 +125,10 @@ impl App {
     pub(super) fn gccp_round_n(&mut self, round: u8, input: &str) -> Result<()> {
         let ans = gccp::parse_answers(input);
         if ans.is_empty() {
-            self.add_message(MessageRole::System, "回答不能为空，请重新输入。".to_string());
+            self.add_message(
+                MessageRole::System,
+                "回答不能为空，请重新输入。".to_string(),
+            );
             return Ok(());
         }
         let answer = ans.first().cloned().unwrap_or_default();
@@ -167,12 +171,11 @@ impl App {
                 // 2.3.9 层级可视化：Executing 阶段逐节点着色）
                 self.gccp.init_node_states();
                 self.add_message(MessageRole::Agent, r.response.clone());
-                if let Err(e) = self.memory.push("assistant", &r.response, "task") {
-                    log::warn!("memory push(assistant) failed: {}", e);
-                }
+                self.mem_push_tagged("assistant", &r.response, "task");
                 self.add_message(
                     MessageRole::System,
-                    "请确认「任务流程图」（GRAD）：输入「确认」开始执行，或输入修改意见。".to_string(),
+                    "请确认「任务流程图」（GRAD）：输入「确认」开始执行，或输入修改意见。"
+                        .to_string(),
                 );
                 log::info!(
                     "apply_grad_plan: GRAD 已生成（grad_plan_len={}，dag={}）",
@@ -202,7 +205,10 @@ impl App {
             }
             self.set_flow_phase(FlowPhase::Executing);
             log::info!("grad_confirm: 流程图已确认，开始执行任务集");
-            self.add_message(MessageRole::System, "任务流程图已确认，开始执行任务集。".to_string());
+            self.add_message(
+                MessageRole::System,
+                "任务流程图已确认，开始执行任务集。".to_string(),
+            );
             // 节点进入执行中（P2-C：Executing 阶段 DAG 持续渲染）
             self.gccp.mark_all_running();
 
@@ -212,7 +218,8 @@ impl App {
             let prompt = gccp::build_execute_prompt(&self.gccp);
             let agent_spec = serde_json::json!({ "role": "coding" });
             // 执行轮同样携带对话历史（GCCP 确认过程），编排分支可引用上下文
-            let history = self.build_history_messages(&prompt);
+            // （0.1.18 B1：Full 策略——任务确认链完整性优先，边界标记包裹）
+            let history = self.build_history_messages(&prompt, input, HistoryPolicy::Full);
             // 0.1.9 M5 W1：执行轮切 agent.run_stream v1 事件流（协议先行）——
             // token 增量/工具进度/思考链/结构化错误实时渲染，替代一次性
             // agent.run 的"静默等待"。引擎事件经 gateway 纯翻译后逐帧消费。
@@ -259,26 +266,15 @@ impl App {
                     }
                     let cleaned = gccp::strip_task_done(&r.response);
                     self.add_message(MessageRole::Agent, cleaned.clone());
-                    // 思考链副本随执行轮回复持久化（与 apply_chat_result 对齐，
-                    // 2.1.1.6：思考 token 不丢失）
-                    let reasoning = self.pending_reasoning.take();
-                    if let Err(e) = self.memory.push_with_reasoning(
-                        "assistant",
-                        &cleaned,
-                        reasoning.as_deref(),
-                        "task",
-                    ) {
-                        log::warn!("memory push(assistant) failed: {}", e);
-                    }
+                    // 0.1.18 B4：执行轮同样不落思考链（与 apply_chat_result 对齐）
+                    self.mem_push_tagged("assistant", &cleaned, "task");
                     if gccp::has_task_done_marker(&r.response) {
                         self.complete_task();
                     }
                 } else {
                     self.gccp.grad_plan = r.response.trim().to_string();
                     self.add_message(MessageRole::Agent, r.response.clone());
-                    if let Err(e) = self.memory.push("assistant", &r.response, "task") {
-                        log::warn!("memory push(assistant) failed: {}", e);
-                    }
+                    self.mem_push_tagged("assistant", &r.response, "task");
                     self.add_message(
                         MessageRole::System,
                         "已修订流程图，请再次确认：输入「确认」开始执行。".to_string(),

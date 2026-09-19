@@ -5,6 +5,7 @@
 //
 // 对话与任务提交：输入分发、回合记录、流式与阻塞结果落盘。
 
+use super::context::HistoryPolicy;
 use super::*;
 
 impl App {
@@ -15,12 +16,7 @@ impl App {
     pub(super) fn set_flow_phase(&mut self, to: FlowPhase) {
         let from = self.flow_phase;
         if from != to {
-            log::info!(
-                "flow_phase: {:?} -> {:?}（{}）",
-                from,
-                to,
-                to.label()
-            );
+            log::info!("flow_phase: {:?} -> {:?}（{}）", from, to, to.label());
             self.flow_phase = to;
         }
     }
@@ -32,12 +28,7 @@ impl App {
     pub(super) fn set_task_control(&mut self, to: TaskControl) {
         let from = self.task_control;
         if from != to {
-            log::info!(
-                "task_control: {:?} -> {:?}（{}）",
-                from,
-                to,
-                to.label()
-            );
+            log::info!("task_control: {:?} -> {:?}（{}）", from, to, to.label());
             self.task_control = to;
         }
     }
@@ -120,6 +111,12 @@ impl App {
             self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
             return Ok(());
         }
+        if lower == "/think" {
+            // 思考链独立视图（0.1.18 B4，Alt+E 等价）：思考链默认不上屏、
+            // 不落长期记忆，仅显式请求时在此按需查看（「命令」入口）。
+            self.open_think_panel();
+            return Ok(());
+        }
         if lower == "/chain" || lower.starts_with("/chain ") {
             // 决策链：无参列任务；/chain <task_id> 回放该任务决策链
             self.cmd_chain(&input);
@@ -162,6 +159,9 @@ impl App {
 
         // 回合计时开始（结果消费时结算，回合分隔线展示 Worked for Ns）
         self.turn_started = Instant::now();
+        // 0.1.18 B1：轮次自增统一前移到 submit_input（此前在 chat_round）——
+        // 本轮全部记忆写入（user/assistant/task）共用同一轮号标注。
+        self.turn += 1;
 
         // Add user message
         self.add_message(MessageRole::User, input.clone());
@@ -179,10 +179,8 @@ impl App {
             }
         }
 
-        // 记忆：持久化用户输入（普通对话与任务均记录）
-        if let Err(e) = self.memory.push("user", &input, "chat") {
-            log::warn!("memory push(user) failed: {}", e);
-        }
+        // 记忆：持久化用户输入（普通对话与任务均记录），带轮次标注（B1）
+        self.mem_push_tagged("user", &input, "chat");
 
         if input.eq_ignore_ascii_case("exit") {
             self.add_message(MessageRole::System, "Type Ctrl+C to quit.".to_string());
@@ -225,22 +223,35 @@ impl App {
         );
     }
 
+    /// 0.1.18 B1：记忆写入统一带轮次标注（tags 内 "turn:N"，与 CLI 记录
+    /// 共享存储）。召回侧（MemoryHit::turn）透传标注，上下文注入时声明
+    /// 归属轮次，为"按轮检索"铺路。
+    pub(super) fn mem_push_tagged(&mut self, role: &str, content: &str, base: &str) {
+        if let Err(e) = self
+            .memory
+            .push(role, content, &format!("{},turn:{}", base, self.turn))
+        {
+            log::warn!("memory push({}) failed: {}", role, e);
+        }
+    }
+
     /// 普通对话轮次：发送增强 prompt，并按 LLM 判定的模式切换任务流。
     ///
     /// 普通对话（未连接时先检查；已连接走流式 SSE 增量渲染，Claude 风格）。
     /// 任务执行轮（flow_phase == Executing）走 agent 编排路径（非流式）。
     pub(super) fn chat_round(&mut self, input: &str) -> Result<()> {
-        self.turn += 1;
-
         // 构造增强 prompt：系统指令（LLM 判定任务集）+ 技能 + 记忆 + 项目上下文
         let prompt = self.build_context_prompt(input);
         // 完整对话历史（OpenAI messages 数组，末条为增强 prompt）：
-        // 网络层由此获得真实多轮上下文（M1/M2 修复），无需再挤进 prompt 文本。
-        let history = self.build_history_messages(&prompt);
+        // 0.1.18 B1 门控注入——普通对话轮仅在输入含指代信号时携带最近一轮
+        // 历史，否则只送本轮增强 prompt（修复上下文串轮）。
+        let history = self.build_history_messages(&prompt, input, HistoryPolicy::Gated);
 
         if !self.connected {
             self.dispatch_with_agent(
-                PendingKind::ChatRound { input: input.to_string() },
+                PendingKind::ChatRound {
+                    input: input.to_string(),
+                },
                 &prompt,
                 None,
                 history,
@@ -250,31 +261,36 @@ impl App {
         }
 
         // 普通对话走流式：SSE 增量渲染（Claude 风格）；任务执行轮保持编排链路
-        let messages = history.unwrap_or_else(|| {
-            serde_json::json!([{ "role": "user", "content": prompt }])
-        });
+        let messages =
+            history.unwrap_or_else(|| serde_json::json!([{ "role": "user", "content": prompt }]));
         self.start_stream_pending(
-            PendingKind::StreamRound { input: input.to_string() },
+            PendingKind::StreamRound {
+                input: input.to_string(),
+            },
             messages,
         );
         Ok(())
     }
 
     /// 流式尾段落定（0.1.9 M5 W1 提取共用）：事件流结束后把瞬态渲染态
-    /// 落为正式消息——工具状态行 → ToolCall 消息、思考链 → System 折叠
-    /// 消息（副本保留到 pending_reasoning 供记忆持久化）、打字机占位清理。
+    /// 落为正式消息——工具状态行 → ToolCall 消息、思考链 → 仅存内存副本
+    /// （0.1.18 B4：不再落 System 消息上屏、不再随记录落盘）、打字机占位清理。
     /// 返回本轮流式错误（None = 正常；error 事件经 poll 已写入 stream_error）。
     pub(super) fn settle_stream_tail(&mut self) -> Option<String> {
         // 流式工具状态行 → 落为正式消息（先于最终回答；工具事件仅此一处可见）
         for line in std::mem::take(&mut self.stream_tool_events) {
             self.add_message(MessageRole::ToolCall, line);
         }
-        // 思考链（reasoning_content）→ 落为 [Dual Think] 正式消息（折叠展示）。
-        // 2.1.1.6：同时保留副本到 pending_reasoning，随 assistant 回复持久化。
+        // B3（V3.2）：流式期间剥出的控制面协议文本入 F3 诊断通道——用户面
+        // 零协议渲染，但判定过程可审计（诊断视图可读协议段）。
+        if !self.stream_sanitizer.protocol_buf.is_empty() {
+            let proto = std::mem::take(&mut self.stream_sanitizer.protocol_buf);
+            self.add_log("INFO", format!("流式协议段已剥离: {proto}"));
+        }
+        // 思考链（reasoning_content）：0.1.18 B4 起默认不上屏、不落长期记忆。
+        // 仅保留内存副本供思考链独立视图（Alt+E）按需取用，能力不丢失。
         if !self.stream_reasoning.is_empty() {
-            let reasoning = std::mem::take(&mut self.stream_reasoning);
-            self.pending_reasoning = Some(reasoning.clone());
-            self.add_message(MessageRole::System, reasoning);
+            self.last_reasoning = Some(std::mem::take(&mut self.stream_reasoning));
         }
         self.stream_reasoning_model.clear();
         self.stream_reasoning_start = None;
@@ -308,15 +324,12 @@ impl App {
                 // 回复处理（无 Agent 消息/记忆写入/模式判定——本轮无实质结果）。
                 if response.gccp_need_interaction && !response.gccp_questions.is_empty() {
                     let qcount = response.gccp_questions.len();
-                    log::info!(
-                        "apply_chat_result: GCCP 交互轮（{} 个澄清问题）",
-                        qcount
-                    );
+                    log::info!("apply_chat_result: GCCP 交互轮（{} 个澄清问题）", qcount);
                     // 重发时保持与第一段一致的 prompt/history（同一任务上下文，
                     // 引擎据此完成目标确认；此处重新构建，两轮间隔内记忆/技能
                     // 状态稳定，产出等价上下文）。
                     let prompt = self.build_context_prompt(&input);
-                    let history = self.build_history_messages(&prompt);
+                    let history = self.build_history_messages(&prompt, &input, HistoryPolicy::Full);
                     self.gccp_pending = Some(GccpPending {
                         raw_input: input.clone(),
                         prompt,
@@ -342,7 +355,14 @@ impl App {
                     self.cost += c;
                 }
 
-                let (mode, cleaned) = parse_mode_detail(&response.response);
+                // B3：结构化净化——模式判定保留（协议判定能力不回归），前导
+                // 元话语/标记/未识别残留全部剥离进 protocol，正文零协议污染。
+                let sanitized = sanitize_reply(&response.response);
+                let mode = sanitized.mode;
+                let cleaned = sanitized.body;
+                if !sanitized.protocol.is_empty() {
+                    self.add_log("INFO", format!("协议段已剥离: {}", sanitized.protocol));
+                }
 
                 // 双思考轨迹（GCCP+GRAD）→ 折叠为一行计划摘要，先于工具轨迹展示。
                 // 乔布斯式克制：完整 DAG（节点目标/依赖/成本）不下屏，仅给
@@ -363,10 +383,12 @@ impl App {
                     let show = total.min(MAX_VISIBLE_TOOL_TRACES);
                     for t in trace.iter().take(show) {
                         let ok = t.ok.unwrap_or(0) != 0;
+                        // B3（V3.4）：仅展示白名单动作短语，原始工具标识符
+                        // 不入用户面（未登记名称由 tool_action 兜底隐藏）
                         let action = Self::tool_action(&t.tool);
                         self.add_message(
                             MessageRole::ToolCall,
-                            format!("{} {}…{}", t.tool, action, if ok { "" } else { "（失败）" }),
+                            format!("{}…{}", action, if ok { "" } else { "（失败）" }),
                         );
                         // 成功不回传结果内容（代码/文件全文/URL 等保留在日志）；失败附短错误
                         if !ok {
@@ -399,26 +421,16 @@ impl App {
                 // 可能只输出 reasoning_content，或 provider 异常）时给出明确提示，
                 // 避免对话中出现"空返回"却无任何说明。
                 if cleaned.trim().is_empty() {
-                    // 丢弃本轮思考链，避免残留给下一轮记录
-                    self.pending_reasoning.take();
                     self.add_message(
                         MessageRole::Agent,
                         "（未产生回复：模型可能仅生成了思考内容，请重试）".to_string(),
                     );
                 } else {
                     self.add_message(MessageRole::Agent, cleaned.clone());
-                    // 记忆：持久化助手响应（2.1.1.6：思考链随记录落盘保留）。
-                    // 空回复不写记忆——空记录是记忆污染源（无内容可召回，
-                    // 却混入 recent() 蒸馏/上下文，拉低记忆信噪比）。
-                    let reasoning = self.pending_reasoning.take();
-                    if let Err(e) = self.memory.push_with_reasoning(
-                        "assistant",
-                        &cleaned,
-                        reasoning.as_deref(),
-                        "chat",
-                    ) {
-                        log::warn!("memory push(assistant) failed: {}", e);
-                    }
+                    // 记忆：持久化助手响应。0.1.18 B4：思考链不再随记录落盘
+                    // （长期记忆不得出现模型推理原文）；空回复不写记忆——空记录
+                    // 是记忆污染源（无内容可召回，却混入 recent() 蒸馏/上下文）。
+                    self.mem_push_tagged("assistant", &cleaned, "chat");
                 }
 
                 // 执行阶段 LLM 自报 [TASK:DONE] → 自动沉淀技能

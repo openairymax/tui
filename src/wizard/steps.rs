@@ -137,7 +137,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::Name,
                 label: ("名称", "Name"),
-                hint: ("展示名称（默认取提供商名，可改）", "Display name (defaults to the provider name)"),
+                hint: (
+                    "展示名称（默认取提供商名，可改）",
+                    "Display name (defaults to the provider name)",
+                ),
                 kind: FieldKind::Text,
                 fallback: "",
                 preset: Some(PresetSource::Label),
@@ -192,7 +195,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::ModelId,
                 label: ("模型 ID", "Model ID"),
-                hint: ("实际调用的模型名（Tab 循环候选）", "Model id actually used (Tab cycles candidates)"),
+                hint: (
+                    "实际调用的模型名（Tab 循环候选）",
+                    "Model id actually used (Tab cycles candidates)",
+                ),
                 kind: FieldKind::PresetModels,
                 fallback: "",
                 preset: Some(PresetSource::Model),
@@ -220,7 +226,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::CtxWindow,
                 label: ("上下文窗口", "Context window"),
-                hint: ("128k / 256k / 512k / 1M / 2M（Tab 循环）", "128k / 256k / 512k / 1M / 2M (Tab cycles)"),
+                hint: (
+                    "128k / 256k / 512k / 1M / 2M（Tab 循环）",
+                    "128k / 256k / 512k / 1M / 2M (Tab cycles)",
+                ),
                 kind: FieldKind::Options {
                     opts: &["128k", "256k", "512k", "1M", "2M"],
                     strict: false,
@@ -233,7 +242,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::MaxOutput,
                 label: ("最大输出", "Max output"),
-                hint: ("4k / 16k / 32k / 128k / 256k（Tab 循环）", "4k / 16k / 32k / 128k / 256k (Tab cycles)"),
+                hint: (
+                    "4k / 16k / 32k / 128k / 256k（Tab 循环）",
+                    "4k / 16k / 32k / 128k / 256k (Tab cycles)",
+                ),
                 kind: FieldKind::Options {
                     opts: &["4k", "16k", "32k", "128k", "256k"],
                     strict: false,
@@ -246,7 +258,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::ToolRounds,
                 label: ("工具轮数", "Tool rounds"),
-                hint: ("工具调用轮数上限，默认 1000", "Max tool call rounds, default 1000"),
+                hint: (
+                    "工具调用轮数上限，默认 1000",
+                    "Max tool call rounds, default 1000",
+                ),
                 kind: FieldKind::Text,
                 fallback: "1000",
                 preset: None,
@@ -312,7 +327,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::SlowModel,
                 label: ("慢思考模型", "Slow model (t2)"),
-                hint: ("组织逻辑、制定任务图纸（建议用最强模型）", "Plans logic & blueprints (use your strongest model)"),
+                hint: (
+                    "组织逻辑、制定任务图纸（建议用最强模型）",
+                    "Plans logic & blueprints (use your strongest model)",
+                ),
                 kind: FieldKind::Text,
                 fallback: "",
                 preset: None,
@@ -322,7 +340,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::FastModel,
                 label: ("快思考模型", "Fast model (t1-f)"),
-                hint: ("对计划快速终裁（建议用轻快模型）", "Quickly finalizes the plan (use a fast model)"),
+                hint: (
+                    "对计划快速终裁（建议用轻快模型）",
+                    "Quickly finalizes the plan (use a fast model)",
+                ),
                 kind: FieldKind::Text,
                 fallback: "",
                 preset: None,
@@ -332,7 +353,10 @@ pub(crate) const FORM_STEPS: &[StepSpec] = &[
             FieldSpec {
                 key: FieldKey::ProfModel,
                 label: ("专业思考模型", "Pro model (t1-p)"),
-                hint: ("专家校验，留空 = 使用默认模型", "Expert review; empty = default model"),
+                hint: (
+                    "专家校验，留空 = 使用默认模型",
+                    "Expert review; empty = default model",
+                ),
                 kind: FieldKind::Text,
                 fallback: "",
                 preset: None,
@@ -492,7 +516,11 @@ mod tests {
                 assert!(!f.label.0.is_empty() && !f.label.1.is_empty());
                 assert!(!f.hint.0.is_empty() && !f.hint.1.is_empty());
                 if let FieldKind::Options { opts, .. } = f.kind {
-                    assert!(opts.contains(&f.fallback), "默认值必须是候选之一：{:?}", f.key);
+                    assert!(
+                        opts.contains(&f.fallback),
+                        "默认值必须是候选之一：{:?}",
+                        f.key
+                    );
                 }
             }
         }
@@ -578,7 +606,11 @@ mod tests {
         assert_eq!(seed(FieldKey::MaxOutput), "4k");
         assert_eq!(seed(FieldKey::ToolRounds), "1000");
         assert_eq!(seed(FieldKey::ThinkEnabled), "false");
-        assert_eq!(seed(FieldKey::SlowModel), "claude-haiku-4-5-20251001", "回落 default_model");
+        assert_eq!(
+            seed(FieldKey::SlowModel),
+            "claude-haiku-4-5-20251001",
+            "回落 default_model"
+        );
         assert_eq!(seed(FieldKey::FastModel), "fast-one");
         assert_eq!(seed(FieldKey::ProfModel), "", "专业模型允许留空");
 

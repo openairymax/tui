@@ -18,7 +18,7 @@ use crate::theme;
 
 use super::lang::Lang;
 use super::state::WizardState;
-use super::steps::{form_step, FieldSpec, START_CHOICES, TOTAL_STEPS, LANG_CHOICES};
+use super::steps::{form_step, FieldSpec, LANG_CHOICES, START_CHOICES, TOTAL_STEPS};
 use super::text::{byte_to_char, wrap_text};
 
 /// 全屏渲染向导（首次运行 / /hiairy 时由 ui.rs 接管整个终端）。
@@ -103,15 +103,18 @@ fn build_welcome(lines: &mut Vec<Line>, w: &WizardState, width: usize) -> usize 
     ));
     lines.push(Line::raw(""));
     lines.push(Line::raw(""));
+    lines.push(centered("欢迎使用 AirymaxRT · 首次启动向导", width));
     lines.push(centered(
-        "欢迎使用 AirymaxRT · 首次启动向导",
+        "AI Agent 运行时平台 · AI Agent Runtime Platform",
         width,
     ));
-    lines.push(centered("AI Agent 运行时平台 · AI Agent Runtime Platform", width));
     lines.push(Line::raw(""));
     lines.push(Line::raw(""));
     lines.push(centered("请选择界面语言 · Choose language:", width));
-    lines.push(centered(&format!("当前检测到 · Detected: {}", detected_hint), width));
+    lines.push(centered(
+        &format!("当前检测到 · Detected: {}", detected_hint),
+        width,
+    ));
     lines.push(Line::raw(""));
 
     let opt_start = lines.len();
@@ -162,7 +165,9 @@ fn build_start(lines: &mut Vec<Line>, w: &WizardState, width: usize) -> usize {
 /// 表单步骤（3/4/5）：标题 + 副标题 + 可见字段 + 动作按钮。返回选中
 /// 字段/动作按钮所在行号。
 fn build_form(lines: &mut Vec<Line>, w: &WizardState, width: usize) -> usize {
-    let Some(spec) = form_step(w.step) else { return 0 };
+    let Some(spec) = form_step(w.step) else {
+        return 0;
+    };
     let zh = w.effective_lang.zh();
 
     step_header(lines, w.step, t(zh, spec.title), width);
@@ -314,8 +319,14 @@ fn push_footer(lines: &mut Vec<Line>, step: u8, width: usize) {
             width,
         ));
     } else {
-        lines.push(centered("↑↓ 移动 · 1-3 直达 · Enter 确认 · Esc 跳过", width));
-        lines.push(centered("↑↓ Move · 1-3 Select · Enter Confirm · Esc Skip", width));
+        lines.push(centered(
+            "↑↓ 移动 · 1-3 直达 · Enter 确认 · Esc 跳过",
+            width,
+        ));
+        lines.push(centered(
+            "↑↓ Move · 1-3 Select · Enter Confirm · Esc Skip",
+            width,
+        ));
     }
 }
 

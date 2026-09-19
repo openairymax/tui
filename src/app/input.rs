@@ -401,6 +401,7 @@ impl App {
             "/skills".into(),
             "/board".into(),
             "/events".into(),
+            "/think".into(),
             "/chain".into(),
             "/daemons".into(),
             "/agents".into(),
@@ -420,13 +421,13 @@ impl App {
             return;
         }
         let before = &self.input[..pos];
-        let word_start = before.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+        let word_start = before
+            .rfind(char::is_whitespace)
+            .map(|i| i + 1)
+            .unwrap_or(0);
         let prefix = before[word_start..].to_string();
 
-        let matches: Vec<&String> = cands
-            .iter()
-            .filter(|c| c.starts_with(&prefix))
-            .collect();
+        let matches: Vec<&String> = cands.iter().filter(|c| c.starts_with(&prefix)).collect();
         if matches.is_empty() {
             return;
         }

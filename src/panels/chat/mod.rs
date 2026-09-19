@@ -17,9 +17,9 @@ mod welcome;
 pub use view::ChatView;
 
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::Style,
-    text::Text,
+    text::{Line, Span, Text},
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
@@ -50,6 +50,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let frame = view.layout(app, width, viewport, false);
     app.chat_view = view;
 
+    // 0.1.18 B11（V11.2/V11.3）滚动契约回写：翻页步长 = 当前视口高度，
+    // 可滚总量 = 总行数 - 视口高度。渲染每帧回写使 resize 后控制面的
+    // 步长与钳位立即跟随，无需事件通知（SSoT 单向：渲染 → 控制面）。
+    app.page_step = viewport as u16;
+    app.chat_scroll_max = frame.total.saturating_sub(viewport) as u16;
+
     f.render_widget(Paragraph::new(Text::from(frame.lines)), area);
 
     // 滚动条：内容超出视口且有对话时显示；画在预留的最右 1 列上
@@ -71,5 +77,106 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             .track_symbol(Some("│"))
             .track_style(Style::default().fg(theme::faint()));
         f.render_stateful_widget(sb, sb_area, &mut state);
+    }
+
+    // 0.1.18 B11（V11.3）滚动位置指示：内容超出视口时给出位置反馈——
+    // 已到顶显式提示；滚动途中显示 `视口末行/总行`；底部是默认阅读位
+    // （最新消息），保持安静不常驻遮挡正文。
+    if frame.total > viewport {
+        let label = if frame.from_top == 0 {
+            Some("已到顶".to_string())
+        } else if frame.from_top + viewport < frame.total {
+            Some(format!("{}/{}", frame.from_top + viewport, frame.total))
+        } else {
+            None
+        };
+        if let Some(text) = label {
+            let w = 12.min(area.width);
+            let hint = Rect {
+                x: area.right().saturating_sub(w),
+                y: area.bottom().saturating_sub(1),
+                width: w,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new(text)
+                    .alignment(Alignment::Right)
+                    .style(Style::default().fg(theme::faint()).bg(theme::surface())),
+                hint,
+            );
+        }
+    }
+}
+
+/// 渲染焦点视图（0.1.18 B11/W14，Alt+F）：最近一条回复的全屏只读覆盖层。
+///
+/// 复用对话消息块的展开态渲染（markdown 全宽重排），标题行给出键位提示；
+/// 滚动独立于对话区（快照 + `focus_scroll_max` 每帧回写），位置指示契约
+/// 与对话区一致；Esc 返回对话。
+pub fn render_focus(f: &mut Frame, area: Rect, app: &mut App) {
+    // 单条消息克隆成本可忽略；先取值再回写，避免借用交叠
+    let Some(msg) = app.focus_msg.clone() else {
+        return;
+    };
+    let width = area.width as usize;
+    let viewport = area.height as usize;
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            " 焦点视图 · Esc 返回 · ↑↓ 滚动 · PgUp/PgDn 翻页",
+            Style::default().fg(theme::faint()),
+        )),
+        Line::raw(""),
+    ];
+    block::render(&mut lines, &msg, width, true, true);
+    app.focus_scroll_max = lines.len().saturating_sub(viewport);
+    let first = app.focus_scroll.min(app.focus_scroll_max);
+    let body: Vec<Line<'static>> = lines.into_iter().skip(first).take(viewport).collect();
+    f.render_widget(Paragraph::new(Text::from(body)), area);
+
+    if let Some(text) = focus_hint(first, app.focus_scroll_max, viewport) {
+        let w = 12.min(area.width);
+        let hint = Rect {
+            x: area.right().saturating_sub(w),
+            y: area.bottom().saturating_sub(1),
+            width: w,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(text)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme::faint()).bg(theme::surface())),
+            hint,
+        );
+    }
+}
+
+/// 滚动位置文案（对话区与焦点视图共用契约）：已到顶显式提示、滚动途中
+/// `末行/总行`、底部安静。
+fn focus_hint(from_top: usize, scroll_max: usize, viewport: usize) -> Option<String> {
+    if scroll_max == 0 {
+        return None;
+    }
+    if from_top == 0 {
+        Some("已到顶".to_string())
+    } else if from_top < scroll_max {
+        Some(format!("{}/{}", from_top + viewport, scroll_max + viewport))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// B11（0.1.18）V11.3 位置指示契约四态：内容未超出视口无滚动量（安静）、
+    /// 到顶显式提示、滚动途中显示 `末行/总行`、到底安静（默认阅读位为
+    /// 最新消息，不常驻遮挡正文）。
+    #[test]
+    fn b11_hint_covers_position_states() {
+        assert_eq!(focus_hint(0, 0, 10), None, "内容未超出视口：无滚动量");
+        assert_eq!(focus_hint(0, 20, 10).as_deref(), Some("已到顶"));
+        assert_eq!(focus_hint(5, 20, 10).as_deref(), Some("15/30"));
+        assert_eq!(focus_hint(20, 20, 10), None, "到底：默认阅读位保持安静");
     }
 }

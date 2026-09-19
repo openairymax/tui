@@ -54,7 +54,10 @@ impl App {
                         ));
                     }
                     if tasks.len() > 20 {
-                        text.push_str(&format!("\n  … 另有 {} 个（/chain <task_id> 查看决策链）", tasks.len() - 20));
+                        text.push_str(&format!(
+                            "\n  … 另有 {} 个（/chain <task_id> 查看决策链）",
+                            tasks.len() - 20
+                        ));
                     } else {
                         text.push_str("\n  /chain <task_id> 查看决策链");
                     }
@@ -72,12 +75,16 @@ impl App {
                         );
                         return;
                     }
-                    let mut text = format!("决策链「{}」（{} 条事件，gseq 因果序）", tid, events.len());
+                    let mut text =
+                        format!("决策链「{}」（{} 条事件，gseq 因果序）", tid, events.len());
                     for e in events.iter().take(64) {
                         text.push_str(&format!("\n  {}", crate::panels::events::event_line(e, 96)));
                     }
                     if events.len() > 64 {
-                        text.push_str(&format!("\n  … 另有 {} 条（详见 F7 事件流面板）", events.len() - 64));
+                        text.push_str(&format!(
+                            "\n  … 另有 {} 条（详见 F7 事件流面板）",
+                            events.len() - 64
+                        ));
                     }
                     self.add_message(MessageRole::System, text);
                 }
@@ -101,20 +108,20 @@ impl App {
             Ok(outcome) => match outcome {
                 OpsOutcome::Daemons(results) => {
                     let online = results.iter().filter(|(_, r)| r.is_ok()).count();
-                    let mut text = format!(
-                        "daemon 在线状态（{} / {} 在线）",
-                        online,
-                        results.len()
-                    );
+                    let mut text =
+                        format!("daemon 在线状态（{} / {} 在线）", online, results.len());
                     for (ns, r) in results {
-                        let (icon, st) = if r.is_ok() { ("✓", "在线") } else { ("✗", "离线") };
+                        let (icon, st) = if r.is_ok() {
+                            ("✓", "在线")
+                        } else {
+                            ("✗", "离线")
+                        };
                         text.push_str(&format!("\n  {} {} {}", icon, st, ns));
                     }
                     self.add_message(MessageRole::System, text);
                 }
                 OpsOutcome::Call(Ok(v)) => {
-                    let pretty = serde_json::to_string_pretty(&v)
-                        .unwrap_or_else(|_| v.to_string());
+                    let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string());
                     self.add_message(
                         MessageRole::System,
                         format!("{} 结果：\n{}", self.ops_label, pretty),
@@ -272,7 +279,8 @@ impl App {
     ///
     /// 用户暂停（Ctrl+Z）期间不消费结果——请求继续在网关执行，恢复后结果照常应用。
     /// 流式请求（StreamRound）：先消费 mpsc 增量块实时追加到 streaming_text，
-    /// 再检查 oneshot 完整结果（结束信号）。
+    /// 再检查 oneshot 完整结果（结束信号）——**结果到达即落定**，不受上屏
+    /// 动画进度影响（0.1.18 B2-6）。
     pub fn poll_pending(&mut self) -> bool {
         if self.task_control == TaskControl::Paused {
             return true;
@@ -283,29 +291,36 @@ impl App {
         let Some(p) = &mut self.pending else {
             return false;
         };
-        // ── 流式增量消费：SSE 块 → streaming_text（chat.rs 逐帧渲染）──
+        // ── 流式增量消费：SSE 块 → 控制面净化 → streaming_text ──
+        // 0.1.18 B3（V3.1）：增量块经 StreamSanitizer 剥离 [MODE:*] 标记与
+        // 元话语后再上屏——流式中间态零协议渲染；剥出文本暂存 protocol_buf，
+        // 落定时入 F3 诊断通道（settle_stream_tail）。
         if let Some(stream_rx) = &mut p.stream_rx {
             let mut got = false;
             while let Ok(chunk) = stream_rx.try_recv() {
                 got = true;
-                self.streaming_text.push_str(&chunk);
+                let (clean, _) = self.stream_sanitizer.feed(&chunk);
+                self.streaming_text.push_str(&clean);
             }
             if got {
                 log::trace!("stream chunk: total={} chars", self.streaming_text.len());
             }
         }
-        // ── 打字机上屏：伪流式下制造逐字动效（每 tick 推进若干字符）──
-        // reveal 只增不减；消费完一轮后再推进，避免与渲染竞争。
+        // ── 上屏推进（0.1.18 B2-6）：打字机动效为可选观感，默认关闭 ──
+        // 关闭时 reveal 恒等于已到达文本长度——服务端增量到达即上屏（真流式
+        // 下天然逐字），不引入任何附加延迟；开启时按 24ms 节拍推进，仅作用
+        // 于流式期间。两种模式都**不门控落定**（见下方结果消费）。
         // 字段级操作（非方法调用）：p 已借用 self.pending，避免整体借用冲突。
         {
             let total = self.streaming_text.chars().count();
-            if self.streaming_reveal < total {
+            if !self.typewriter {
+                self.streaming_reveal = total;
+            } else if self.streaming_reveal < total {
                 let since = self.last_reveal_tick.elapsed().as_millis();
                 if since >= 24 {
                     self.last_reveal_tick = Instant::now();
                     // 长文本提速：目标 8s 内上屏完，至少 1 字符/步
-                    let speed =
-                        (total as f64 / 8000.0 * 24.0).ceil().max(1.0) as usize;
+                    let speed = (total as f64 / 8000.0 * 24.0).ceil().max(1.0) as usize;
                     self.streaming_reveal = (self.streaming_reveal + speed).min(total);
                 }
             }
@@ -356,24 +371,10 @@ impl App {
                 }
             }
         }
-        // 先检查暂存结果：打字机上屏完成（reveal 追平）才落定
-        if let Some(finish) = p.finish.take() {
-            if self.streaming_reveal >= self.streaming_text.chars().count() {
-                // reveal 追平：取走 kind，清 pending/loading，应用结果
-                let kind =
-                    std::mem::replace(&mut p.kind, PendingKind::ChatRound { input: String::new() });
-                self.pending = None;
-                self.loading = false;
-                self.set_task_control(TaskControl::Running);
-                log::info!("poll_pending: 打字机上屏完成，消费流式结果（kind={:?}）", kind);
-                self.last_turn_elapsed = Some(self.turn_started);
-                self.apply_result(kind, finish);
-                return self.pending.is_some();
-            }
-            // 尚未追平：放回，下一 tick 继续推进 reveal
-            p.finish = Some(finish);
-            return true;
-        }
+        // 消费后台结果：服务水平结果到达即落定（0.1.18 B2-6）——不再等待
+        // 打字机 reveal 追平。动画只作用于流式期间，**不构成落定门控**：
+        // 关闭动画（默认）时上屏与落定同刻；开启动画时落定会丢弃未播完的
+        // 余量，用户感知为"结果到达即完成"，而非"等动画播完"。
         let outcome = match p.rx.try_recv() {
             Ok(o) => o,
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return true,
@@ -381,22 +382,13 @@ impl App {
                 PendingOutcome::Run(Err(anyhow!("LLM 后台任务异常终止")))
             }
         };
-        // 流式请求：结果已到达但打字机尚未上屏完 → 暂存 finish，
-        // 等 reveal 追平（下一 tick）再落定，保证逐字动效完整走完
-        // （0.1.9 M5 W1：StreamRound 与 agent.run_stream 执行轮均带 streamed）
-        let is_stream = p.streamed;
-        let reveal_pending = self.streaming_reveal < self.streaming_text.chars().count();
-        if is_stream && reveal_pending {
-            log::debug!(
-                "poll_pending: 流式结果已到，打字机尚未上屏完（{}/{}），暂存",
-                self.streaming_reveal,
-                self.streaming_text.chars().count()
-            );
-            p.finish = Some(outcome);
-            return true;
-        }
         // 取走 kind（避免 move 出借用），先清 pending/loading，再应用结果
-        let kind = std::mem::replace(&mut p.kind, PendingKind::ChatRound { input: String::new() });
+        let kind = std::mem::replace(
+            &mut p.kind,
+            PendingKind::ChatRound {
+                input: String::new(),
+            },
+        );
         self.pending = None;
         self.loading = false;
         self.set_task_control(TaskControl::Running);
@@ -432,8 +424,10 @@ impl App {
                                     a.tool, a.agent_id, truncate_for_display(&a.params, 160)
                                 ),
                             );
-                            self.add_log("INFO",
-                                format!("权限审批待决议: {} ({})", a.tool, a.request_id));
+                            self.add_log(
+                                "INFO",
+                                format!("权限审批待决议: {} ({})", a.tool, a.request_id),
+                            );
                         }
                     }
                 }
@@ -494,7 +488,13 @@ impl App {
                     self.apply_distill_result(res);
                 }
             }
-            PendingKind::CheckConnect { kind, prompt, agent, history, gccp_answers } => {
+            PendingKind::CheckConnect {
+                kind,
+                prompt,
+                agent,
+                history,
+                gccp_answers,
+            } => {
                 match outcome {
                     PendingOutcome::Connect(true) => {
                         // 连接成功：继续执行真实请求（loading 由 start_pending 重新置位）
@@ -505,28 +505,28 @@ impl App {
                         self.connected = true;
                         self.start_pending(*kind, &prompt, agent, history, gccp_answers);
                     }
-                _ => {
-                    // 连接检查失败：若正在进行任务收尾（技能蒸馏），仍需结束任务流，
-                    // 否则会卡在 Executing 阶段——「技能沉淀」被跳过且无法继续对话。
-                    log::warn!("apply_result: 连接检查失败（kind={:?}）", kind);
-                    self.add_log("ERROR", "网关不可达：连接检查失败".to_string());
-                    if matches!(&*kind, PendingKind::Distill) {
-                        self.add_message(
-                            MessageRole::System,
-                            "网关不可达，技能蒸馏请求失败：本次任务已完成，但经验未能沉淀。"
-                                .to_string(),
-                        );
-                        self.finish_task(false);
-                    } else {
-                        self.add_message(
-                            MessageRole::System,
-                            "Not connected to gateway. Run 'agentrt' to start the server."
-                                .to_string(),
-                        );
+                    _ => {
+                        // 连接检查失败：若正在进行任务收尾（技能蒸馏），仍需结束任务流，
+                        // 否则会卡在 Executing 阶段——「技能沉淀」被跳过且无法继续对话。
+                        log::warn!("apply_result: 连接检查失败（kind={:?}）", kind);
+                        self.add_log("ERROR", "网关不可达：连接检查失败".to_string());
+                        if matches!(&*kind, PendingKind::Distill) {
+                            self.add_message(
+                                MessageRole::System,
+                                "网关不可达，技能蒸馏请求失败：本次任务已完成，但经验未能沉淀。"
+                                    .to_string(),
+                            );
+                            self.finish_task(false);
+                        } else {
+                            self.add_message(
+                                MessageRole::System,
+                                "Not connected to gateway. Run 'agentrt' to start the server."
+                                    .to_string(),
+                            );
+                        }
                     }
                 }
-                }
-            },
+            }
         }
     }
 }
@@ -553,10 +553,25 @@ mod tests {
     #[test]
     fn merge_appends_sse_increments_after_pull() {
         /* RPC pull 快照（旧）→ SSE 增量（新）：合并后按 ts 升序，全部保留 */
-        let mut local = vec![evt("a.20260901T000000000.0001.json", "20260901T000000000", 1, "progress")];
+        let mut local = vec![evt(
+            "a.20260901T000000000.0001.json",
+            "20260901T000000000",
+            1,
+            "progress",
+        )];
         let incoming = vec![
-            evt("b.20260901T000000100.0001.json", "20260901T000000100", 1, "result"),
-            evt("c.20260901T000000200.0001.json", "20260901T000000200", 1, "result"),
+            evt(
+                "b.20260901T000000100.0001.json",
+                "20260901T000000100",
+                1,
+                "result",
+            ),
+            evt(
+                "c.20260901T000000200.0001.json",
+                "20260901T000000200",
+                1,
+                "result",
+            ),
         ];
         merge_hall_events(&mut local, incoming);
         assert_eq!(local.len(), 3);
@@ -567,12 +582,32 @@ mod tests {
     fn merge_dedups_overlap_between_pull_and_sse() {
         /* pull 兜底可能包含 SSE 已推事件：同 file_id 只保留一份 */
         let mut local = vec![
-            evt("a.20260901T000000000.0001.json", "20260901T000000000", 1, "progress"),
-            evt("b.20260901T000000100.0001.json", "20260901T000000100", 1, "result"),
+            evt(
+                "a.20260901T000000000.0001.json",
+                "20260901T000000000",
+                1,
+                "progress",
+            ),
+            evt(
+                "b.20260901T000000100.0001.json",
+                "20260901T000000100",
+                1,
+                "result",
+            ),
         ];
         let incoming = vec![
-            evt("b.20260901T000000100.0001.json", "20260901T000000100", 1, "result"),
-            evt("c.20260901T000000200.0001.json", "20260901T000000200", 1, "issue"),
+            evt(
+                "b.20260901T000000100.0001.json",
+                "20260901T000000100",
+                1,
+                "result",
+            ),
+            evt(
+                "c.20260901T000000200.0001.json",
+                "20260901T000000200",
+                1,
+                "issue",
+            ),
         ];
         merge_hall_events(&mut local, incoming);
         assert_eq!(local.len(), 3);
@@ -581,8 +616,18 @@ mod tests {
     #[test]
     fn merge_sorts_out_of_order_increments() {
         /* SSE 重连回放偶发乱序：按 (ts_utc, seq) 收敛 */
-        let mut local = vec![evt("c.20260901T000000200.0001.json", "20260901T000000200", 1, "result")];
-        let incoming = vec![evt("a.20260901T000000000.0001.json", "20260901T000000000", 1, "progress")];
+        let mut local = vec![evt(
+            "c.20260901T000000200.0001.json",
+            "20260901T000000200",
+            1,
+            "result",
+        )];
+        let incoming = vec![evt(
+            "a.20260901T000000000.0001.json",
+            "20260901T000000000",
+            1,
+            "progress",
+        )];
         merge_hall_events(&mut local, incoming);
         assert_eq!(local.len(), 2);
         assert!(local[0].ts_utc < local[1].ts_utc);

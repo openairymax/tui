@@ -58,21 +58,9 @@ impl App {
                 "assistant" => MessageRole::Agent,
                 _ => continue,
             };
-            let is_agent = matches!(role, MessageRole::Agent);
+            /* 0.1.18 B4：恢复会话不得回灌思考链原文——历史 assistant 记录
+             * 的 reasoning 字段只取 content，推理原文不得借恢复通道上屏。 */
             self.add_message(role, rec.content.clone());
-            /* 缺口 #7 修复：恢复 assistant 记录时还原其思考链（reasoning
-             * 字段已随 JSONL 持久化，但此前恢复只取 content，恢复后的
-             * 会话看不到历史思考链）。以系统消息形式注入，标注 [Dual Think]。 */
-            if is_agent {
-                if let Some(rz) = rec.reasoning.as_ref() {
-                    if !rz.trim().is_empty() {
-                        self.add_message(
-                            MessageRole::System,
-                            format!("[Dual Think] 上轮思考链：{}", rz),
-                        );
-                    }
-                }
-            }
             count += 1;
         }
         self.add_message(
@@ -107,14 +95,21 @@ impl App {
         if r.api_key_set {
             self.add_log(
                 "INFO",
-                format!("向导配置：API Key 已写入 secrets.env（provider={}）", r.provider),
+                format!(
+                    "向导配置：API Key 已写入 secrets.env（provider={}）",
+                    r.provider
+                ),
             );
         }
         self.add_log(
             "INFO",
             format!(
                 "向导配置：双思考系统{}（模型见 model.yaml think 段）",
-                if r.think_enabled { "已启用" } else { "已关闭" }
+                if r.think_enabled {
+                    "已启用"
+                } else {
+                    "已关闭"
+                }
             ),
         );
     }
@@ -206,7 +201,11 @@ impl App {
         );
         self.add_log(
             "INFO",
-            format!("新建会话 tab {}（共 {} 个）", self.session_tabs.len(), self.session_tabs.len()),
+            format!(
+                "新建会话 tab {}（共 {} 个）",
+                self.session_tabs.len(),
+                self.session_tabs.len()
+            ),
         );
     }
 
@@ -232,7 +231,10 @@ impl App {
         self.streaming_text.clear();
         self.stream_reasoning.clear();
         self.stream_tool_events.clear();
-        self.add_log("INFO", format!("切换到会话 tab {}（{}）", n, self.tab_title(target)));
+        self.add_log(
+            "INFO",
+            format!("切换到会话 tab {}（{}）", n, self.tab_title(target)),
+        );
     }
 
     /// 生成客户端预分配会话 ID（sess_ 前缀，gateway 校验后采用）。
@@ -244,6 +246,10 @@ impl App {
         // 时间 + 会话序号 + 伪随机位（非密码学用途，仅保证唯一性）
         let seq = self.turn as u128;
         let mix = (now_ms ^ (seq << 32)) * 6364136223846793005;
-        format!("sess_{:016x}_{:04x}", mix & 0xFFFFFFFFFFFFFFFF, (seq & 0xFFFF) as u16)
+        format!(
+            "sess_{:016x}_{:04x}",
+            mix & 0xFFFFFFFFFFFFFFFF,
+            (seq & 0xFFFF) as u16
+        )
     }
 }
