@@ -5,6 +5,8 @@
 //
 // 对话与任务提交：输入分发、回合记录、流式与阻塞结果落盘。
 
+use crate::engine::grid;
+
 use super::context::HistoryPolicy;
 use super::*;
 
@@ -76,7 +78,6 @@ impl App {
         if lower == "/clear" {
             self.messages.clear();
             self.streaming_text.clear();
-            self.streaming_reveal = 0;
             self.stream_reasoning.clear();
             self.stream_reasoning_model.clear();
             self.stream_reasoning_start = None;
@@ -102,13 +103,13 @@ impl App {
         if lower == "/board" {
             // 任务看板面板（F6 等价；进入即强制刷新）
             self.active_panel = ActivePanel::Board;
-            self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+            self.force_hall_refresh();
             return Ok(());
         }
         if lower == "/events" {
             // 事件流面板（F7 等价；进入即强制刷新）
             self.active_panel = ActivePanel::Events;
-            self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+            self.force_hall_refresh();
             return Ok(());
         }
         if lower == "/think" {
@@ -206,7 +207,7 @@ impl App {
 
     /// 2026-08-17：任务执行期间插入对话（2.3.7）。
     ///
-    /// busy 循环中用户输入 Enter 提交 → 先入队（任务不打断），任务完成后
+    /// busy 期间用户输入 Enter 提交 → 先入队（任务不打断），任务完成后
     /// 主循环逐条 pop 并以 submit_input 处理（每条等其完成，单 pending 槽
     /// 不覆盖）。用户消息与回复由 submit_input 统一回显，此处仅记录占位
     /// 提示——体验连续，不割裂。
@@ -221,6 +222,27 @@ impl App {
             MessageRole::System,
             format!("（任务执行中，已插入第 {} 条对话，任务完成后自动回复）", n),
         );
+    }
+
+    /// 推进插入对话队列一步：空闲且有排队输入时取队首提交，返回是否已提交。
+    ///
+    /// 提交（submit_input）会置 pending，故队列天然逐条消费而不互相覆盖；
+    /// 由主循环在每轮调度收尾处调用（0.1.18 §5A.3 W4：等待泵并入统一调度，
+    /// 队列推进随之归主循环，不再另起内层循环）。返回 true 时调用方应记为
+    /// 输入档成帧——用户消息即时可见。
+    pub fn step_insert_queue(&mut self) -> bool {
+        if self.is_busy() {
+            return false;
+        }
+        let Some(msg) = self.insert_queue.pop_front() else {
+            return false;
+        };
+        if let Err(e) = self.submit_input(&msg) {
+            log::warn!("insert queue submit failed: {}", e);
+            self.add_message(MessageRole::System, format!("插入对话处理失败：{}", e));
+            return false;
+        }
+        true
     }
 
     /// 0.1.18 B1：记忆写入统一带轮次标注（tags 内 "turn:N"，与 CLI 记录
@@ -294,9 +316,8 @@ impl App {
         }
         self.stream_reasoning_model.clear();
         self.stream_reasoning_start = None;
-        // 流式结束：已渲染的 streaming_text 是打字机占位，仅清理（防双写）
+        // 流式结束：已渲染的 streaming_text 是流式占位，仅清理（防双写）
         self.streaming_text.clear();
-        self.streaming_reveal = 0;
         self.stream_error.take()
     }
 
@@ -463,7 +484,8 @@ impl App {
                 // 避免错误链（含 HTTP body 原文/内部路径）污染对话区。
                 let brief = e.to_string();
                 let brief = brief.lines().next().unwrap_or("请求失败");
-                let brief: String = brief.chars().take(120).collect();
+                // 上屏摘要按列裁决（错误原文含中文时按字符取会越过对话区右边界）
+                let brief = grid::clip(brief, 120);
                 self.add_message(MessageRole::System, format!("请求失败：{}", brief));
             }
         }

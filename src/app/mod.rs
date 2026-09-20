@@ -13,6 +13,7 @@ use crate::client::{
     GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
     RunResponse,
 };
+use crate::engine::sched::Lane;
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
 use crate::ime::ImeEngine;
 use crate::memory::{self, ConversationMemory};
@@ -47,19 +48,6 @@ pub(crate) const MAX_CHAT_MESSAGES: usize = 2000;
 
 /// Maximum number of log entries to keep.
 const MAX_LOG_ENTRIES: usize = 200;
-
-/// 打字机动效开关（0.1.18 B2-6）。
-///
-/// 默认**关闭**：服务端增量到达即整块上屏（真流式下天然逐字），既不门控
-/// 落定，也不在服务端结果到达后引入任何附加上屏延迟。仅当用户显式设置
-/// `AIRY_TUI_TYPEWRITER=1|true|on|yes` 时开启，属纯观感效果——开启后动画
-/// 仍只作用于流式期间，落定不因动画延后。
-fn typewriter_enabled() -> bool {
-    matches!(
-        std::env::var("AIRY_TUI_TYPEWRITER").as_deref(),
-        Ok("1") | Ok("true") | Ok("on") | Ok("yes")
-    )
-}
 
 /// Active panel for the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +152,10 @@ pub struct App {
     pub focus_scroll: usize,
     /// 焦点视图可滚总量（总行数 - 视口高度，渲染每帧回写，钳位用）。
     pub focus_scroll_max: usize,
+    /// 渲染降级标志（0.1.18 §5A.3 W10）：合成层连续故障（渲染回调 panic /
+    /// 后端写失败）时为真，状态条显示降级横幅；成功一帧即自愈转假。由主循环
+    /// 每轮从合成层回写——本字段只作呈现，不参与任何判定。
+    pub render_degraded: bool,
     /// 浏览态是否展开全部折叠（长系统消息）。0.1.7：折叠与滚动解耦——
     /// 滚动基于稳定的折叠视图，不再"一滚就展开导致视口跳变"。
     /// 0.1.18 B4：Alt+E 改用于打开思考链独立视图，本开关改由 Alt+O 切换。
@@ -238,17 +230,9 @@ pub struct App {
     input_history: Vec<String>,
     /// 输入历史浏览位置（None = 未在浏览，回到手输状态）
     history_pos: Option<usize>,
-    /// 流式输出：当前正在流式追加的 Agent 回复文本（chat.rs 增量渲染）
+    /// 流式输出：当前正在流式追加的 Agent 回复文本（chat.rs 增量渲染）。
+    /// 增量到达即整块上屏，无本地上屏动画（0.1.18 §5A.3 W4 B2）。
     pub streaming_text: String,
-    /// 打字机上屏进度：streaming_text 已"显示"的字符数（伪流式时制造
-    /// 逐字动效；< len 表示仍在逐字上屏中）。2026-08-17 F5 新增。
-    pub streaming_reveal: usize,
-    /// 打字机推进节拍（距上次 reveal 推进的时长；50ms tick 一字符）
-    last_reveal_tick: Instant,
-    /// 打字机动效开关（0.1.18 B2-6；见 `typewriter_enabled`）。
-    /// 关闭（默认）时 reveal 恒等于已到达文本长度——到达即上屏、结果即
-    /// 落定；开启时按 24ms 节拍推进，仅影响观感，不影响落定时机。
-    pub typewriter: bool,
     /// 流式工具循环事件（SSE __airy_evt 渲染行，如 `[Sub web_search Agent] …`）
     pub stream_tool_events: Vec<String>,
     /// 流式思考链（SSE `__airy_evt:reasoning` 事件携带的 reasoning_content，
@@ -283,8 +267,6 @@ pub struct App {
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
     pub project_context: String,
-    /// 审批轮询节流（上次查询 tool.pending 的时刻）
-    last_approval_poll: Instant,
     /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
     approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Vec<PendingApproval>>>,
     /// 2026-08-17：F8 请求切换到 CLI（airy_cli）——主循环收到标志后
@@ -294,8 +276,10 @@ pub struct App {
     pub hall_board: Option<HallBoard>,
     /// 事件流缓存（hall.stream 最近一次拉取，最新在前）
     pub hall_events: Vec<HallEvent>,
-    /// hall 面板轮询节流（上次拉取时刻）
-    last_hall_poll: Instant,
+    /// hall 面板显式刷新请求（面板切换 / SSE 推送触发）。置位后由主循环取走并
+    /// 把 Hall 节拍提前到下一帧——拉取的**时刻判定仍归 L4 调度器**，此处只记
+    /// 「有刷新需求」，不另存一份时钟（0.1.18 §5A.3 W4 节拍权威）。
+    hall_force: bool,
     /// hall 面板在途请求（spawn 后异步返回，下次 poll_hall 消费结果）
     hall_poll_rx: Option<tokio::sync::oneshot::Receiver<HallPollOutcome>>,
     /// hall.watch SSE 推送流接收端（2026-08-21：事件流驱动，替代纯轮询；
@@ -331,6 +315,11 @@ pub struct App {
     pub chat_view: crate::panels::chat::ChatView,
     /// 消息 id 单调发生器（缓存键，永不复用）
     msg_seq: u64,
+    /// 异步数据落地档位（0.1.18 A 轨 §5A.3 W4）：poll_* 消费到新内容
+    /// （流式增量/工具事件/结果落定/面板数据/后台轮询）时按来源记档，由主循环
+    /// 取走并清零，作为 L4 调度器的成帧输入——静止界面因此不再产出绘制帧。
+    /// 同一批内多来源落地只保留最高优先级档位（渲染读最新状态，一帧足矣）。
+    landed: Option<Lane>,
     /// 记忆面板分组视图缓存（0.1.9 W8）：条数不变即复用，翻页仅移动窗口
     pub memory_view: crate::panels::memory::MemoryView,
 }
@@ -461,6 +450,7 @@ impl App {
             focus_msg: None,
             focus_scroll: 0,
             focus_scroll_max: 0,
+            render_degraded: false,
             browse_expanded: false,
             gateway,
             connected: false,
@@ -504,9 +494,6 @@ impl App {
             input_history: Vec::with_capacity(16),
             history_pos: None,
             streaming_text: String::new(),
-            streaming_reveal: 0,
-            last_reveal_tick: Instant::now(),
-            typewriter: typewriter_enabled(),
             stream_tool_events: Vec::new(),
             stream_reasoning: String::new(),
             stream_reasoning_model: String::new(),
@@ -517,12 +504,11 @@ impl App {
             stream_sanitizer: StreamSanitizer::new(),
             approvals: Vec::new(),
             project_context: String::new(),
-            last_approval_poll: Instant::now(),
             approval_poll_rx: None,
             switch_to_cli: false,
             hall_board: None,
             hall_events: Vec::new(),
-            last_hall_poll: Instant::now(),
+            hall_force: false,
             hall_poll_rx: None,
             hall_watch_rx: None,
             hall_error: None,
@@ -545,6 +531,7 @@ impl App {
             insert_queue: VecDeque::new(),
             chat_view: crate::panels::chat::ChatView::new(),
             msg_seq: 0,
+            landed: None,
             memory_view: crate::panels::memory::MemoryView::default(),
         }
     }
@@ -582,6 +569,22 @@ impl App {
         // scroll_offset 语义为「距底部向上滚的行数」，0 = 最新位置；
         // 用户在底部（0）时无需改动——lines 增长使 max_offset 增加，
         // from_top 自然跟随，视口保持跟随最新；滚离底部（>0）时保持原位。
+    }
+
+    /// 记一次异步落地（0.1.18 A 轨 §5A.3 W4）：按**数据来源**记档，档位即 L4
+    /// 调度器里的渲染优先级（输入回显 > 流式输出 > 面板刷新 > 后台轮询）。
+    /// 同一批内多来源落地时保留最高优先级档位——一帧渲染读的是最新状态。
+    pub(crate) fn mark_landed(&mut self, lane: Lane) {
+        self.landed = Some(match self.landed {
+            Some(prev) => prev.min(lane),
+            None => lane,
+        });
+    }
+
+    /// 取走异步数据落地档位（读后清零）：主循环据此把对应优先级档位入调度队列
+    /// （0.1.18 A 轨 §5A.3 W4，L4 调度器的成帧输入之一）。无落地返回 `None`。
+    pub fn take_landed(&mut self) -> Option<Lane> {
+        self.landed.take()
     }
 }
 

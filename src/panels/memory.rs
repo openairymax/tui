@@ -24,6 +24,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::engine::grid;
 use crate::memory::{ConversationMemory, MemoryRecord};
 use crate::theme;
 
@@ -214,13 +215,14 @@ fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryRecor
     let n = entries.len();
     for (i, rec) in entries.iter().enumerate() {
         let speaker = role_cn(&rec.role);
-        let content: String = rec.content.chars().take(60).collect();
+        // 内容摘要边界按列裁决（全角记忆正文按字符取会让条目行右溢）
+        let content = grid::clip(&rec.content, 60);
         let (stem, conn) = if i + 1 == n {
             ("└─", "  ")
         } else {
             ("├─", "│ ")
         };
-        let hhmm = rec.timestamp.chars().take(16).collect::<String>();
+        let hhmm = grid::clip(&rec.timestamp, 16);
         // 关联链标记：含思考链（reasoning）的记忆条目弱化提示
         let has_reasoning = rec
             .reasoning

@@ -17,6 +17,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::client::HallEvent;
+use crate::engine::grid;
 use crate::theme;
 
 /// 七类事件的语义标签（与 C 版 airy_cli 标签映射对齐）
@@ -100,14 +101,14 @@ fn content_summary(e: &HallEvent) -> String {
             if !ok.is_empty() {
                 ok
             } else {
-                truncate(raw_compact(c), 72)
+                grid::clip(&raw_compact(c), 72)
             }
         }
         "verify" => pick(&["verdict", "status", "event"]).unwrap_or_else(|| raw_compact(c)),
         "chain" => pick(&["msg", "event", "kind"]).unwrap_or_else(|| raw_compact(c)),
         _ => raw_compact(c),
     };
-    truncate(s, 96)
+    grid::clip(&s, 96)
 }
 
 /// 紧凑 JSON（无空白）
@@ -115,26 +116,18 @@ fn raw_compact(c: &serde_json::Value) -> String {
     serde_json::to_string(c).unwrap_or_default()
 }
 
-fn truncate(s: String, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s;
-    }
-    let cut: String = s.chars().take(max).collect();
-    format!("{}…", cut)
-}
-
 /// 单条事件的渲染行：`[类别:gseq] 任务 摘要`（/chain 命令复用）。
 pub fn event_line(e: &HallEvent, max: usize) -> String {
     let label = category_label(&e.category);
-    let task: String = e.task_id.chars().take(20).collect();
+    let task = grid::clip(&e.task_id, 20);
     let summary = content_summary(e);
     let total = format!("[{}:{}] {} {}", label, e.gseq, task, summary);
-    truncate(total, max)
+    grid::clip(&total, max)
 }
 
 fn event_row(e: &HallEvent, selected: bool) -> Line<'static> {
     let label = category_label(&e.category);
-    let task: String = e.task_id.chars().take(20).collect();
+    let task = grid::clip(&e.task_id, 20);
     let base = if selected {
         Style::default().bg(theme::surface_active())
     } else {

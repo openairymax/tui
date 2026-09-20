@@ -9,6 +9,10 @@
 // （offset 由 app.logs_scroll 维护；0 = 最新）。条目内嵌换行/回车被展平
 // 为空格，消息按面板宽度截断——保证一条日志恒占一行、行数与滚动偏移
 // 严格一一对应，长消息不再把后续日志挤出屏外。
+//
+// 宽度纪律（0.1.18 A 轨 W2，§3.3）：行宽预算为列（面板内宽 − 前缀），
+// 故前缀实测与正文截断一律委托 L2 唯一裁决点 `crate::engine::grid`；
+// 此前按字符数兑现列预算，全角正文会占掉两倍列宽。
 
 use ratatui::{
     layout::Rect,
@@ -19,6 +23,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::engine::grid;
 use crate::theme;
 
 /// Render the logs panel.
@@ -81,15 +86,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .as_deref()
             .map(|d| format!("[{d}] "))
             .unwrap_or_default();
-        let head_chars = 8 /*HH:MM:SS*/ + 1 + entry.level.chars().count() + 1
-            + daemon_head.chars().count();
-        let room = inner_w.saturating_sub(head_chars);
-        let msg: String = if flat.chars().count() > room {
-            let cut: String = flat.chars().take(room).collect();
-            format!("{cut}…")
-        } else {
-            flat
-        };
+        let head_cols =
+            8 /*HH:MM:SS*/ + 1 + grid::width(&entry.level) + 1 + grid::width(&daemon_head);
+        let room = inner_w.saturating_sub(head_cols);
+        let msg = grid::clip(&flat, room);
         let mut spans = vec![
             Span::styled(&entry.timestamp, Style::default().fg(theme::faint())),
             Span::raw(" "),

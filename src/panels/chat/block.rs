@@ -15,6 +15,7 @@ use ratatui::{
 };
 
 use crate::app::{App, ChatMessage, MessageRole};
+use crate::engine::grid;
 use crate::theme;
 
 /// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：折叠仅作用于 System
@@ -166,8 +167,11 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
     } else if is_tool(msg.role) {
         let max = width.saturating_sub(INDENT + 3).max(8);
         let first_line = msg.content.lines().next().unwrap_or("").trim();
-        let mut preview: String = first_line.chars().take(max).collect();
-        if first_line.chars().count() > max || msg.content.lines().count() > 1 {
+        // 预览截断按显示宽度裁决（此前按字符数取，全角首行必然右溢并挤掉时间戳）；
+        // clip 在截断时自带省略号，故多行提示只在首行未截断时补，避免出现双省略号。
+        let truncated = grid::width(first_line) > max;
+        let mut preview = grid::clip(first_line, max);
+        if !truncated && msg.content.lines().count() > 1 {
             preview.push('…');
         }
         out.push(Line::from(Span::styled(
@@ -175,7 +179,9 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
             base,
         )));
     } else {
-        let mut rendered = crate::markdown::render(&msg.content, INDENT, width, base);
+        // 身份键取稳定消息 id；流式哨兵（NO_ID）是逐帧增长的半成品，旁路缓存
+        let key = (msg.id != ChatMessage::NO_ID).then_some(crate::engine::view::Key::msg(msg.id));
+        let mut rendered = crate::engine::cache::render_md(key, &msg.content, INDENT, width, base);
         // 用户消息：气泡背景色块（Claude 式左右分层）；Airymax 回复左对齐流式
         if msg.role == MessageRole::User {
             for line in rendered.iter_mut() {
@@ -274,6 +280,44 @@ mod tests {
         let head = lines[0].to_string();
         assert!(head.starts_with("[Sub Agent]"), "head={}", head);
         assert!(!head.contains("very_long"), "标识符不得出现: head={}", head);
+    }
+
+    /// W2 宽度裁决：工具预览按显示宽度截断（列），全角首行不得越过 width；
+    /// 且截断由 clip 自带省略号时不叠加第二个（多行提示仅在未截断时补）。
+    #[test]
+    fn tool_preview_clips_by_display_width() {
+        let width = 24usize;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        render(
+            &mut lines,
+            &msg(
+                MessageRole::ToolCall,
+                "web_fetch 「超长全角参数」：中文内容必须按列宽截断而非按字符数",
+            ),
+            width,
+            true,
+            false,
+        );
+        let body = lines.last().unwrap().to_string();
+        assert!(
+            grid::width(&body) <= width,
+            "预览越过 width={width}: {body:?} w={}",
+            grid::width(&body)
+        );
+        assert_eq!(body.matches('…').count(), 1, "省略号应恰一个: {body:?}");
+
+        // 首行未截断 + 多行 → 保留多行提示省略号（仍只有一个）
+        let mut multi: Vec<Line<'static>> = Vec::new();
+        render(
+            &mut multi,
+            &msg(MessageRole::ToolResult, "{\"ok\":1}\nsecond line"),
+            40,
+            true,
+            false,
+        );
+        let body = multi.last().unwrap().to_string();
+        assert!(body.ends_with('…'), "多行应补省略号: {body:?}");
+        assert_eq!(body.matches('…').count(), 1, "{body:?}");
     }
 
     /// 块内折叠：长思考链截断为 KEEP 行 + 折叠尾；展开态/短块/Agent 长文不折叠。

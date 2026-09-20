@@ -269,22 +269,13 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
     }
 
     // 流式输出：SSE 增量块已累计在 streaming_text，实时渲染为「Airymax」气泡
-    // （Claude 风格逐字上屏；完成后由 apply_stream_result 落为正式消息）
+    // （完成后由 apply_stream_result 落为正式消息）
     if app.loading && !app.streaming_text.is_empty() {
-        // 打字机上屏：只显示前 reveal 个字符（伪流式下制造逐字动效，
-        // F5 修复：此前网关一次性返回整段文本，无任何输出动效）
-        let mut revealed: String = app
-            .streaming_text
-            .chars()
-            .take(app.streaming_reveal)
-            .collect();
-        if revealed.len() < app.streaming_text.len() {
-            // 上屏未完成：光标块表示"正在生成"
-            revealed.push('▍');
-        }
+        // 增量到达即整块上屏（0.1.18 §5A.3 W4 B2：本地打字机已移除，逐字观感
+        // 由服务端真流式给出）；尾随光标块表示"仍在生成"。
         let streaming_msg = ChatMessage {
             role: MessageRole::Agent,
-            content: revealed,
+            content: format!("{}▍", app.streaming_text),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             id: ChatMessage::NO_ID,
         };

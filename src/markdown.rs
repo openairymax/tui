@@ -7,6 +7,9 @@
 //
 // 设计原则（50 工程标准 A-1 极简主义）：自研零依赖，不引入重型 markdown
 // crate——terminal 渲染需要显示宽度对齐（中文全角），通用库难以满足。
+//
+// 宽度纪律（0.1.18 A 轨 W2，§3.3）：显示宽度的测量与截断一律委托 L2 唯一
+// 裁决点 `crate::engine::grid`，本模块不得自行测量后截断或填充。
 // 支持：
 //   - 代码块（``` / ```lang，含语言徽章）
 //   - 画板块（```plot：title/xs/ys → braille 点阵函数曲线，0.1.17）
@@ -17,13 +20,24 @@
 //   - 行内样式：**粗体** / `行内代码`
 // 其余内容降级为纯文本（绝不出错，绝不截断语义）。
 
+mod inline;
+mod plot;
+mod table;
+
+use crate::engine::grid;
+use crate::theme;
+use inline::inline_styles;
+use plot::render_plot;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use table::render_table;
 
-use crate::theme;
+#[cfg(test)]
+use plot::braille_set;
+#[cfg(test)]
+use table::is_separator_row;
 
 /// 渲染整段 markdown 内容为终端行序列。
 ///
@@ -51,7 +65,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
         let text = para.join(" ");
         para.clear();
         let content_width = width.saturating_sub(indent).max(8);
-        let mut pieces = wrap_line(&text, content_width);
+        let mut pieces = grid::wrap(&text, content_width);
         if pieces.is_empty() {
             pieces.push(String::new());
         }
@@ -121,7 +135,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
         }
         // ── 代码块内：原样（等宽底色） ──
         if in_code {
-            for piece in wrap_line(raw, width.saturating_sub(1).max(8)) {
+            for piece in grid::wrap(raw, width.saturating_sub(1).max(8)) {
                 out.push(Line::from(vec![
                     Span::styled(" ".repeat(indent + 1), Style::default()),
                     Span::styled(piece, base.bg(theme::surface())),
@@ -154,7 +168,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
             } else {
                 theme::text()
             };
-            for piece in wrap_line(text, width.saturating_sub(indent).max(8)) {
+            for piece in grid::wrap(text, width.saturating_sub(indent).max(8)) {
                 out.push(Line::from(vec![
                     Span::styled(" ".repeat(indent), Style::default()),
                     Span::styled(piece, base.fg(color).add_modifier(Modifier::BOLD)),
@@ -189,27 +203,28 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
                 } else {
                     base
                 };
-                let body_indent = indent + mark.width() + 2;
-                for piece in wrap_line(rest, width.saturating_sub(body_indent).max(8)) {
+                // 前缀实测宽度（缩进 + 标记 + 空格 + 符号 + 空格）——正文预算由此推出，
+                // 不手写常数：此前按 indent+标记宽+2 估算，较实际前缀少 1 列，任务列表
+                // 正文折行后必然右溢 1 列。
+                let prefix_w = indent + grid::width(&mark) + grid::width(sym) + 2;
+                let lead = format!("{}{} ", " ".repeat(indent), mark);
+                for piece in grid::wrap(rest, width.saturating_sub(prefix_w).max(8)) {
                     out.push(Line::from(vec![
-                        Span::styled(
-                            format!("{0:width$}{1} ", "", mark, width = indent),
-                            Style::default(),
-                        ),
+                        Span::styled(lead.clone(), Style::default()),
                         Span::styled(format!("{sym} "), sym_style),
                         Span::styled(piece, body_style),
                     ]));
                 }
                 continue;
             }
-            // 列表正文的缩进 = 整体缩进 + 符号宽度（"• " 与 "12. " 对齐）
-            let body_indent = indent + mark.width() + 2;
-            let content_width = width.saturating_sub(body_indent).max(8);
+            // 列表正文的缩进 = 整体缩进 + 标记与前导空格实测宽度
+            let prefix_w = indent + grid::width(&mark) + 1;
+            let content_width = width.saturating_sub(prefix_w).max(8);
             let lead = Span::styled(
-                format!("{0:width$}{1} ", "", mark, width = indent),
+                format!("{}{} ", " ".repeat(indent), mark),
                 base.fg(theme::dim()),
             );
-            for piece in wrap_line(body, content_width) {
+            for piece in grid::wrap(body, content_width) {
                 // lead（Span）+ 行内样式（Line.spans）合并为同一行
                 let mut spans = vec![lead.clone()];
                 spans.extend(inline_styles(&piece, base).spans);
@@ -225,7 +240,7 @@ pub fn render(content: &str, indent: usize, width: usize, base: Style) -> Vec<Li
                 out.push(Line::raw(""));
                 continue;
             }
-            for piece in wrap_line(body, width.saturating_sub(indent + 2).max(8)) {
+            for piece in grid::wrap(body, width.saturating_sub(indent + 2).max(8)) {
                 let mut spans = vec![
                     Span::styled(" ".repeat(indent), Style::default()),
                     Span::styled("▏", base.fg(theme::dim())),
@@ -319,444 +334,6 @@ fn task_item(body: &str) -> Option<(bool, &str)> {
     Some((done, rest))
 }
 
-/// braille 点阵写入：一个 braille 字符 = 2 像素列 × 4 像素行，点位按
-/// Unicode braille 标准位序（U+2800 基址）。
-fn braille_set(grid: &mut [u8], cols: usize, rows: usize, px: usize, py: usize) {
-    let cx = px / 2;
-    let cy = py / 4;
-    if cx >= cols || cy >= rows {
-        return;
-    }
-    let bit = match (px % 2, py % 4) {
-        (0, 0) => 0x01,
-        (0, 1) => 0x02,
-        (0, 2) => 0x04,
-        (0, 3) => 0x40,
-        (1, 0) => 0x08,
-        (1, 1) => 0x10,
-        (1, 2) => 0x20,
-        _ => 0x80,
-    };
-    grid[cy * cols + cx] |= bit;
-}
-
-/// 整数 Bresenham 连线（相邻采样点之间补插值，保证曲线连续）。
-fn braille_line(grid: &mut [u8], cols: usize, rows: usize, x0: i64, y0: i64, x1: i64, y1: i64) {
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x1 >= x0 { 1 } else { -1 };
-    let sy = if y1 >= y0 { 1 } else { -1 };
-    let mut err = dx + dy;
-    let (mut x, mut y) = (x0, y0);
-    loop {
-        if x >= 0 && y >= 0 {
-            braille_set(grid, cols, rows, x as usize, y as usize);
-        }
-        if x == x1 && y == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y += sy;
-        }
-    }
-}
-
-/// 渲染 ```plot 画板块：解析 tool 输出（title/xs/ys），以 braille 点阵
-/// 绘制 y=f(x) 曲线（null 断线）。解析失败降级为代码块原样输出（绝不
-/// 出错，绝不截断语义）。
-fn render_plot(rows: &[String], indent: usize, width: usize, base: Style) -> Vec<Line<'static>> {
-    let mut title = String::new();
-    let mut xs: Vec<f64> = Vec::new();
-    let mut ys: Vec<Option<f64>> = Vec::new();
-    for line in rows {
-        if let Some(v) = line.strip_prefix("title:") {
-            title = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("xs:") {
-            xs = v
-                .split(',')
-                .filter_map(|t| t.trim().parse::<f64>().ok())
-                .collect();
-        } else if let Some(v) = line.strip_prefix("ys:") {
-            ys = v.split(',').map(|t| t.trim().parse::<f64>().ok()).collect();
-        }
-    }
-    // 解析失败/数据不足 → 降级为代码块原样（保持信息不丢失）
-    if xs.len() < 2 || ys.len() != xs.len() {
-        let mut out: Vec<Line<'static>> = Vec::new();
-        for line in rows {
-            out.push(Line::from(vec![
-                Span::styled(" ".repeat(indent + 1), Style::default()),
-                Span::styled(line.clone(), base.bg(theme::surface())),
-            ]));
-        }
-        return out;
-    }
-
-    // 画布尺寸：8 行 braille（32 像素行）× 可用宽度（braille 每字符 2 像素列）
-    let canvas_rows = 8usize;
-    let avail = width.saturating_sub(indent + 2).max(16);
-    let canvas_cols = avail.min(60);
-    let pw = canvas_cols * 2;
-    let ph = canvas_rows * 4;
-    let mut grid = vec![0u8; canvas_rows * canvas_cols];
-
-    // y 域：忽略 null 与非有限值；退化区间（水平线）扩为 [-1,1]
-    let mut y_min = f64::INFINITY;
-    let mut y_max = f64::NEG_INFINITY;
-    for v in ys.iter().flatten() {
-        if v.is_finite() {
-            y_min = y_min.min(*v);
-            y_max = y_max.max(*v);
-        }
-    }
-    if !y_min.is_finite() || !y_max.is_finite() {
-        y_min = -1.0;
-        y_max = 1.0;
-    }
-    if (y_max - y_min).abs() < 1e-12 {
-        y_min -= 1.0;
-        y_max += 1.0;
-    }
-
-    // 相邻有效采样点连线（null 断线）
-    let n = xs.len();
-    let to_px = |i: usize, y: f64| -> (i64, i64) {
-        let fx = i as f64 * (pw - 1) as f64 / (n - 1) as f64;
-        let fy = (y_max - y) / (y_max - y_min) * (ph - 1) as f64;
-        (fx.round() as i64, fy.round() as i64)
-    };
-    let mut prev: Option<(i64, i64)> = None;
-    for (i, y) in ys.iter().enumerate().take(n) {
-        let cur = y.filter(|v| v.is_finite()).map(|v| to_px(i, v));
-        if let Some((cx, cy)) = cur {
-            if let Some((px0, py0)) = prev {
-                braille_line(&mut grid, canvas_cols, canvas_rows, px0, py0, cx, cy);
-            } else {
-                braille_set(
-                    &mut grid,
-                    canvas_cols,
-                    canvas_rows,
-                    cx.max(0) as usize,
-                    cy.max(0) as usize,
-                );
-            }
-        }
-        prev = cur;
-    }
-
-    let mut out: Vec<Line<'static>> = Vec::new();
-    if !title.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled(" ".repeat(indent + 2), Style::default()),
-            Span::styled(title, base.fg(theme::accent()).add_modifier(Modifier::BOLD)),
-        ]));
-    }
-    for r in 0..canvas_rows {
-        let s: String = grid[r * canvas_cols..(r + 1) * canvas_cols]
-            .iter()
-            .map(|b| char::from_u32(0x2800 + *b as u32).unwrap_or(' '))
-            .collect();
-        out.push(Line::from(vec![
-            Span::styled(" ".repeat(indent + 2), Style::default()),
-            Span::styled(s, base.fg(theme::primary())),
-        ]));
-    }
-    // x 轴域标注（dim 色，提示可读的采样区间）
-    out.push(Line::from(vec![
-        Span::styled(" ".repeat(indent + 2), Style::default()),
-        Span::styled(
-            format!("x: {} … {}", xs[0], xs[n - 1]),
-            base.fg(theme::dim()),
-        ),
-    ]));
-    out
-}
-
-/// 行内样式：**粗体** / `行内代码` / [链接](url) / ~~删除线~~（其余原样）。
-fn inline_styles(s: &str, base: Style) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut buf = String::new();
-    let mut i = 0;
-    let chars: Vec<char> = s.chars().collect();
-    while i < chars.len() {
-        // 行内代码 `...`（等宽底，优先于粗体识别）
-        if chars[i] == '`' {
-            flush_plain(&mut spans, &mut buf, base);
-            let mut code = String::new();
-            i += 1;
-            while i < chars.len() && chars[i] != '`' {
-                code.push(chars[i]);
-                i += 1;
-            }
-            if i < chars.len() {
-                i += 1; // 跳过闭合 `
-            }
-            spans.push(Span::styled(
-                format!(" {code} "),
-                base.fg(theme::accent()).bg(theme::surface_active()),
-            ));
-            continue;
-        }
-        // 图片 ![alt](url)：终端不可渲染，降级为弱化占位
-        if chars[i] == '!' && i + 1 < chars.len() && chars[i + 1] == '[' {
-            if let Some(consumed) = try_link(&chars, i + 1) {
-                flush_plain(&mut spans, &mut buf, base);
-                let (text, url) = consumed;
-                spans.push(Span::styled(
-                    format!("[图片: {text}]"),
-                    base.fg(theme::faint()),
-                ));
-                // 整个 token = '!' + [text](url)
-                i += 1 + text.chars().count() + url.chars().count() + 4;
-                continue;
-            }
-        }
-        // 链接 [text](url)：text 下划线 + 强调色
-        if chars[i] == '[' {
-            if let Some((text, url)) = try_link(&chars, i) {
-                flush_plain(&mut spans, &mut buf, base);
-                let text_len = text.chars().count();
-                let url_len = url.chars().count();
-                spans.push(Span::styled(
-                    text,
-                    base.fg(theme::accent()).add_modifier(Modifier::UNDERLINED),
-                ));
-                i += text_len + url_len + 4; // [text](url)
-                continue;
-            }
-        }
-        // **粗体**
-        if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            flush_plain(&mut spans, &mut buf, base);
-            let mut bold = String::new();
-            i += 2;
-            let mut closed = false;
-            while i + 1 < chars.len() {
-                if chars[i] == '*' && chars[i + 1] == '*' {
-                    closed = true;
-                    i += 2;
-                    break;
-                }
-                bold.push(chars[i]);
-                i += 1;
-            }
-            if !closed {
-                // 未闭合：把已收集内容当普通文本（含开头的 **）
-                buf.push_str("**");
-                buf.push_str(&bold);
-            } else {
-                spans.push(Span::styled(bold, base.add_modifier(Modifier::BOLD)));
-            }
-            continue;
-        }
-        // ~~删除线~~
-        if chars[i] == '~' && i + 1 < chars.len() && chars[i + 1] == '~' {
-            flush_plain(&mut spans, &mut buf, base);
-            let mut strike = String::new();
-            i += 2;
-            let mut closed = false;
-            while i + 1 < chars.len() {
-                if chars[i] == '~' && chars[i + 1] == '~' {
-                    closed = true;
-                    i += 2;
-                    break;
-                }
-                strike.push(chars[i]);
-                i += 1;
-            }
-            if !closed {
-                buf.push_str("~~");
-                buf.push_str(&strike);
-            } else {
-                spans.push(Span::styled(
-                    strike,
-                    base.add_modifier(Modifier::CROSSED_OUT),
-                ));
-            }
-            continue;
-        }
-        buf.push(chars[i]);
-        i += 1;
-    }
-    flush_plain(&mut spans, &mut buf, base);
-    Line::from(spans)
-}
-
-/// 尝试在 `chars[start] == '['` 处解析 `[text](url)`；成功返回 (text, url)
-/// 与 text/url 长度（供调用方跳过）。失败返回 None（按普通字符处理）。
-fn try_link(chars: &[char], start: usize) -> Option<(String, String)> {
-    if chars.get(start) != Some(&'[') {
-        return None;
-    }
-    let mut close = start + 1;
-    while close < chars.len() && chars[close] != ']' {
-        close += 1;
-    }
-    if close >= chars.len() || close + 1 >= chars.len() || chars[close + 1] != '(' {
-        return None;
-    }
-    let mut paren = close + 2;
-    while paren < chars.len() && chars[paren] != ')' {
-        paren += 1;
-    }
-    if paren >= chars.len() {
-        return None;
-    }
-    let text: String = chars[start + 1..close].iter().collect();
-    let url: String = chars[close + 2..paren].iter().collect();
-    if text.is_empty() || url.is_empty() {
-        return None;
-    }
-    Some((text, url))
-}
-
-fn flush_plain(spans: &mut Vec<Span<'static>>, buf: &mut String, base: Style) {
-    if !buf.is_empty() {
-        spans.push(Span::styled(std::mem::take(buf), base));
-    }
-}
-
-/// 渲染表格块：表头 + 分隔行 + 数据行，按列宽对齐（中文全角按 2 列计）。
-fn render_table(rows: &[String], indent: usize, width: usize, base: Style) -> Vec<Line<'static>> {
-    let mut out: Vec<Line> = Vec::new();
-    // 解析单元格（去掉首尾 |，按 | 分割）
-    let parsed: Vec<Vec<String>> = rows
-        .iter()
-        .map(|r| {
-            let trimmed = r.trim();
-            let inner = trimmed.trim_start_matches('|').trim_end_matches('|');
-            inner
-                .split('|')
-                .map(|c| c.trim().to_string())
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    let cols = parsed.iter().map(|r| r.len()).max().unwrap_or(0);
-    if cols == 0 {
-        return out;
-    }
-    // 列宽 = 各列最大显示宽度（表头/数据取最大；分隔行不参与）
-    let mut col_w = vec![0usize; cols];
-    for (ri, row) in parsed.iter().enumerate() {
-        if is_separator_row(rows.get(ri).map(|s| s.as_str()).unwrap_or("")) {
-            continue;
-        }
-        for (ci, cell) in row.iter().enumerate() {
-            col_w[ci] = col_w[ci].max(cell.width());
-        }
-    }
-    // 表格总宽超出可用宽度时等比收缩（极端窄屏容错）
-    let gap = 1usize;
-    let total = col_w.iter().map(|w| w + 2 * gap).sum::<usize>() + 1;
-    let avail = width.saturating_sub(indent).max(8);
-    if total > avail {
-        shrink_cols(&mut col_w, total, avail);
-    }
-
-    for (ri, row) in parsed.iter().enumerate() {
-        let is_sep = is_separator_row(rows.get(ri).map(|s| s.as_str()).unwrap_or(""));
-        // 分隔行 → 水平线
-        if is_sep {
-            let line: String = col_w
-                .iter()
-                .map(|w| "─".repeat(w + 2 * gap))
-                .collect::<Vec<_>>()
-                .join("┼");
-            out.push(Line::from(vec![
-                Span::styled(" ".repeat(indent), Style::default()),
-                Span::styled(format!("┌{line}┐"), base.fg(theme::dim())),
-            ]));
-            continue;
-        }
-        let mut spans = vec![Span::styled(" ".repeat(indent), Style::default())];
-        let is_header = ri == 0 && !is_sep;
-        for (ci, cw) in col_w.iter().enumerate() {
-            let cell = row.get(ci).cloned().unwrap_or_default();
-            let pad = cw.saturating_sub(cell.width());
-            // 表头加粗 + 主色；数据行常规
-            let style = if is_header {
-                base.fg(theme::text()).add_modifier(Modifier::BOLD)
-            } else {
-                base.fg(theme::text())
-            };
-            spans.push(Span::styled(format!("│ {cell}{} ", " ".repeat(pad)), style));
-        }
-        spans.push(Span::styled("│", base.fg(theme::dim())));
-        out.push(Line::from(spans));
-    }
-    out
-}
-
-/// 判断表格分隔行（如 |---|---|）。
-fn is_separator_row(s: &str) -> bool {
-    let trimmed = s.trim().trim_start_matches('|').trim_end_matches('|');
-    if trimmed.is_empty() {
-        return false;
-    }
-    trimmed.split('|').all(|c| {
-        let t = c.trim();
-        !t.is_empty()
-            && t.chars()
-                .all(|ch| ch == '-' || ch == ':' || ch == ' ' || ch == '=')
-            && t.contains('-')
-    })
-}
-
-/// 表格总宽超出可用宽度时，按比例收缩各列（极端窄屏容错，不截断单元格）。
-fn shrink_cols(col_w: &mut [usize], total: usize, avail: usize) {
-    let shrink = total.saturating_sub(avail);
-    if shrink == 0 || col_w.is_empty() {
-        return;
-    }
-    // 每列至少保留 1 列宽，其余按比例缩减
-    let mut remain = shrink;
-    let mut i = 0;
-    while remain > 0 {
-        if col_w[i] > 1 {
-            col_w[i] -= 1;
-            remain -= 1;
-        }
-        i = (i + 1) % col_w.len();
-        if col_w.iter().all(|w| *w <= 1) {
-            break;
-        }
-    }
-}
-
-/// 按显示宽度硬截断换行（中文等宽字符按 2 列计）。
-pub fn wrap_line(s: &str, max_width: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    if s.is_empty() {
-        return out;
-    }
-    if max_width < 2 {
-        out.push(s.to_string());
-        return out;
-    }
-    let mut cur = String::new();
-    let mut cur_w = 0usize;
-    for ch in s.chars() {
-        let w = ch.width().unwrap_or(0);
-        // 单字符即超宽：先换行再放（避免死循环）
-        if cur_w + w > max_width && !cur.is_empty() {
-            out.push(std::mem::take(&mut cur));
-            cur_w = 0;
-        }
-        cur.push(ch);
-        cur_w += w;
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,31 +397,48 @@ mod tests {
         assert!(joined.contains("fn main() {}"));
     }
 
+    /// R4 验收（§5 W2）：CJK + 全角标点混排表格，宽度全边界扫描右边界零溢出。
     #[test]
-    fn wrap_line_short_text_single_line() {
-        assert_eq!(wrap_line("你好", 10), vec!["你好"]);
-        assert_eq!(wrap_line("abc", 10), vec!["abc"]);
+    fn table_right_edge_never_overflows() {
+        let rows = vec![
+            "| 名称 | 数值 | 备注 |".to_string(),
+            "| --- | --- | --- |".to_string(),
+            "| 上下文窗口（全角标点） | １２３ | 混合 mix 文字 |".to_string(),
+            "| a你b好c | 456 | 组合字符 e\u{0301} 结束 |".to_string(),
+        ];
+        for width in 8..=90usize {
+            for indent in [0usize, 2, 6] {
+                for line in render_table(&rows, indent, width, Style::default()) {
+                    let w: usize = line
+                        .spans
+                        .iter()
+                        .map(|s| grid::width(s.content.as_ref()))
+                        .sum();
+                    assert!(
+                        w <= width.max(indent + 8),
+                        "表格右溢: width={width} indent={indent} line_w={w} line={line:?}"
+                    );
+                }
+            }
+        }
     }
 
+    /// 降级路径：可用宽度连"每列 1 列内容"都放不下时输出纯文本行，不画半个表格。
     #[test]
-    fn wrap_line_splits_by_display_width() {
-        // 中文按 2 列计：宽度 5 时 "你好世" = 6 列超宽 → 拆行
-        assert_eq!(wrap_line("你好世界", 5), vec!["你好", "世界"]);
-        // 半角按 1 列计
-        assert_eq!(wrap_line("abcdef", 3), vec!["abc", "def"]);
-    }
-
-    #[test]
-    fn wrap_line_empty_and_narrow() {
-        assert!(wrap_line("", 10).is_empty());
-        // 极窄宽度兜底：整行返回，不产生空片段
-        assert_eq!(wrap_line("abc", 1), vec!["abc"]);
-    }
-
-    #[test]
-    fn wrap_line_mixed_widths() {
-        // "a你好b" = 1+2+2+1 = 6 列，宽度 4 → "a你"（3 列）+ "好b"（3 列）
-        assert_eq!(wrap_line("a你好b", 4), vec!["a你", "好b"]);
+    fn table_degrades_to_plain_text_when_too_narrow() {
+        let rows = vec![
+            "| a | b | c | d |".to_string(),
+            "| --- | --- | --- | --- |".to_string(),
+        ];
+        let lines = render_table(&rows, 0, 6, Style::default());
+        assert!(!lines.is_empty());
+        let joined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!joined.contains('┌'), "过窄时应降级为纯文本: {joined:?}");
+        assert!(joined.contains('a') && joined.contains('d'));
     }
 
     #[test]

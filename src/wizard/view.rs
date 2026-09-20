@@ -12,14 +12,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
 
+use crate::engine::grid;
 use crate::theme;
 
 use super::lang::Lang;
 use super::state::WizardState;
 use super::steps::{form_step, FieldSpec, LANG_CHOICES, START_CHOICES, TOTAL_STEPS};
-use super::text::{byte_to_char, wrap_text};
+use super::text::byte_to_char;
 
 /// 全屏渲染向导（首次运行 / /hiairy 时由 ui.rs 接管整个终端）。
 pub fn render(f: &mut Frame, area: Rect, w: &WizardState) {
@@ -332,7 +332,7 @@ fn push_footer(lines: &mut Vec<Line>, step: u8, width: usize) {
 
 /// 水平居中（按 unicode 显示宽度补空格）
 fn centered(text: &str, width: usize) -> Line<'static> {
-    let w = text.width();
+    let w = grid::width(text);
     let pad = width.saturating_sub(w) / 2;
     Line::from(format!("{}{}", " ".repeat(pad), text))
 }
@@ -358,7 +358,7 @@ fn option_line(selected: bool, text: &str) -> Line<'static> {
 /// 选项说明行（灰暗、缩进对齐选项文字；超长按显示宽度换行）
 fn desc_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
-    for piece in wrap_text(text, width.saturating_sub(8).max(10)) {
+    for piece in grid::wrap(text, width.saturating_sub(8).max(10)) {
         out.push(Line::from(Span::styled(
             format!("      {}", piece),
             Style::default().fg(theme::faint()),

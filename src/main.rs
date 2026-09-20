@@ -21,6 +21,7 @@
 
 mod app;
 mod client;
+mod engine;
 mod gccp;
 mod ime;
 mod keys;
@@ -93,6 +94,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::{ActivePanel, App};
 use crate::client::GatewayClient;
+use crate::engine::sched::{Beat, Cfg, Lane, Sched};
 
 /// AgentRT Terminal User Interface
 #[derive(Parser)]
@@ -316,9 +318,15 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
 }
 
 async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
-    // 空闲帧率：100ms 一帧。呼吸灯光标、宿主机时间、thinking 动效都依赖
-    // 持续重绘——阻塞式 event::read() 会让画面在无按键时静止。
-    let idle_frame = Duration::from_millis(100);
+    // 0.1.18 A 轨 §5A.3 W4：L4 调度层持有者，唯一节拍权威。时刻一律由本基准
+    // 的单调毫秒注入（调度层禁止自取时钟），故节拍判定可被虚拟时钟直接驱动。
+    let base = Instant::now();
+    let mut sched = Sched::new(Cfg::from_env());
+
+    // 0.1.18 A 轨 §5A.3 W3：L5 合成层持有者。全仓唯一成帧出口在此收敛，
+    // 不再直调 terminal.draw。失效时刻由调度层给出——输入事件、节拍到期或
+    // 面板数据落地才成帧，静止界面零绘制（"无脏跳帧"为运行期真实路径）。
+    let mut compose = engine::compose::Compositor::new();
 
     // 0.1.18 B11（V11.1）：鼠标捕获终端序列的唯一执行点。Ctrl+M 只翻转
     // app.mouse_capture 状态，循环头检测到与当前终端态不一致时才发送
@@ -326,6 +334,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
     let mut mouse_on = app.mouse_capture;
 
     loop {
+        let now_ms = base.elapsed().as_millis() as u64;
+        let beats = sched.advance(now_ms);
+
         if app.mouse_capture != mouse_on {
             let res = if app.mouse_capture {
                 execute!(io::stdout(), EnableMouseCapture)
@@ -338,21 +349,79 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
             mouse_on = app.mouse_capture;
         }
 
-        terminal.draw(|f| ui::render(f, app))?;
+        // 节拍启用态随界面状态同步。相位来源：chat 输入行的呼吸光标（Blink）、
+        // 思考动效与 GCCP 节点旋转（Anim，仅回合进行中可见）、状态条时钟（Clock）、
+        // 看板/事件流拉取（Hall，与 poll_hall 的面板判定一致）、审批轮询（Approvals）。
+        sched.beat_set(Beat::Blink, app.active_panel == ActivePanel::Chat);
+        sched.beat_set(Beat::Anim, app.loading || app.is_busy());
+        sched.beat_set(Beat::Clock, true);
+        sched.beat_set(
+            Beat::Hall,
+            matches!(app.active_panel, ActivePanel::Board | ActivePanel::Events),
+        );
+        sched.beat_set(Beat::Approvals, app.is_busy());
 
-        // 看板/事件流面板数据拉取 + /chain 异步结果消费（空闲节拍轮询）
-        app.poll_hall();
-        app.poll_chain();
-        // 运维命令（/daemons /agents /tools /models /mem /rpc）异步结果消费
-        app.poll_ops();
+        // 看板/事件流面板数据拉取 + /chain、运维命令异步结果消费。上一帧超预算
+        // 时抑制这类最低优先级工作：降级不阻塞渲染，也不引入第二套差异实现。
+        if !sched.degraded() {
+            app.poll_hall(beats.has(Beat::Hall));
+            app.poll_chain();
+            app.poll_ops();
+        }
+        // 在途请求结果消费（流式增量 / 结果落定 / 审批待决议）。空闲期内部早退
+        // 无开销；busy 期它是唯一的流式与落定入口——等待期不再有独立内层循环。
+        app.poll_pending(beats.has(Beat::Approvals));
+        // 消费到新内容（流式增量/工具事件/结果落定/面板数据）才排队：档位即优先级，
+        // 非输入档搭最近一帧，窗口内的多次落地合并为一帧最终态。
+        if let Some(lane) = app.take_landed() {
+            sched.push(lane);
+        }
+        // hall 显式刷新（F6/F7、/board、/events、SSE 推送）：把 Hall 节拍提前到
+        // 下一帧，拉取时刻仍由调度器裁决。
+        if app.take_hall_force() {
+            sched.beat_now(Beat::Hall);
+        }
 
-        // 无按键事件时定时重绘（保持动态视觉），有事件则立即处理
-        if !event::poll(idle_frame)? {
+        // 失效裁决（§5A.3 W4）：节拍到期或调度器清算出待办帧即置脏。此处只报
+        // 「何时失效」，不预判「是否成帧」——成帧/零绘制的判据唯一落在合成层。
+        let pending = sched.take_frame();
+        if beats.any() || pending {
+            compose.invalidate();
+        }
+        // 唯一成帧出口（§3.6）：每轮无条件请求；未置脏即零绘制帧（不进渲染
+        // 回调、不触碰后端）。零绘制帧无耗时可言，故帧耗时仅在成帧时上报。
+        // 渲染故障（§5A.3 W10）在合成层收敛，此处**不冒泡**：事件循环与 daemon
+        // 会话照常推进，降级态回写 App 由状态条示警（自愈后自动消隐）。
+        let started = Instant::now();
+        let mut layout_us = 0_u64;
+        let outcome = compose.frame(terminal, |f| {
+            let laid = Instant::now();
+            ui::render(f, app);
+            layout_us = laid.elapsed().as_micros() as u64;
+        });
+        if outcome == engine::compose::FrameOutcome::Drawn {
+            let total_us = started.elapsed().as_micros() as u64;
+            sched.note_frame(layout_us, total_us.saturating_sub(layout_us));
+        }
+        app.render_degraded = compose.degraded();
+
+        // 插入对话推进：请求完成后取一条排队输入提交（单 pending 槽，逐条消费）。
+        // 计入输入档——用户消息即时成帧回显，不受合帧窗口约束。
+        if app.step_insert_queue() {
+            sched.push(Lane::Input);
+        }
+
+        // 事件等待：无事件时按调度器给出的最大等待挂起（空闲降频），有事件则
+        // 立即唤醒并处理。终端无"失焦"语义，故不做失焦降帧。
+        let wait = Duration::from_millis(sched.wait_ms());
+        if !event::poll(wait)? {
             continue;
         }
 
         match event::read()? {
             Event::Paste(text) => {
+                // 输入档立即成帧：回显延迟不劣化（不受合帧窗口约束）
+                sched.push(Lane::Input);
                 // bracketed paste（2026-08-26）：向导编辑态插入字段；
                 // 对话态在光标处插入输入框（API Key / 长文本粘贴可用）
                 if app.wizard.active {
@@ -365,9 +434,11 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                // 键位分派 SSoT 在 keys（空闲态全量 match + busy 插入对话泵）；
-                // Exit 信号即退出主循环（终端守卫 Drop 兜底还原）。
-                if matches!(keys::idle_key(terminal, app, key).await?, keys::Flow::Exit) {
+                sched.push(Lane::Input);
+                // 键位分派 SSoT 在 keys（空闲态全量 match + busy 等待态受限
+                // match，入口按 is_busy 自选）。Exit 信号即退出主循环（终端
+                // 守卫 Drop 兜底还原）。
+                if matches!(keys::handle(app, key).await?, keys::Flow::Exit) {
                     return Ok(());
                 }
             }
@@ -375,6 +446,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
             // 投递鼠标事件；收到也安全（滚动契约钳位兜底）。修饰键语义：
             // Shift 翻页 / Ctrl 单行 / 默认 3 行（wheel_lines）。
             Event::Mouse(m) => {
+                sched.push(Lane::Input);
                 let shift = m.modifiers.contains(event::KeyModifiers::SHIFT);
                 let ctrl = m.modifiers.contains(event::KeyModifiers::CONTROL);
                 match m.kind {
