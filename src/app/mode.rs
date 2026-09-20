@@ -75,7 +75,7 @@ fn strip_mode_segments(s: &mut String, protocol: &mut String) {
         let rest = &s[p..];
         let cut = rest
             .find(']')
-            .filter(|er| er + 1 <= MARKER_MAX)
+            .filter(|er| *er < MARKER_MAX)
             .map(|er| er + 1)
             .or_else(|| rest.find('\n').map(|nl| nl + 1));
         match cut {
@@ -110,7 +110,7 @@ pub fn sanitize_reply(resp: &str) -> SanitizedReply {
     }
     let head = &t[..boundary_floor(t, HEAD_WINDOW)];
     if let Some(idx) = head.find("[MODE:") {
-        let closed = head[idx..].find(']').filter(|er| er + 1 <= MARKER_MAX);
+        let closed = head[idx..].find(']').filter(|er| *er < MARKER_MAX);
         match closed {
             Some(er) => {
                 let marker = &head[idx..=idx + er];
@@ -209,7 +209,7 @@ impl StreamSanitizer {
             self.raw = trimmed.to_string();
             return;
         }
-        if let Some(er) = trimmed.find(']').filter(|er| er + 1 <= MARKER_MAX) {
+        if let Some(er) = trimmed.find(']').filter(|er| *er < MARKER_MAX) {
             self.header_done = true;
             if trimmed.starts_with("[MODE:") {
                 protocol.push_str(&trimmed[..=er]);
@@ -275,7 +275,7 @@ impl StreamSanitizer {
                     let rest = &self.raw;
                     let cut = rest
                         .find(']')
-                        .filter(|er| er + 1 <= MARKER_MAX)
+                        .filter(|er| *er < MARKER_MAX)
                         .map(|er| er + 1)
                         .or_else(|| rest.find('\n').map(|nl| nl + 1));
                     match cut {

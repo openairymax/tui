@@ -17,6 +17,7 @@
 //  F1 帮助  F2 配置  F3 日志  F4 记忆  F5 插件  Ctrl+C 退出
 
 use crate::app::{ActivePanel, App};
+use crate::engine::grid;
 use crate::gccp::FlowPhase;
 use crate::panels;
 use crate::theme;
@@ -204,15 +205,9 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
     let Some(a) = app.approvals.first() else {
         return;
     };
-    // 参数预览单行截断：避免长 JSON 撑满横幅
-    let mut params_preview = a.params.clone();
-    if params_preview.chars().count() > area.width.saturating_sub(6) as usize {
-        params_preview = params_preview
-            .chars()
-            .take(area.width.saturating_sub(9) as usize)
-            .collect::<String>()
-            + "…";
-    }
+    // 参数预览单行截断：避免长 JSON 撑满横幅。预算为列，故按显示宽度裁决：
+    // 此前按字符数兑现列预算，全角参数会把右侧 [a]/[A]/[n] 决议提示挤出横幅。
+    let params_preview = grid::clip(&a.params, area.width.saturating_sub(8) as usize);
     let line1 = Line::from(vec![
         Span::styled(
             " ⚠ ",
@@ -293,12 +288,9 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
     let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default())];
     for i in 0..n {
         let active = i == current;
-        let mut title = app.tab_title(i);
-        let cnt = title.chars().count();
-        if cnt > 16 {
-            title = title.chars().take(16).collect();
-            title.push('…');
-        }
+        // 胶囊标题预算 16 列：按显示宽度裁决，否则全角标题会撑破 tab 栏
+        // （一个汉字占 2 列，按字符取 16 实占 32 列，后续 tab 被挤出屏幕）。
+        let title = grid::clip(&app.tab_title(i), 16);
         spans.push(Span::styled(
             format!(" {} {} ", i + 1, title),
             Style::default()
@@ -420,6 +412,19 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ));
         }
+    }
+    // 渲染降级横幅（0.1.18 §5A.3 W10）：合成层故障（渲染回调 panic / 后端
+    // 写失败）时置位。窄屏也保留——这是告警而非数据段；画面本身停在上一帧，
+    // 横幅提示用户「会话仍在推进，画面正在重连」，自愈后由主循环回写消隐。
+    if app.render_degraded {
+        spans.push(seg());
+        spans.push(Span::styled(
+            " ⚠ 渲染降级 · 重连中 ",
+            Style::default()
+                .fg(theme::on_color())
+                .bg(theme::danger())
+                .add_modifier(Modifier::BOLD),
+        ));
     }
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(bar_bg)),

@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::engine::grid;
 use crate::theme;
 
 /// Render the plugins panel.
@@ -77,7 +78,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme::dim()),
             ),
         ]));
-        let summary: String = skill.summary.chars().take(70).collect();
+        // 技能摘要缩进一行，边界按列裁决（中文摘要按字符取会越过面板右边界）
+        let summary = grid::clip(&skill.summary, 70);
         lines.push(Line::from(Span::styled(
             format!("    {}", summary),
             Style::default().fg(theme::text()),

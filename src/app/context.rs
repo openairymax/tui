@@ -143,6 +143,7 @@ impl App {
     ///   否则不注入任何旧 assistant 内容（V1.3：预期外的旧 assistant 全文
     ///   条数恒为 0）。
     /// - `Full`（GCCP 目标确认链）：完整注入当前会话历史。
+    ///
     /// 两种策略下，历史首条 user 与末条 assistant 均包裹边界标记
     /// （HIST_PREFIX/HIST_SUFFIX），显式声明轮次归属。
     ///

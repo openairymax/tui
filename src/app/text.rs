@@ -5,18 +5,21 @@
 //
 // 展示文本装配：会话标题、事件类别译名、帮助页、长文本截断与思考摘要。
 
-/// 会话标题：取用户输入首行，截断到 24 字符（tab 栏展示用）。
+use crate::engine::grid;
+
+/// 会话标题：取用户输入首行，并按 24 列做一个**存储护栏**（用户可粘贴超长
+/// 单行，标题在 tab 快照中长期驻留、每帧克隆，必须封顶）。该护栏大于 tab
+/// 栏的 16 列展示槽，故不作展示裁决——真正上屏的宽度边界由 L2 唯一裁决点
+/// `ui.rs` 的 `grid::clip(_, 16)` 决定（§3 表 N4：宽度权威唯一）。
 pub(super) fn derive_session_title(input: &str) -> String {
     let t = input.trim();
     let first = t.lines().next().unwrap_or(t);
-    let mut s: String = first.chars().take(24).collect();
-    if first.chars().count() > 24 {
-        s.push('…');
-    }
+    let s = grid::clip(first, 24);
     if s.is_empty() {
-        s = "（空会话）".to_string();
+        "（空会话）".to_string()
+    } else {
+        s
     }
-    s
 }
 
 /// 事件类别中文化（F7 详情展示用，与 panels/events.rs category_label 对齐）。
@@ -112,15 +115,6 @@ pub(super) fn build_help_text() -> Vec<String> {
     ]
 }
 
-/// 按字符数截断长文本（工具参数/结果展示用，避免对话面板被长 JSON 撑满）。
-pub(super) fn truncate_for_display(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let cut: String = s.chars().take(max_chars).collect();
-    format!("{}…", cut)
-}
-
 /// 双思考（GCCP+GRAD）轨迹 → 一行计划摘要。
 /// 输入 gateway 回传的 thinking 对象 {plan:{task_plan_id,node_count,nodes[]},feedback,stats}，
 /// 输出如「双思考计划 5 节点：S_01 使用 web_fetch 抓取…（GRAD 2 轮收敛）」。
@@ -135,7 +129,7 @@ pub(super) fn format_thinking_summary(
         .and_then(|a| a.first())
         .and_then(|n| n.get("goal"))
         .and_then(|g| g.as_str())
-        .map(|s| truncate_for_display(s, 48));
+        .map(|s| grid::clip(s, 48));
     let grad_rounds = th
         .get("feedback")
         .and_then(|f| f.get("rounds"))

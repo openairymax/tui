@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::engine::grid;
 use crate::panels::config::host_info;
 use crate::theme;
 
@@ -65,7 +66,10 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
         ),
         Span::styled("  极境智能体运行平台", Style::default().fg(theme::dim())),
     ]);
-    let pad = content_max.saturating_sub(2).saturating_sub(brand.width()) / 2;
+    let pad = content_max
+        .saturating_sub(2)
+        .saturating_sub(grid::line_w(&brand.spans))
+        / 2;
     let mut centered: Vec<Span> = vec![Span::raw(" ".repeat(pad))];
     centered.extend(brand.spans.clone());
     hero.push(Line::from(centered));
@@ -80,8 +84,7 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
             tag.push('─');
         }
     }
-    let tag_pad =
-        content_max.saturating_sub(unicode_width::UnicodeWidthStr::width(tag.as_str())) / 2;
+    let tag_pad = content_max.saturating_sub(grid::width(&tag)) / 2;
     hero.push(Line::from(vec![
         Span::raw(" ".repeat(tag_pad)),
         Span::styled(tag, Style::default().fg(theme::separator())),
@@ -116,7 +119,7 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
     }
     let caps_pad = content_max
         .saturating_sub(2)
-        .saturating_sub(caps_line.width())
+        .saturating_sub(grid::line_w(&caps_line.spans))
         / 2;
     let mut padded_caps = caps_line.spans.clone();
     padded_caps.insert(0, Span::raw(" ".repeat(caps_pad)));
@@ -129,8 +132,8 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
         Span::styled("硬件  ", Style::default().fg(theme::faint())),
         Span::styled(hw, Style::default().fg(theme::dim())),
     ]);
-    if hw_line.width() + 2 < content_max {
-        let hw_pad = content_max.saturating_sub(hw_line.width()) / 2;
+    if grid::line_w(&hw_line.spans) + 2 < content_max {
+        let hw_pad = content_max.saturating_sub(grid::line_w(&hw_line.spans)) / 2;
         hw_line.spans.insert(0, Span::raw(" ".repeat(hw_pad)));
         hero.push(hw_line);
         hero.push(Line::raw(""));
@@ -141,7 +144,7 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
         "输入消息开始对话 · F1 帮助 · F2 配置 · F10 输入法",
         Style::default().fg(theme::faint()),
     )]));
-    let proj_disp: String = proj.chars().take(content_max.saturating_sub(4)).collect();
+    let proj_disp = grid::clip(&proj, content_max.saturating_sub(4));
     if !proj_disp.is_empty() {
         hero.push(Line::from(vec![
             Span::styled("项目  ", Style::default().fg(theme::faint())),

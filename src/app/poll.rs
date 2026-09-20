@@ -5,6 +5,8 @@
 //
 // 异步轮询：chain / ops / hall / pending / approvals 的状态推进与结果落地。
 
+use crate::engine::grid;
+
 use super::*;
 
 /// 事件流面板本地缓存上限（M5 W4）：SSE 增量 + RPC 兜底两路数据合并后
@@ -35,7 +37,11 @@ impl App {
         let Some(mut rx) = self.chain_pending.take() else {
             return;
         };
-        match rx.try_recv() {
+        let recv = rx.try_recv();
+        if recv.is_ok() {
+            self.mark_landed(Lane::Poll);
+        }
+        match recv {
             Ok(outcome) => match outcome {
                 ChainOutcome::Tasks(Ok(tasks)) => {
                     if tasks.is_empty() {
@@ -104,7 +110,11 @@ impl App {
         let Some(mut rx) = self.ops_pending.take() else {
             return;
         };
-        match rx.try_recv() {
+        let recv = rx.try_recv();
+        if recv.is_ok() {
+            self.mark_landed(Lane::Poll);
+        }
+        match recv {
             Ok(outcome) => match outcome {
                 OpsOutcome::Daemons(results) => {
                     let online = results.iter().filter(|(_, r)| r.is_ok()).count();
@@ -148,9 +158,12 @@ impl App {
     /// 数据经 gateway 统一转发，任何前端看到同一份状态。
     ///
     /// M5 W4 数据源统一：hall.watch SSE 推送内容被真实消费——事件流面板
-    /// 增量插入（实时上屏，RPC pull 仅作 1s 兜底合并）；看板是聚合快照，
+    /// 增量插入（实时上屏，RPC pull 仅作节拍兜底合并）；看板是聚合快照，
     /// 推送只作刷新触发（提前 pull），与 RPC 轮询互补。
-    pub fn poll_hall(&mut self) {
+    ///
+    /// `due` 由主循环传入（`Beats::has(Beat::Hall)`）：拉取节拍归 L4 调度表，
+    /// 此处不再自持 1s 节流时钟（0.1.18 §5A.3 W4）。
+    pub fn poll_hall(&mut self, due: bool) {
         if self.active_panel != ActivePanel::Board && self.active_panel != ActivePanel::Events {
             return;
         }
@@ -164,7 +177,7 @@ impl App {
                     pushed = true;
                 }
                 if pushed {
-                    self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+                    self.hall_force = true;
                 }
             } else {
                 // 事件流：推送内容即事件（与 hall.stream 同形态），增量入列
@@ -173,6 +186,9 @@ impl App {
                     if let Ok(evt) = serde_json::from_str::<HallEvent>(&raw) {
                         incoming.push(evt);
                     }
+                }
+                if !incoming.is_empty() {
+                    self.mark_landed(Lane::Panel);
                 }
                 merge_hall_events(&mut self.hall_events, incoming);
             }
@@ -184,6 +200,7 @@ impl App {
                 Ok(HallPollOutcome::Board(r)) => match r {
                     Ok(b) => {
                         self.hall_board = Some(b);
+                        self.mark_landed(Lane::Panel);
                         self.clear_hall_error("hall.board");
                     }
                     Err(e) => {
@@ -193,6 +210,9 @@ impl App {
                 },
                 Ok(HallPollOutcome::Events(r)) => match r {
                     Ok(evts) => {
+                        if !evts.is_empty() {
+                            self.mark_landed(Lane::Panel);
+                        }
                         merge_hall_events(&mut self.hall_events, evts);
                         self.clear_hall_error("hall.stream");
                     }
@@ -209,17 +229,16 @@ impl App {
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
             }
         }
-        // 上一请求仍在途：跳过本轮——即使 1s 节流到期也不重复 spawn 覆盖
-        // 在途接收端（否则慢请求结果丢失、gateway 每秒被多发一次无效请求）
+        // 上一请求仍在途：跳过本轮——即使节拍到期也不重复 spawn 覆盖
+        // 在途接收端（否则慢请求结果丢失、gateway 每次节拍被多发一次无效请求）
         if in_flight {
             return;
         }
-        // 节流：1s（事件流面板的实时增量由 SSE 驱动，pull 仅兜底）
-        let now = Instant::now();
-        if now.duration_since(self.last_hall_poll) < std::time::Duration::from_millis(1000) {
+        // 节拍门控：Beat::Hall 到期才发起拉取（事件流面板的实时增量由 SSE
+        // 驱动，本 pull 仅作兜底）
+        if !due {
             return;
         }
-        self.last_hall_poll = now;
         let gw = self.gateway.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
@@ -251,9 +270,17 @@ impl App {
         }
     }
 
-    /// 强制下次 poll_hall 立即拉取（F6/F7 进入面板时调用）。
+    /// 请求下次节拍判定时立即拉取（F6/F7 进入面板、`/board`、`/events` 时调用）。
+    ///
+    /// 只置「有刷新需求」标志：由主循环取走（`take_hall_force`）并把 Hall 节拍
+    /// 提前到下一帧，拉取时刻仍由 L4 调度器裁决（0.1.18 §5A.3 W4 节拍权威）。
     pub fn force_hall_refresh(&mut self) {
-        self.last_hall_poll = Instant::now() - std::time::Duration::from_secs(10);
+        self.hall_force = true;
+    }
+
+    /// 取走 hall 显式刷新请求（读后清零）。主循环据此调用调度器的节拍提前。
+    pub fn take_hall_force(&mut self) -> bool {
+        std::mem::take(&mut self.hall_force)
     }
 
     /// 订阅 hall.watch SSE 推送流（2026-08-21 事件流驱动；Board/Events 面板
@@ -281,14 +308,19 @@ impl App {
     /// 流式请求（StreamRound）：先消费 mpsc 增量块实时追加到 streaming_text，
     /// 再检查 oneshot 完整结果（结束信号）——**结果到达即落定**，不受上屏
     /// 动画进度影响（0.1.18 B2-6）。
-    pub fn poll_pending(&mut self) -> bool {
+    ///
+    /// `approvals_due` 由主循环传入（`Beats::has(Beat::Approvals)`）：审批轮询
+    /// 节拍归 L4 调度表，此处不再自持 1.5s 节流时钟（0.1.18 §5A.3 W4）。
+    pub fn poll_pending(&mut self, approvals_due: bool) -> bool {
         if self.task_control == TaskControl::Paused {
             return true;
         }
         // 审批轮询：请求在途时查询 tool.pending（在借用 self.pending 前调用，
-        // 且 poll_approvals 内部自判 pending 是否存在并做 1.5s 节流）
-        self.poll_approvals();
-        let Some(p) = &mut self.pending else {
+        // 且 poll_approvals 内部自判 pending 是否存在）
+        self.poll_approvals(approvals_due);
+        // 取走 pending 持有所有权：消费过程中需要调用 `&mut self` 方法记落地
+        // 档位，借用 `self.pending` 会产生冲突；未落定路径原样放回。
+        let Some(mut p) = self.pending.take() else {
             return false;
         };
         // ── 流式增量消费：SSE 块 → 控制面净化 → streaming_text ──
@@ -303,31 +335,17 @@ impl App {
                 self.streaming_text.push_str(&clean);
             }
             if got {
+                self.mark_landed(Lane::Stream);
                 log::trace!("stream chunk: total={} chars", self.streaming_text.len());
             }
         }
-        // ── 上屏推进（0.1.18 B2-6）：打字机动效为可选观感，默认关闭 ──
-        // 关闭时 reveal 恒等于已到达文本长度——服务端增量到达即上屏（真流式
-        // 下天然逐字），不引入任何附加延迟；开启时按 24ms 节拍推进，仅作用
-        // 于流式期间。两种模式都**不门控落定**（见下方结果消费）。
-        // 字段级操作（非方法调用）：p 已借用 self.pending，避免整体借用冲突。
-        {
-            let total = self.streaming_text.chars().count();
-            if !self.typewriter {
-                self.streaming_reveal = total;
-            } else if self.streaming_reveal < total {
-                let since = self.last_reveal_tick.elapsed().as_millis();
-                if since >= 24 {
-                    self.last_reveal_tick = Instant::now();
-                    // 长文本提速：目标 8s 内上屏完，至少 1 字符/步
-                    let speed = (total as f64 / 8000.0 * 24.0).ceil().max(1.0) as usize;
-                    self.streaming_reveal = (self.streaming_reveal + speed).min(total);
-                }
-            }
-        }
+        // ── 上屏（0.1.18 §5A.3 W4 B2）：本地打字机已移除 ──
+        // 增量到达即整块上屏，不引入任何附加上屏延迟；逐字观感由服务端真流式
+        // （complete→complete_stream）给出。上屏与落定同刻，无动画门控。
         // ── 流式工具事件消费：tool_call/tool_result → 工具状态行 ──
         if let Some(tool_rx) = &mut p.tool_rx {
             while let Ok(evt) = tool_rx.try_recv() {
+                self.mark_landed(Lane::Stream);
                 // 思考链事件（__airy_evt:reasoning）→ 追加到 stream_reasoning
                 // （增量块；gateway 逐块透传，实时上屏 + 落定折叠）
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&evt) {
@@ -377,19 +395,23 @@ impl App {
         // 余量，用户感知为"结果到达即完成"，而非"等动画播完"。
         let outcome = match p.rx.try_recv() {
             Ok(o) => o,
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return true,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                self.pending = Some(p);
+                return true;
+            }
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                 PendingOutcome::Run(Err(anyhow!("LLM 后台任务异常终止")))
             }
         };
-        // 取走 kind（避免 move 出借用），先清 pending/loading，再应用结果
+        // 取走 kind（p 已具所有权），先清 loading，再应用结果；pending 在上方
+        // take 时即已腾空。
+        self.mark_landed(Lane::Stream);
         let kind = std::mem::replace(
             &mut p.kind,
             PendingKind::ChatRound {
                 input: String::new(),
             },
         );
-        self.pending = None;
         self.loading = false;
         self.set_task_control(TaskControl::Running);
         log::info!("poll_pending: 消费后台请求结果（kind={:?}）", kind);
@@ -404,7 +426,10 @@ impl App {
     /// 被静态审批拒绝（如 shell_run）的工具会阻塞等待 tool.approve 决议
     /// （AIRY_TOOL_APPROVAL_MODE=interactive）。此处轮询工具侧 pending，
     /// 有新请求则上屏提示用户按 a/A/n 决议（Claude Code 风格 permission prompt）。
-    pub(super) fn poll_approvals(&mut self) {
+    ///
+    /// `due` 为 L4 调度表给出的 `Beat::Approvals` 到期信号：只门控**发起**新查询，
+    /// 在途结果每轮照常消费（结果不因节拍未到而滞留）。
+    pub(super) fn poll_approvals(&mut self, due: bool) {
         // 仅当后台请求进行中（工具执行可能正在等待审批）
         if self.pending.is_none() {
             return;
@@ -416,12 +441,13 @@ impl App {
                     // 新请求：去重后上屏提示
                     for a in pending_list {
                         if !self.approvals.iter().any(|x| x.request_id == a.request_id) {
+                            self.mark_landed(Lane::Poll);
                             self.approvals.push(a.clone());
                             self.add_message(
                                 MessageRole::System,
                                 format!(
                                     "工具「{}」请求权限执行（agent: {}，参数: {}）\n按 A=始终允许 · a=允许本次 · n=拒绝",
-                                    a.tool, a.agent_id, truncate_for_display(&a.params, 160)
+                                    a.tool, a.agent_id, grid::clip(&a.params, 160)
                                 ),
                             );
                             self.add_log(
@@ -440,12 +466,10 @@ impl App {
                 }
             }
         }
-        // 节流发起新查询：每 1.5s 一次
-        let now = std::time::Instant::now();
-        if now.duration_since(self.last_approval_poll) < std::time::Duration::from_millis(1500) {
+        // 节拍门控发起新查询（1.5s 相位由 L4 调度表 Beat::Approvals 给出）
+        if !due {
             return;
         }
-        self.last_approval_poll = now;
         let gw = self.gateway.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {

@@ -172,13 +172,11 @@ impl App {
         });
         // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
         self.streaming_text.clear();
-        self.streaming_reveal = 0;
         self.stream_sanitizer.reset();
         self.stream_reasoning.clear();
         self.stream_reasoning_model.clear();
         self.stream_reasoning_start = None;
         self.last_reasoning = None;
-        self.last_reveal_tick = Instant::now();
         self.stream_tool_events.clear();
     }
 
@@ -285,9 +283,8 @@ impl App {
             stream_rx: Some(stream_rx),
             tool_rx: Some(tool_rx),
         });
-        // 占位清场：打字机/思考链/工具行本轮从零开始（B3：净化器状态同步复位）
+        // 占位清场：思考链/工具行本轮从零开始（B3：净化器状态同步复位）
         self.streaming_text.clear();
-        self.streaming_reveal = 0;
         self.stream_sanitizer.reset();
         self.stream_reasoning.clear();
         self.stream_reasoning_model.clear();

@@ -111,7 +111,6 @@ impl App {
             }
             PendingKind::StreamRound { .. } => {
                 self.streaming_text.clear();
-                self.streaming_reveal = 0;
                 self.stream_reasoning.clear();
                 self.add_message(MessageRole::System, "已中止流式回复。".to_string());
             }

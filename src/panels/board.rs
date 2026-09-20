@@ -4,7 +4,8 @@
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
 // Task board panel (hall.board): work_hall persisted execution instances
-// + live agent roster from agent_d, refreshed by app.poll_hall().
+// + live agent roster from agent_d, refreshed on the Beat::Hall beat by
+// app.poll_hall().
 
 use ratatui::{
     layout::Rect,
@@ -16,6 +17,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::client::HallBoardEntry;
+use crate::engine::grid;
 use crate::theme;
 
 /// 看板单屏物化行数上限：渲染只取前 MAX_BOARD_ROWS 条，选中行与 Enter
@@ -73,7 +75,10 @@ pub(crate) fn state_rank(state: &str) -> u8 {
 }
 
 fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
-    let name: String = e.workflow_name.chars().take(24).collect();
+    // 名称 24 列、状态 12 列两处定宽槽由 L2 唯一裁决点按显示宽度兑现：
+    // 此前按字符数截断 + `{:<N}` 补齐，全角 workflow_name 实占双倍列宽，
+    // 右侧状态/进度/任务号整体错列甚至溢出面板（0.1.18 A 轨 W2，§3.3）。
+    let name = grid::pad(&grid::clip(&e.workflow_name, 24), 24);
     let state = if e.state.is_empty() {
         "unknown"
     } else {
@@ -90,8 +95,11 @@ fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
             format!(" {} {}  ", marker, state_icon(state)),
             base.fg(state_color(state)).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("{:<24}", name), base.fg(theme::text())),
-        Span::styled(format!("{:<12}", state), base.fg(state_color(state))),
+        Span::styled(name, base.fg(theme::text())),
+        Span::styled(
+            grid::pad(&grid::clip(state, 12), 12),
+            base.fg(state_color(state)),
+        ),
         Span::styled(
             format!(" {} ", mini_bar(e.progress)),
             base.fg(theme::accent()),
@@ -272,7 +280,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     } else if let Some(err) = &app.hall_error {
         // 拉取失败/离线：与"正在加载"区分——hall_board 缓存为空且最近一次
         // 拉取失败时给出明确失败态，避免无限"加载中"误导（每 1s 自动重试）
-        let msg: String = err.chars().take(72).collect();
+        // 失败原因一行摘要，边界按列裁决（全角错误文本按字符取必右溢）
+        let msg = grid::clip(err, 72);
         lines.push(Line::from(vec![
             Span::styled(
                 "  ✗ 看板拉取失败 ",

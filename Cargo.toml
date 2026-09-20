@@ -65,6 +65,10 @@ futures = "0.3"
 # Terminal size detection
 unicode-width = "0.1"
 
+# 解析缓存内容指纹（0.1.18 §5A.3 W1）：非加密场景用 FxHash，
+# 比 SipHash 快一个量级，键不落外部输入边界。
+rustc-hash = "2.1"
+
 [dev-dependencies]
 # 单测临时目录（项目上下文/配置持久化等）
 tempfile = "3"

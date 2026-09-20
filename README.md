@@ -16,13 +16,13 @@
 
 The **Airymax TUI** (`agentrt-tui`) is a Rust-built terminal user interface that gives developers and operators a visual, interactive dashboard for the runtime — covering conversation rendering, interaction and observability, with business logic staying on the runtime side. Built with `ratatui` and `crossterm`, it offers multi-panel navigation, real-time conversation rendering, logs / memory panels, configuration and a first-run setup wizard — all from a single terminal window.
 
-Public capabilities: the conversation flow speaks the gateway's `agent.run_stream` event-frame protocol (rendering token typewriter / tool calls / thought chains / structured errors); the first-run wizard is data-driven; theming is token-based (semantic color tokens auto-adapting to TrueColor / 256 / 16 color depths); logs / memory panels subscribe to gateway events; large conversation histories use virtual rendering; CJK input is handled by the terminal / OS input method.
+Public capabilities: the conversation flow speaks the gateway's `agent.run_stream` event-frame protocol (rendering streamed tokens / tool calls / thought chains / structured errors); the first-run wizard is data-driven; theming is token-based (semantic color tokens auto-adapting to TrueColor / 256 / 16 color depths); logs / memory panels subscribe to gateway events; large conversation histories use virtual rendering; CJK input is handled by the terminal / OS input method.
 
 Like the CLI, the TUI is a first-class **runtime tenant**: it talks to the Gateway (HTTP / JSON-RPC 2.0, with execution turns over an SSE event stream) through `agentrt-rs`, the shared protocol client, so the wire contract has a single source of truth.
 
 ## Runtime Communication
 
-The TUI talks to the runtime through the Gateway: regular requests go over HTTP (JSON-RPC 2.0), while execution turns consume `agent.run_stream` SSE event frames (token typewriter / tool calls / thought chains / structured errors). Transport and frame decoding are delegated to the `agentrt-rs` protocol client (`agentrt_rs::run_stream`); the wire constants are generated from the single C header `airy_run_stream.h`, so no literal protocol strings are written here. `src/client.rs` keeps only the UI-semantic translation layer.
+The TUI talks to the runtime through the Gateway: regular requests go over HTTP (JSON-RPC 2.0), while execution turns consume `agent.run_stream` SSE event frames (streamed tokens / tool calls / thought chains / structured errors). Transport and frame decoding are delegated to the `agentrt-rs` protocol client (`agentrt_rs::run_stream`); the wire constants are generated from the single C header `airy_run_stream.h`, so no literal protocol strings are written here. `src/client.rs` keeps only the UI-semantic translation layer.
 
 ```
 agentrt-tui
@@ -85,7 +85,7 @@ The gateway address is resolved in this order:
 3. `$AIRY_HOME/run/gateway.port` — the launcher records the actual gateway port there when the default port is taken;
 4. built-in fallback `http://127.0.0.1:8080`.
 
-Other environment variables: `AIRY_HOME` (data root, default `~/.airymaxrt`), `AGENTRT_TUI_LOG` (log file path, default `$AIRY_HOME/logs/agentrt-tui.log`), `AIRY_TUI_THEME` (theme override; `COLORFGBG` is used for auto-detection).
+Other environment variables: `AIRY_HOME` (data root, default `~/.airymaxrt`), `AGENTRT_TUI_LOG` (log file path, default `$AIRY_HOME/logs/agentrt-tui.log`), `AIRY_TUI_THEME` (theme override; `COLORFGBG` is used for auto-detection), `AIRY_TUI_MAX_FPS` (redraw rate cap, default `60`, clamped to 1–240; frame rate and per-frame timings are reported to the log).
 
 ## Panels
 

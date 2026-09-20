@@ -220,33 +220,14 @@ fn begin_busy_marks_request_start() {
     );
 }
 
-/// B2（0.1.18）V2.4：打字机动效默认**关闭**——服务端增量到达即整块上屏，
-/// 不引入任何附加上屏延迟；仅显式 `AIRY_TUI_TYPEWRITER=1|true|on|yes` 时开启。
-#[test]
-fn typewriter_default_off_and_env_gated() {
-    let _h = crate::test_env::Home::new("b2-typewriter");
-    std::env::remove_var("AIRY_TUI_TYPEWRITER");
-    assert!(!typewriter_enabled(), "默认必须关闭打字机动效");
-    for on in ["1", "true", "on", "yes"] {
-        std::env::set_var("AIRY_TUI_TYPEWRITER", on);
-        assert!(typewriter_enabled(), "{on} 应开启打字机");
-    }
-    for off in ["0", "false", "no", ""] {
-        std::env::set_var("AIRY_TUI_TYPEWRITER", off);
-        assert!(!typewriter_enabled(), "{off} 不应开启打字机");
-    }
-    std::env::remove_var("AIRY_TUI_TYPEWRITER");
-}
-
-/// B2（0.1.18）V2.4：打字机关闭时上屏**零附加延迟**——流式增量到达后的
-/// 第一个轮询节拍 `streaming_reveal` 即追平已到达文本长度（不做逐帧推进）；
-/// 且落定**不被动画门控**：后台结果到达当拍即落定。
+/// B2（0.1.18）§5A.3 W4：本地打字机已移除——流式增量到达当拍即整块上屏
+/// （`poll_pending` 单拍内直接追加），上屏与落定之间不存在动画门控；同时
+/// 落地按来源记入 Stream 档位，供 L4 调度器成帧。
 #[tokio::test]
-async fn typewriter_off_reveals_on_first_tick_and_settles() {
+async fn stream_delta_lands_on_arrival_and_settles() {
     let _h = crate::test_env::Home::new("b2-reveal");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
-    app.typewriter = false;
     app.loading = true;
 
     let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -264,13 +245,13 @@ async fn typewriter_off_reveals_on_first_tick_and_settles() {
 
     let text = "服务端增量到达即整块上屏，无附加延迟。";
     stream_tx.send(text.to_string()).expect("send delta");
-    // 结果尚未到达：本拍消费增量，上屏立即追平（关闭打字机 → 无逐帧推进）
-    assert!(app.poll_pending(), "结果未到达时应保持待办");
+    // 结果尚未到达：本拍消费增量，文本立即整块上屏并记 Stream 落地档位
+    assert!(app.poll_pending(true), "结果未到达时应保持待办");
     assert_eq!(app.streaming_text, text);
     assert_eq!(
-        app.streaming_reveal,
-        text.chars().count(),
-        "打字机关闭时 reveal 必须当拍追平"
+        app.take_landed(),
+        Some(crate::engine::sched::Lane::Stream),
+        "流式增量落地应记 Stream 档位"
     );
 
     // 结果到达：同一拍落定，不等任何上屏动画
@@ -285,19 +266,23 @@ async fn typewriter_off_reveals_on_first_tick_and_settles() {
         gccp_questions: Vec::new(),
     })));
     assert!(sent.is_ok(), "结果通道应可发送");
-    assert!(!app.poll_pending(), "落定后不应再有待办请求");
+    assert!(!app.poll_pending(true), "落定后不应再有待办请求");
     assert!(!app.loading, "结果到达即落定（不受动画门控）");
     assert_eq!(app.tokens, 7, "权威 token 消耗随落定入账");
 }
 
-/// 会话标题派生：首行截断 ≤24 字符，空输入回退占位。
+/// 会话标题派生：首行按 24 列封顶（存储护栏，宽度由 L2 裁决），空输入回退占位。
 #[test]
 fn derive_session_title_truncates_and_falls_back() {
     assert_eq!(derive_session_title("你好"), "你好");
     assert_eq!(derive_session_title("  带空格的输入  "), "带空格的输入");
     let long = "这是一个超过二十四字符长度的超长会话标题用来测试截断逻辑是否生效";
     let t = derive_session_title(long);
-    assert!(t.chars().count() <= 25, "标题应截断: {}", t);
+    assert!(
+        crate::engine::grid::width(&t) <= 24,
+        "标题应封顶 24 列: {}",
+        t
+    );
     assert!(t.ends_with('…'), "超长标题应有省略号: {}", t);
     assert_eq!(derive_session_title("   "), "（空会话）");
 }

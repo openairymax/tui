@@ -5,6 +5,9 @@
 //
 // 终端生命周期：日志初始化、panic 还原钩子、RAII 终端守卫。
 // 自 main.rs 拆出（0.1.18：单一职责——main 只管启动编排）。
+//
+// panic 还原的两条互斥路径（§5A.3 W10）：默认路径（致命 panic）还原终端，
+// 保证报文可读；渲染故障隔离窗口内的 panic 由合成层接管，本模块不得还原。
 
 use anyhow::Result;
 use crossterm::{
@@ -17,7 +20,20 @@ use crossterm::{
     },
 };
 use log::error;
+use std::cell::Cell;
 use std::io;
+
+thread_local! {
+    /// 渲染故障隔离窗口（§5A.3 W10）：L5 合成层在 `catch_unwind` 区间置位。
+    /// 按线程隔离——panic 钩子运行于 panic 发生的线程，故窗口内的 panic 能被
+    /// 精确识别，非渲染路径（含其他线程的后台任务）的 panic 不受影响。
+    static RENDER_GUARD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// 进入/退出渲染故障隔离窗口。只应由 L5 合成层调用（窗口语义归合成层所有）。
+pub(crate) fn set_render_guard(on: bool) {
+    RENDER_GUARD.with(|guard| guard.set(on));
+}
 
 /// 初始化文件日志（避免 stderr 污染全屏 TUI）。
 ///
@@ -66,9 +82,17 @@ fn restore_on_panic() {
 /// T-03（P0-8）：panic hook——先还原终端（否则 raw mode 下报文不可读、
 /// 备用屏吞掉全部输出，用户终端看似死机），再走默认报文输出。
 /// 与 `TerminalGuard` 幂等协作（重复还原无害）。
+///
+/// §5A.3 W10：处于渲染故障隔离窗口内的 panic 由合成层接管——此处**不得**
+/// 还原终端（离开备用屏即丢帧，隔离失效），报文改入日志（默认钩子写 stderr
+/// 会直接污染画面）。
 pub(crate) fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if RENDER_GUARD.with(Cell::get) {
+            log::error!("term: 渲染 panic 已交由合成层隔离: {info}");
+            return;
+        }
         restore_on_panic();
         default_hook(info);
     }));
