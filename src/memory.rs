@@ -554,6 +554,33 @@ mod tests {
         assert_eq!(recs[1].reasoning.as_deref(), Some("先看火焰图"));
     }
 
+    /// B4（0.1.18）V4.2：兼容反序列化的旧记录即便带思考链，召回命中
+    /// （`MemoryHit`）只承载 content/role/score/turn——推理原文没有任何注入
+    /// 通道进入上下文。构造一条"英文 CoT 与关键词同现"的旧记录：命中分虽被
+    /// reasoning 提权（+0.3），注入内容仍须纯净。
+    #[test]
+    fn legacy_reasoning_never_reaches_recall() {
+        let mut m = GatewayMemory::volatile();
+        {
+            let mut g = m.mirror.lock().unwrap_or_else(|e| e.into_inner());
+            g.push(MemoryRecord {
+                role: "assistant".to_string(),
+                content: "答案是先看火焰图".to_string(),
+                timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                tags: "chat".to_string(),
+                reasoning: Some("SECRET_COT_MARKER the lock contention is hot".to_string()),
+            });
+        }
+        let hits = m.recall("火焰图", 5);
+        assert!(!hits.is_empty(), "应命中该旧记录: {:?}", hits);
+        for h in &hits {
+            assert!(
+                !h.content.contains("SECRET_COT_MARKER"),
+                "思考链原文不得进入召回注入内容: {h:?}"
+            );
+        }
+    }
+
     #[test]
     fn split_cli_turn_passes_through_other_formats() {
         // TUI 自身记录格式（无 "用户: " 前缀）→ 单条，内容原样

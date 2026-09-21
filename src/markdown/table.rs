@@ -3,117 +3,246 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// markdown 表格块：`| a | b |` 表头/分隔/数据行的列宽对齐渲染。
+// markdown 表格块（0.1.18 W6）：列宽自适应 + 左/中/右对齐 + 超宽截断。
 //
-// 宽度纪律（0.1.18 A 轨 W2，§3.3）：列宽分配与单元格截断一律委托 L2 唯一
-// 裁决点 `crate::engine::grid`，本模块不得自行测量后截断或填充。
+// 分隔行（`|---|`）由解析器在解析期消解为 `Tag::Table(Vec<Alignment>)`，本层不再
+// 自行识别——旧实现的 `is_separator_row` 是对解析器语义的重复实现，两者对
+// `|:--|--:|` 与 `| === |` 的判定并不一致。
+//
+// 宽度纪律：列宽分配与单元格截断一律委托 L2 唯一裁决点 `crate::engine::grid`，
+// 本模块不得自行测量后截断或填充。
 
 use crate::engine::grid;
 use crate::theme;
+use pulldown_cmark::Alignment;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
 
-/// 渲染表格块：表头 + 分隔行 + 数据行，按列宽对齐（中文全角按 2 列计）。
+/// 单元格：已定型的行内样式片段序列。
+pub(super) type Cell = Vec<Span<'static>>;
+
+/// 渲染表格：表头 + 分隔线 + 数据行，按列宽对齐。
 pub(super) fn render_table(
-    rows: &[String],
+    head: &[Cell],
+    rows: &[Vec<Cell>],
+    aligns: &[Alignment],
     indent: usize,
     width: usize,
     base: Style,
 ) -> Vec<Line<'static>> {
-    let mut out: Vec<Line> = Vec::new();
-    // 解析单元格（去掉首尾 |，按 | 分割）
-    let parsed: Vec<Vec<String>> = rows
+    let cols = rows
         .iter()
-        .map(|r| {
-            let trimmed = r.trim();
-            let inner = trimmed.trim_start_matches('|').trim_end_matches('|');
-            inner
-                .split('|')
-                .map(|c| c.trim().to_string())
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    let cols = parsed.iter().map(|r| r.len()).max().unwrap_or(0);
+        .map(|r| r.len())
+        .chain(std::iter::once(head.len()))
+        .max()
+        .unwrap_or(0);
     if cols == 0 {
-        return out;
+        return Vec::new();
     }
-    // 列宽 = 各列最大显示宽度（表头/数据取最大；分隔行不参与）
+
     let mut want = vec![0usize; cols];
-    for (ri, row) in parsed.iter().enumerate() {
-        if is_separator_row(rows.get(ri).map(|s| s.as_str()).unwrap_or("")) {
-            continue;
-        }
+    for row in std::iter::once(head).chain(rows.iter().map(|r| r.as_slice())) {
         for (ci, cell) in row.iter().enumerate() {
-            want[ci] = want[ci].max(grid::width(cell));
+            want[ci] = want[ci].max(grid::line_w(cell));
         }
     }
+
+    let avail = width.saturating_sub(indent).max(8);
     // 每列除内容外另占 3 列（"│ " + 内容 + " "），整行另加 1 列收尾 "│"。
     // 列宽分配交由 L2 唯一裁决点，保证 Σ(列宽+3)+1 ≤ 可用宽度——这是右边界
-    // 零溢出的充分条件。此前此处按 Σ(列宽+2)+1 估算，少算「列数」列，窄屏
-    // 收缩不足导致 CJK 表格右溢（R4）。
-    let avail = width.saturating_sub(indent).max(8);
+    // 零溢出的充分条件。
     let Some(col_w) = grid::alloc_cols(&want, 3, 1, avail) else {
         // 连"每列 1 列内容"的最小布局都放不下：降级为纯文本，不画半个表格
-        for row in rows {
-            for piece in grid::wrap(row, avail) {
-                out.push(Line::from(vec![
-                    Span::styled(" ".repeat(indent), Style::default()),
-                    Span::styled(piece, base),
-                ]));
-            }
-        }
-        return out;
+        return degrade(head, rows, aligns, indent, avail, base);
     };
 
-    for (ri, row) in parsed.iter().enumerate() {
-        let is_sep = is_separator_row(rows.get(ri).map(|s| s.as_str()).unwrap_or(""));
-        // 分隔行 → 水平线
-        if is_sep {
-            let line: String = col_w
-                .iter()
-                .map(|w| "─".repeat(w + 2))
-                .collect::<Vec<_>>()
-                .join("┼");
-            out.push(Line::from(vec![
-                Span::styled(" ".repeat(indent), Style::default()),
-                Span::styled(format!("┌{line}┐"), base.fg(theme::dim())),
-            ]));
-            continue;
-        }
-        let mut spans = vec![Span::styled(" ".repeat(indent), Style::default())];
-        let is_header = ri == 0 && !is_sep;
-        for (ci, cw) in col_w.iter().enumerate() {
-            // 单元格按分配列宽截断：分配宽度是行宽有界的唯一依据，若不截断，
-            // 窄屏下收缩后的列宽会被超宽单元格重新撑破（旧实现即如此）。
-            let cell = grid::clip(&row.get(ci).cloned().unwrap_or_default(), *cw);
-            let pad = cw.saturating_sub(grid::width(&cell));
-            // 表头加粗 + 主色；数据行常规
-            let style = if is_header {
-                base.fg(theme::text()).add_modifier(Modifier::BOLD)
-            } else {
-                base.fg(theme::text())
-            };
-            spans.push(Span::styled(format!("│ {cell}{} ", " ".repeat(pad)), style));
-        }
-        spans.push(Span::styled("│", base.fg(theme::dim())));
-        out.push(Line::from(spans));
+    let mut out: Vec<Line<'static>> = Vec::new();
+    if !head.is_empty() {
+        out.push(row_line(head, &col_w, aligns, indent, base, true));
+        let sep: String = col_w
+            .iter()
+            .map(|w| "─".repeat(w + 2))
+            .collect::<Vec<_>>()
+            .join("┼");
+        out.push(Line::from(vec![
+            Span::styled(" ".repeat(indent), Style::default()),
+            Span::styled(format!("├{sep}┤"), base.fg(theme::dim())),
+        ]));
+    }
+    for row in rows {
+        out.push(row_line(row, &col_w, aligns, indent, base, false));
     }
     out
 }
 
-/// 判断表格分隔行（如 |---|---|）。
-pub(super) fn is_separator_row(s: &str) -> bool {
-    let trimmed = s.trim().trim_start_matches('|').trim_end_matches('|');
-    if trimmed.is_empty() {
-        return false;
+fn row_line(
+    cells: &[Cell],
+    col_w: &[usize],
+    aligns: &[Alignment],
+    indent: usize,
+    base: Style,
+    header: bool,
+) -> Line<'static> {
+    let border = base.fg(theme::dim());
+    let mut spans = vec![Span::styled(" ".repeat(indent), Style::default())];
+
+    for (ci, cw) in col_w.iter().enumerate() {
+        let empty: Cell = Vec::new();
+        let raw = cells.get(ci).unwrap_or(&empty);
+        let mut styled: Cell = raw
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), cell_style(s.style, base, header)))
+            .collect();
+        if grid::line_w(&styled) > *cw {
+            styled = grid::clip_spans(&styled, *cw);
+        }
+        let used = grid::line_w(&styled);
+        let gap = cw.saturating_sub(used);
+        let (left, right) = match aligns.get(ci).copied().unwrap_or(Alignment::None) {
+            Alignment::Right => (gap, 0),
+            Alignment::Center => (gap / 2, gap - gap / 2),
+            _ => (0, gap),
+        };
+
+        spans.push(Span::styled(format!("│ {}", " ".repeat(left)), border));
+        spans.extend(styled);
+        spans.push(Span::styled(format!("{} ", " ".repeat(right)), border));
     }
-    trimmed.split('|').all(|c| {
-        let t = c.trim();
-        !t.is_empty()
-            && t.chars()
-                .all(|ch| ch == '-' || ch == ':' || ch == ' ' || ch == '=')
-            && t.contains('-')
-    })
+    spans.push(Span::styled("│", border));
+    Line::from(spans)
+}
+
+/// 单元格样式：表头补主色与粗体，数据行未着色时补默认文本色。
+fn cell_style(s: Style, base: Style, header: bool) -> Style {
+    let mut st = s;
+    if st.fg.is_none() {
+        st = st.fg(if header {
+            theme::text()
+        } else {
+            base.fg.unwrap_or_else(theme::text)
+        });
+    }
+    if header {
+        st = st.add_modifier(Modifier::BOLD);
+    }
+    st
+}
+
+/// 过窄降级：逐行拼接为纯文本并折行，保留全部语义。
+fn degrade(
+    head: &[Cell],
+    rows: &[Vec<Cell>],
+    aligns: &[Alignment],
+    indent: usize,
+    avail: usize,
+    base: Style,
+) -> Vec<Line<'static>> {
+    let _ = aligns;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for row in std::iter::once(head).chain(rows.iter().map(|r| r.as_slice())) {
+        if row.is_empty() {
+            continue;
+        }
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (ci, cell) in row.iter().enumerate() {
+            if ci > 0 {
+                spans.push(Span::styled(" | ".to_string(), base.fg(theme::dim())));
+            }
+            spans.extend(cell.iter().cloned());
+        }
+        let mut full = vec![Span::styled(" ".repeat(indent), Style::default())];
+        full.extend(spans);
+        for piece in grid::wrap_spans(&full, avail) {
+            out.push(Line::from(piece));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(text: &str) -> Cell {
+        vec![Span::raw(text.to_string())]
+    }
+
+    fn sample() -> (Vec<Cell>, Vec<Vec<Cell>>) {
+        let head = vec![cell("名称"), cell("数值"), cell("备注")];
+        let rows = vec![
+            vec![
+                cell("上下文窗口（全角标点）"),
+                cell("１２３"),
+                cell("混合 mix 文字"),
+            ],
+            vec![cell("a你b好c"), cell("456"), cell("组合字符 e\u{0301} 结束")],
+        ];
+        (head, rows)
+    }
+
+    #[test]
+    fn renders_header_separator_and_rows() {
+        let (head, rows) = sample();
+        let aligns = vec![Alignment::Left, Alignment::Right, Alignment::Center];
+        let lines = render_table(&head, &rows, &aligns, 2, 80, Style::default());
+        assert_eq!(lines.len(), 4, "表头 + 分隔线 + 2 数据行");
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(joined.contains("名称"));
+        assert!(joined.contains("１２３"));
+    }
+
+    #[test]
+    fn right_edge_never_overflows() {
+        let (head, rows) = sample();
+        let aligns = vec![Alignment::Left, Alignment::Right, Alignment::Center];
+        for width in 8..=90usize {
+            for indent in [0usize, 2, 6] {
+                for line in render_table(&head, &rows, &aligns, indent, width, Style::default()) {
+                    let w = grid::line_w(&line.spans);
+                    assert!(
+                        w <= width.max(indent + 8),
+                        "表格右溢: width={width} indent={indent} line_w={w} line={line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn degrades_to_plain_text_when_too_narrow() {
+        let head = vec![cell("a"), cell("b"), cell("c"), cell("d")];
+        let aligns = vec![Alignment::None; 4];
+        let lines = render_table(&head, &[], &aligns, 0, 6, Style::default());
+        assert!(!lines.is_empty());
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(!joined.contains('│'), "过窄时应降级为纯文本: {joined:?}");
+        assert!(joined.contains('a') && joined.contains('d'));
+    }
+
+    #[test]
+    fn alignment_positions_content() {
+        // 列宽由最宽单元格决定，故须有更宽的表头才能观察到对齐差异
+        let head = vec![cell("longer")];
+        let rows = vec![vec![cell("x")]];
+        let right = render_table(&head, &rows, &[Alignment::Right], 0, 40, Style::default());
+        let left = render_table(&head, &rows, &[Alignment::Left], 0, 40, Style::default());
+        let r = right.last().map(|l| l.to_string()).unwrap_or_default();
+        let l = left.last().map(|l| l.to_string()).unwrap_or_default();
+        assert_ne!(r, l, "左/右对齐应产生不同留白");
+        assert!(r.starts_with("│      x"), "右对齐: {r:?}");
+        assert!(l.starts_with("│ x"), "左对齐: {l:?}");
+    }
+
+    #[test]
+    fn header_cells_are_bold() {
+        let (head, rows) = sample();
+        let aligns = vec![Alignment::Left; 3];
+        let lines = render_table(&head, &rows, &aligns, 0, 80, Style::default());
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content.contains("名称") && s.style.add_modifier.contains(Modifier::BOLD)));
+    }
 }

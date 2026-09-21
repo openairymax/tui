@@ -200,7 +200,7 @@ pub struct App {
     pub task_mode: bool,
     /// 对话记忆后端（跨会话"记得住"）
     pub memory: Box<dyn ConversationMemory>,
-    /// 内置拼音输入法引擎（词典加载失败/库未链接时为 None → IME 禁用）
+    /// 内置拼音输入法引擎（纯 Rust；词典缺失/校验失败时为 None → IME 禁用）
     pub ime_engine: Option<ImeEngine>,
     /// IME 拼音态：true = 输入法开启（a-z 进拼音缓冲，1-9/空格选字）
     pub ime_active: bool,
@@ -474,7 +474,7 @@ impl App {
             ime_engine: {
                 let e = ImeEngine::load();
                 if e.is_none() {
-                    log::warn!("ime: 输入法不可用（词典缺失或库未链接），F10 无效");
+                    log::warn!("ime: 输入法不可用（词典缺失或校验失败），Ctrl+1 无效");
                 }
                 e
             },

@@ -13,15 +13,13 @@ authors = ["SPHARX Ltd."]
 name = "agentrt-tui"
 path = "src/main.rs"
 
-[features]
 # T-09（0.1.15 裁决）：收回 TUI 对运行时库的一切 FFI 直连——
 # memoryrovol feature 已删除；0.1.16 起记忆读写统一经 gateway mem.* RPC
-# （GatewayMemory，与 CLI 共享同一 mem_d 记忆库），无任何本地记忆存储；
-# ime 保留为空开关，仅维持 src 中
-# all(feature = "ime", ime_linked) 双门控的天然休眠（build.rs 不再
-# 置位 ime_linked，内置拼音 IME 禁用，输入交回终端/OS 输入法）。
-default = []
-ime = []
+# （GatewayMemory，与 CLI 共享同一 mem_d 记忆库），无任何本地记忆存储。
+# 0.1.18 W8：内置拼音 IME 改为纯 Rust 引擎（src/ime.rs，直接消费
+# commons airy_ime.dat 词典格式），零 FFI、零静态库依赖，故原 ime
+# feature 开关一并删除（恒编入，无外部消费者）。
+# 本 crate 现无任何可选 feature。
 
 [dependencies]
 # 协议客户端归一（0.1.17 §3.5 G3）：TUI 不再自带网关协议客户端与 wire 常量，
@@ -68,6 +66,22 @@ unicode-width = "0.1"
 # 解析缓存内容指纹（0.1.18 §5A.3 W1）：非加密场景用 FxHash，
 # 比 SipHash 快一个量级，键不落外部输入边界。
 rustc-hash = "2.1"
+
+# markdown 解析（0.1.18 W6）：换用 CommonMark 合规解析器，纯 Rust、零 C 依赖，
+# 消除自研块级/行内解析的能力盲区（§5 W6"杜绝不能渲染的画面"）。仅消费 AST，
+# 不启用 html 写出特性。
+pulldown-cmark = { version = "0.13", default-features = false }
+
+# 数学公式终端降级（0.1.18 W6）：LaTeX 片段 → Unicode 上下标/希腊字母/运算符，
+# 纯 Rust 查表，不引入完整排版引擎。
+unicodeit = "0.2"
+
+# 代码块语法高亮（0.1.18 W6）：Sublime 语法定义驱动的分词，
+# default-features=false 关掉 onig/plist/yaml/HTML 写出，只保留
+# parsing + regex-fancy（纯 Rust 正则，无 C 依赖）+ default-syntaxes
+# （内置常用语言定义）。主题不引入 default-themes：着色由本仓
+# theme::* 设计令牌统一裁决，随深浅主题与色深切换，无硬编码调色板。
+syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy", "default-syntaxes"] }
 
 [dev-dependencies]
 # 单测临时目录（项目上下文/配置持久化等）

@@ -16,7 +16,7 @@
 
 **Airymax TUI**（`agentrt-tui`）是用 Rust 构建的终端用户界面，为开发者和运维人员提供可视化、交互式的运行时仪表盘 —— 覆盖对话渲染、交互与可观测，业务逻辑保持在运行时侧。它基于 `ratatui` 与 `crossterm` 构建，在单个终端窗口内提供多面板导航、实时对话渲染、日志 / 记忆面板、配置与首次启动向导。
 
-公开能力：对话流对接 gateway 的 `agent.run_stream` 事件帧协议（token 打字机 / 工具调用 / 思考链 / 结构化错误渲染）；首次启动向导数据驱动；主题 token 化（语义色 token，自动适配 TrueColor / 256 / 16 三档色深）；日志 / 记忆面板经 gateway 事件订阅；大历史对话虚拟渲染；中文输入交由终端 / OS 输入法承担。
+公开能力：对话流对接 gateway 的 `agent.run_stream` 事件帧协议（token 打字机 / 工具调用 / 思考链 / 结构化错误渲染）；首次启动向导数据驱动；主题 token 化（语义色 token，自动适配 TrueColor / 256 / 16 三档色深）；日志 / 记忆面板经 gateway 事件订阅；大历史对话虚拟渲染；内置拼音输入法（纯 Rust 引擎，Ctrl+1 唤起）覆盖无 OS 输入法可用的环境。
 
 与 CLI 一样，TUI 是一等**运行时租户**：经共享协议客户端 `agentrt-rs` 与 Gateway 通信（HTTP / JSON-RPC 2.0，对话执行轮走 SSE 事件流），协议线格式因此只有单一事实源。
 
@@ -50,7 +50,7 @@ tui/
 │   ├── models_cfg.rs        # model.yaml 读写（模型表 + 思考系统段）
 │   ├── secrets.rs           # secrets.env 读写
 │   ├── paths.rs             # AIRY_HOME 路径解析单一来源
-│   ├── ime.rs               # 拼音输入法 FFI（ime_linked 未置位：fail-closed 休眠）
+│   ├── ime.rs               # 内置拼音输入法（纯 Rust 引擎，Ctrl+1 唤起）
 │   ├── app/                 # 应用状态域（分发 / 轮询 / 面板 / 任务 / 会话 / 输入）
 │   ├── panels/              # 渲染面板
 │   │   ├── mod.rs           # 面板模块导出

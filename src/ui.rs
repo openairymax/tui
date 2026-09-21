@@ -136,7 +136,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
 /// IME 候选区（输入框第二行）：`[中] 拼音` + 当前页候选。
 ///
-/// 2.2.3 重新设计（2026-08-23）：F10 激活后输入框恒为两行（第一行
+/// 2.2.3 重新设计（2026-08-23）：Ctrl+1 激活后输入框恒为两行（第一行
 /// 输入 + 第二行候选区），本函数渲染第二行。拼音缓冲为空时显示
 /// `[中] 拼音输入中…` 占位，让激活瞬间即有明确视觉反馈；缓冲非空
 /// 时显示拼音高亮 + 微信式分页候选（当前页 9 个，页内高亮蓝底，
@@ -523,12 +523,20 @@ fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
         (app.flow_phase.input_hint(), theme::dim())
     };
 
-    // IME 模式指示：激活时 [中] 高亮（晶蓝底），未激活 [英] 灰显
+    // IME 模式指示（§A9「输入区常驻 IME 态」）：引擎可用即常驻三态——
+    //   [英]        未激活（灰显，尾随 Ctrl+1 唤起提示）
+    //   [中]        激活·缓冲空
+    //   [中 拼音]   激活·组合中（候选态，拼音原文可见）
     let mut spans = vec![Span::styled(" ❯ ", Style::default().fg(theme::primary()))];
     if app.ime_engine.is_some() {
         if app.ime_active {
+            let tag = if app.ime_buf.is_empty() {
+                "[中] ".to_string()
+            } else {
+                format!("[中 {}] ", &app.ime_buf[..app.ime_buf.len().min(12)])
+            };
             spans.push(Span::styled(
-                "[中] ",
+                tag,
                 Style::default()
                     .fg(theme::on_color())
                     .bg(theme::primary())
@@ -539,6 +547,12 @@ fn render_input_line(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     spans.push(Span::styled(hint, Style::default().fg(hint_color)));
+    if app.ime_engine.is_some() && !app.ime_active {
+        spans.push(Span::styled(
+            " · Ctrl+1 输入法",
+            Style::default().fg(theme::faint()),
+        ));
+    }
 
     // 呼吸灯光标仅在对话面板显示（其他面板输入栏保持安静克制）；
     // 光标渲染在输入文本的实际位置（readline 风格：←→ 移动后光标可见）

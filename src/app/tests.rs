@@ -421,34 +421,28 @@ fn b1_memory_hit_carries_turn_annotation() {
     assert_eq!(hits2[0].turn, None, "旧格式无 turn 标注应为 None");
 }
 
-// ─────────── W7：IME 组合期（preedit）行为回归 ───────────
-// 仅当 C 词典库可链接（ime_linked）且 agentrt 源码树词典存在时运行，
-// 与 ime.rs FFI 测试同门控。覆盖 CJK 组合期关键路径：
-// F10 激活 / 字母追加 / 空格·数字选字 / 退格 / Esc 取消 / Enter 提交。
+// ─────────── W7/W8：IME 组合期（preedit）行为回归 ───────────
+// 0.1.18 W8：内置 IME 改为纯 Rust 引擎，恒编入且词典随源码树分发，
+// 故不再需要 feature/链接门控。覆盖 CJK 组合期关键路径：
+// Ctrl+1 激活 / 字母追加 / 空格·数字选字 / 退格 / Esc 取消 / Enter 提交。
 
-#[cfg(all(feature = "ime", ime_linked))]
 fn app_with_ime() -> (crate::test_env::Home, App) {
     let home = crate::test_env::Home::new("ime");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
-    assert!(
-        app.ime_engine.is_some(),
-        "ime_linked 下 App 应加载 IME 引擎"
-    );
+    assert!(app.ime_engine.is_some(), "App 应加载内置 IME 引擎");
     app.ime_toggle();
-    assert!(app.ime_active, "F10 应进入拼音态");
+    assert!(app.ime_active, "Ctrl+1 应进入拼音态");
     (home, app)
 }
 
-#[cfg(all(feature = "ime", ime_linked))]
 fn ime_type(app: &mut App, s: &str) {
     for ch in s.chars() {
         assert!(app.ime_input_char(ch), "拼音态下字母应被消费: {}", ch);
     }
 }
 
-/// F10 切回英文时拼音原文上屏、缓冲清空（与 CLI 语义一致）。
-#[cfg(all(feature = "ime", ime_linked))]
+/// Ctrl+1 切回英文时拼音原文上屏、缓冲清空（与 CLI 语义一致）。
 #[test]
 fn ime_toggle_off_commits_raw_pinyin() {
     let (_d, mut app) = app_with_ime();
@@ -465,7 +459,6 @@ fn ime_toggle_off_commits_raw_pinyin() {
 }
 
 /// 字母追加实时刷新候选；非 [a-z] 可见字符先上屏拼音原文再走正常路径。
-#[cfg(all(feature = "ime", ime_linked))]
 #[test]
 fn ime_pinyin_composition_refreshes_candidates() {
     let (_d, mut app) = app_with_ime();
@@ -482,7 +475,6 @@ fn ime_pinyin_composition_refreshes_candidates() {
 }
 
 /// 空格上屏高亮（默认首）候选，拼音态保持（连续词组输入不中断）。
-#[cfg(all(feature = "ime", ime_linked))]
 #[test]
 fn ime_space_commits_first_candidate_keeps_active() {
     let (_d, mut app) = app_with_ime();
@@ -498,7 +490,6 @@ fn ime_space_commits_first_candidate_keeps_active() {
 }
 
 /// 数字键按页内下标选字（微信式分页）。
-#[cfg(all(feature = "ime", ime_linked))]
 #[test]
 fn ime_digit_selects_candidate() {
     let (_d, mut app) = app_with_ime();
@@ -510,7 +501,6 @@ fn ime_digit_selects_candidate() {
 }
 
 /// 退格删拼音（候选随之刷新）；拼音删空后再次退格退出拼音态。
-#[cfg(all(feature = "ime", ime_linked))]
 #[test]
 fn ime_backspace_pops_then_exits() {
     let (_d, mut app) = app_with_ime();
@@ -529,7 +519,6 @@ fn ime_backspace_pops_then_exits() {
 }
 
 /// Esc（ime_cancel）：放弃组合，不插入任何文本，退出拼音态。
-#[cfg(all(feature = "ime", ime_linked))]
 #[test]
 fn ime_cancel_discards_without_insert() {
     let (_d, mut app) = app_with_ime();
@@ -545,8 +534,7 @@ fn ime_cancel_discards_without_insert() {
 /// Enter：有候选上屏高亮候选并退出拼音态；无候选提交拼音原文退出。
 ///
 /// 两个用例分属独立作用域：Home 持进程级 ENV_LOCK 直至作用域结束，
-/// 同作用域内再建第二个 Home 会自死锁（首次 ime_linked 运行暴露）。
-#[cfg(all(feature = "ime", ime_linked))]
+/// 同作用域内再建第二个 Home 会自死锁（首次运行暴露）。
 #[test]
 fn ime_enter_commits_candidate_or_raw() {
     {
