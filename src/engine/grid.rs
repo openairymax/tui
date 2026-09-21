@@ -110,6 +110,84 @@ pub(crate) fn wrap(s: &str, max: usize) -> Vec<String> {
     out
 }
 
+/// 按显示宽度折行一组带样式片段：结果每段显示宽度 ≤ `max`，拼接无损。
+///
+/// markdown 的行内样式在解析期已定型为片段序列，折行不能再退化为纯字符串
+/// 处理（否则样式丢失或需二次解析）；此处按 `char_w` 逐字符切分并保留原样式，
+/// 使其与 [`wrap`] 共享同一宽度口径。
+pub(crate) fn wrap_spans(spans: &[Span<'_>], max: usize) -> Vec<Vec<Span<'static>>> {
+    if max < 2 {
+        return vec![spans
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), s.style))
+            .collect()];
+    }
+    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_w = 0usize;
+    for sp in spans {
+        let style = sp.style;
+        let mut buf = String::new();
+        for ch in sp.content.chars() {
+            let w = char_w(ch);
+            if cur_w + w > max && cur_w > 0 {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), style));
+                }
+                out.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            buf.push(ch);
+            cur_w += w;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, style));
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(Vec::new());
+    }
+    out
+}
+
+/// 按显示宽度截断一组带样式片段（超宽以省略号收尾）；结果宽度恒 ≤ `max`。
+///
+/// 省略号沿用末片段样式，保持视觉连续；`max` 为 0 时返回空（省略号亦需 1 列）。
+pub(crate) fn clip_spans(spans: &[Span<'_>], max: usize) -> Vec<Span<'static>> {
+    if max == 0 {
+        return Vec::new();
+    }
+    if line_w(spans) <= max {
+        return spans
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), s.style))
+            .collect();
+    }
+    let budget = max - 1;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut w = 0usize;
+    'outer: for sp in spans {
+        let mut buf = String::new();
+        for ch in sp.content.chars() {
+            let cw = char_w(ch);
+            if w + cw > budget {
+                break 'outer;
+            }
+            buf.push(ch);
+            w += cw;
+        }
+        if !buf.is_empty() {
+            out.push(Span::styled(buf, sp.style));
+        }
+    }
+    let tail = spans.last().map(|s| s.style).unwrap_or_default();
+    out.push(Span::styled("…", tail));
+    out
+}
+
 /// 在 `avail` 列内为各列分配内容宽度。
 ///
 /// 每列除内容外另占 `unit` 列（边框与内边距），整体再含 `fixed` 列（行首尾）。

@@ -108,6 +108,11 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             }
             return Ok(Flow::Continue);
         }
+        // Ctrl+1：内置拼音输入法 中/英 切换（决策1 定案唤起键；
+        // 落在向导分支之后，向导激活时不抢键）
+        KeyCode::Char('1') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            app.ime_toggle();
+        }
         KeyCode::Esc if app.active_panel != ActivePanel::Chat => {
             debug!("Panel: Esc → return to Chat");
             app.active_panel = ActivePanel::Chat;
@@ -157,14 +162,6 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             debug!("F8: switching to CLI (airy_cli)");
             app.switch_to_cli = true;
             return Ok(Flow::Exit);
-        }
-        // F10：内置拼音输入法 中/英 切换（词典缺失时无效果）
-        KeyCode::F(10) => {
-            app.ime_toggle();
-        }
-        // F9：IME 备键（与 C CLI tui_ime.c 对齐，F10 被终端占用时可用）
-        KeyCode::F(9) => {
-            app.ime_toggle();
         }
         KeyCode::Enter => {
             // 面板激活（Board/Events）：Enter = 查看选中条目详情
@@ -504,8 +501,8 @@ async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             app.force_hall_refresh();
             app.start_hall_watch();
         }
-        // F10：内置拼音输入法切换（busy 插入对话场景同样可用）
-        KeyCode::F(10) => {
+        // Ctrl+1：内置拼音输入法切换（busy 插入对话场景同样可用）
+        KeyCode::Char('1') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
             app.ime_toggle();
         }
         // 0.1.7：busy 期间（LLM 生成可达数十秒）允许滚动阅读旧

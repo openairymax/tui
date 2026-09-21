@@ -16,7 +16,7 @@
 
 The **Airymax TUI** (`agentrt-tui`) is a Rust-built terminal user interface that gives developers and operators a visual, interactive dashboard for the runtime — covering conversation rendering, interaction and observability, with business logic staying on the runtime side. Built with `ratatui` and `crossterm`, it offers multi-panel navigation, real-time conversation rendering, logs / memory panels, configuration and a first-run setup wizard — all from a single terminal window.
 
-Public capabilities: the conversation flow speaks the gateway's `agent.run_stream` event-frame protocol (rendering streamed tokens / tool calls / thought chains / structured errors); the first-run wizard is data-driven; theming is token-based (semantic color tokens auto-adapting to TrueColor / 256 / 16 color depths); logs / memory panels subscribe to gateway events; large conversation histories use virtual rendering; CJK input is handled by the terminal / OS input method.
+Public capabilities: the conversation flow speaks the gateway's `agent.run_stream` event-frame protocol (rendering streamed tokens / tool calls / thought chains / structured errors); the first-run wizard is data-driven; theming is token-based (semantic color tokens auto-adapting to TrueColor / 256 / 16 color depths); logs / memory panels subscribe to gateway events; large conversation histories use virtual rendering; a built-in Pinyin IME (pure Rust engine, toggled with Ctrl+1) covers environments where no OS input method is available.
 
 Like the CLI, the TUI is a first-class **runtime tenant**: it talks to the Gateway (HTTP / JSON-RPC 2.0, with execution turns over an SSE event stream) through `agentrt-rs`, the shared protocol client, so the wire contract has a single source of truth.
 
@@ -50,7 +50,7 @@ tui/
 │   ├── models_cfg.rs        # model.yaml read/write (model table + thinking system section)
 │   ├── secrets.rs           # secrets.env read/write
 │   ├── paths.rs             # Single source for AIRY_HOME path resolution
-│   ├── ime.rs               # Pinyin IME FFI (ime_linked unset: dormant / fail-closed)
+│   ├── ime.rs               # Built-in Pinyin IME (pure Rust engine, Ctrl+1)
 │   ├── app/                 # Application state domain (dispatch / poll / panels / tasks / sessions / input)
 │   ├── panels/              # Rendering panels
 │   │   ├── mod.rs           # Panel module exports

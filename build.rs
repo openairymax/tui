@@ -9,7 +9,8 @@
 // T-09 铁律（0.1.15 裁决 2026-09-10，方案 §4.7）：一切客户端功能走
 // gateway，绝对禁止 TUI 直连 daemon / 运行时库。本脚本不再定位、链接
 // 任何 agentrt C 侧静态库（memoryrovol FFI 已收回，记忆读写一律走
-// gateway mem.* RPC；内置拼音 IME 直连一并收回，输入交回终端/OS 输入法）。
+// gateway mem.* RPC；0.1.18 W8 内置拼音 IME 改为纯 Rust 引擎实现，
+// 直接读取 commons airy_ime.dat 词典格式，同样不链接任何 C 库）。
 // TUI 运行时依赖仅剩：gateway HTTP/SSE 客户端 + 终端渲染栈。
 
 use std::env;
@@ -36,10 +37,6 @@ fn assert_allowed_lib(name: &str) {
 }
 
 fn main() {
-    // ime_linked cfg 声明保留（src/ime.rs 等处以 all(feature, ime_linked)
-    // 双门控 fail-closed 休眠）；mr_linked 随 T-09 FFI 收回一并移除。
-    println!("cargo:rustc-check-cfg=cfg(ime_linked)");
-
     // 版本号 SSoT（2.6.2 Unify Design）：单一来源为 agentrt/VERSION 文件。
     // CI 布局（release 兄弟仓克隆：agent-workload/sdk/tui 与 agentrt/ 非
     // 邻接）下伞仓相对路径 ../../agentrt/VERSION 不存在，故支持

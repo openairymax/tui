@@ -141,7 +141,7 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
 
     // 5. 引导行 + 项目上下文行
     hero.push(Line::from(vec![Span::styled(
-        "输入消息开始对话 · F1 帮助 · F2 配置 · F10 输入法",
+        "输入消息开始对话 · F1 帮助 · F2 配置 · Ctrl+1 输入法",
         Style::default().fg(theme::faint()),
     )]));
     let proj_disp = grid::clip(&proj, content_max.saturating_sub(4));
