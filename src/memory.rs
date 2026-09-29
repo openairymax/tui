@@ -560,7 +560,7 @@ mod tests {
     /// reasoning 提权（+0.3），注入内容仍须纯净。
     #[test]
     fn legacy_reasoning_never_reaches_recall() {
-        let mut m = GatewayMemory::volatile();
+        let m = GatewayMemory::volatile();
         {
             let mut g = m.mirror.lock().unwrap_or_else(|e| e.into_inner());
             g.push(MemoryRecord {
