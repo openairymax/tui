@@ -3,15 +3,23 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// AirymaxRT TUI 统一设计令牌（"蓝晶深空/晨光" 2.0 主题）。
+// AirymaxRT TUI 统一设计令牌（"暖石/羊皮纸" 3.0 主题）。
 //
 // 设计语言：
-//   - 单一主色：晶蓝 RGB(56,102,250)，所有交互焦点/品牌元素统一使用；
+//   - 纸张感中性色：深色"暖石"（暖黑纸张 RGB(20,20,19)，参考 Claude
+//     #141413）与浅色"羊皮纸"（米白 RGB(250,249,245)，参考 Claude
+//     #faf9f5），告别纯黑/纯白的冷硬感；
+//   - 语义色随主题分层：品牌/语义色不再双主题共用折中值，而是深浅各
+//     自调优（同 minimax-code dark/light 双色板机制），浅色端语义色
+//     全部达到 WCAG AA 4.5:1（2.x 浅色端 accent 仅 ~1.9:1 的根因
+//     即共用折中）；
+//   - 降饱和蓝相品牌主色：primary 深色雾蓝 (118,152,208)/浅色 (74,110,178)，
+//     warning 采用 Crail 橙色相（参考 Anthropic 官方色板 #d97757 降调）；
 //   - 分层表面体系：bg → surface → surface_2 → surface_3（顶部状态条
-//     底色 bar 为品牌色深调，与内容区拉开纵深）；
+//     底色 bar 为 bg 深调，与内容区拉开纵深）；
 //   - 语义色仅用于状态（成功/警告/危险），不做装饰性堆叠；
-//   - 双主题适配：深色（默认，"蓝晶深空"）/ 浅色（"蓝晶晨光"，适配
-//     浅色终端背景），中性色随主题切换。
+//   - 双主题适配：深色（默认，"暖石"）/ 浅色（"羊皮纸"，适配浅色
+//     终端背景），中性色与语义色均随主题切换。
 //
 // 主题选择优先级（init_from_env）：
 //   1. AIRY_TUI_THEME=dark|light 显式指定；
@@ -187,135 +195,162 @@ pub fn init_from_env() {
     ThemeMode::Dark.set();
 }
 
-// ─────────────────────────── 品牌主色（双主题共用） ───────────────────────────
+// ─────────────────────── 品牌 / 语义色（随主题分层） ───────────────────────
 
-/// 品牌主色：晶蓝（Airymax 主题色，用于品牌/焦点/主操作）
+/// 品牌主色：雾蓝（深）/ 靛蓝（浅）。用于品牌/焦点/主操作。
+/// 降饱和蓝相保持 Airymax 品牌连续性，深浅各自调优至 WCAG AA。
 pub fn primary() -> Color {
-    mapped(56, 102, 250)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(118, 152, 208),
+        ThemeMode::Light => mapped(74, 110, 178),
+    }
 }
-/// 品牌辅助强调：青（用于信息高亮）
+/// 品牌辅助强调：青瓷（深）/ 深青瓷（浅）。用于信息高亮。
 pub fn accent() -> Color {
-    mapped(88, 205, 224)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(138, 190, 178),
+        ThemeMode::Light => mapped(62, 120, 108),
+    }
 }
-/// 成功 / 在线 / 用户消息
+/// 成功 / 在线 / 用户消息：橄榄绿（Crail 降饱和体系，参考 Claude Olive）
 pub fn success() -> Color {
-    mapped(80, 200, 120)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(150, 174, 108),
+        ThemeMode::Light => mapped(96, 118, 62),
+    }
 }
-/// 警告 / 等待 / 系统消息
+/// 警告 / 等待 / 系统消息：Crail 橙降调（参考 Anthropic #d97757 色相）
 pub fn warning() -> Color {
-    mapped(238, 178, 70)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(214, 138, 92),
+        ThemeMode::Light => mapped(162, 92, 44),
+    }
 }
-/// 危险 / 离线 / 错误
+/// 危险 / 离线 / 错误：陶红
 pub fn danger() -> Color {
-    mapped(236, 92, 92)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(208, 112, 100),
+        ThemeMode::Light => mapped(168, 76, 66),
+    }
 }
 /// 品红（工具 / GRAD 阶段）
 pub fn magenta() -> Color {
-    mapped(196, 124, 240)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(172, 142, 200),
+        ThemeMode::Light => mapped(118, 94, 156),
+    }
 }
 /// 工具状态行（SSE tool_call/tool_result，Claude Code 风格工具执行提示）
 pub fn tool_fg() -> Color {
-    mapped(196, 124, 240)
+    magenta()
 }
 /// 青（用户角色 [For Thee]，与 C 版 airy_cli CLR_CYAN 对齐）
 pub fn cyan() -> Color {
-    mapped(70, 190, 220)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(110, 178, 186),
+        ThemeMode::Light => mapped(52, 120, 130),
+    }
 }
-/// 彩色徽章上的文字色（始终深色，保证彩色底对比度，不随主题切换）
+/// 彩色徽章上的文字色：取主题背景色做反字，色底对比即语义色/背景对比
+/// （深色端语义色 vs 暖黑、浅色端 vs 米白，均 ≥4.5:1，机制自洽）
 pub fn on_color() -> Color {
-    mapped(15, 18, 24)
+    match ThemeMode::current() {
+        ThemeMode::Dark => mapped(20, 20, 19),
+        ThemeMode::Light => mapped(250, 249, 245),
+    }
 }
 
 // ─────────────────────────── 中性色（随主题切换） ───────────────────────────
 
-/// 终端背景（深：纯黑；浅：纯白。2.2.1.5.1 命令窗背景随主题明暗切换）
+/// 终端背景：暖黑纸张（深）/ 米白纸张（浅）。参考 Claude #141413/#faf9f5，
+/// 告别纯黑/纯白，降低视觉疲劳（2.2.1.5.1 命令窗背景随主题明暗切换）
 pub fn bg() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(0, 0, 0),
-        ThemeMode::Light => mapped(255, 255, 255),
+        ThemeMode::Dark => mapped(20, 20, 19),
+        ThemeMode::Light => mapped(250, 249, 245),
     }
 }
 
-/// 面板表面（略亮于背景；纯黑/纯白下保留一档层次）
+/// 面板表面（略提亮一档，暖灰层次）
 pub fn surface() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(13, 15, 21),
-        ThemeMode::Light => mapped(239, 242, 247),
+        ThemeMode::Dark => mapped(30, 29, 27),
+        ThemeMode::Light => mapped(243, 241, 234),
     }
 }
 
 /// 悬浮/激活表面
 pub fn surface_active() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(33, 38, 52),
-        ThemeMode::Light => mapped(224, 229, 238),
+        ThemeMode::Dark => mapped(42, 41, 38),
+        ThemeMode::Light => mapped(233, 230, 220),
     }
 }
 
 /// 常规边框
 pub fn border() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(64, 70, 88),
-        ThemeMode::Light => mapped(203, 213, 225),
+        ThemeMode::Dark => mapped(72, 70, 64),
+        ThemeMode::Light => mapped(208, 204, 192),
     }
 }
 
-/// 正文
+/// 正文：暖白（深）/ 墨黑（浅）
 pub fn text() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(226, 232, 240),
-        ThemeMode::Light => mapped(30, 41, 59),
+        ThemeMode::Dark => mapped(233, 229, 220),
+        ThemeMode::Light => mapped(38, 37, 33),
     }
 }
 
 /// 次要文字
 pub fn dim() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(128, 136, 154),
-        ThemeMode::Light => mapped(100, 116, 139),
+        ThemeMode::Dark => mapped(166, 162, 152),
+        ThemeMode::Light => mapped(110, 106, 98),
     }
 }
 
 /// 极弱文字（时间戳/装饰）
 pub fn faint() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(88, 95, 112),
-        ThemeMode::Light => mapped(156, 163, 175),
+        ThemeMode::Dark => mapped(118, 115, 106),
+        ThemeMode::Light => mapped(148, 144, 134),
     }
 }
 
-// ─────────────────────── 2.0 分层表面体系（随主题切换） ───────────────────────
+// ─────────────────────── 3.0 分层表面体系（随主题切换） ───────────────────────
 
-/// 顶部状态条底色：品牌色深调，与内容区分层（深空=深蓝黑 / 晨光=淡蓝白）。
-/// 让系统状态条成为"品牌头"，内容区 surface 承接主体，纵深清晰。
+/// 顶部状态条底色：背景深调，与内容区分层（暖石=炭黑 / 羊皮纸=亚麻白）。
+/// 让系统状态条成为"纸张书脊"，内容区 surface 承接主体，纵深清晰。
 pub fn bar() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(10, 13, 26),
-        ThemeMode::Light => mapped(236, 241, 255),
+        ThemeMode::Dark => mapped(13, 13, 12),
+        ThemeMode::Light => mapped(244, 242, 236),
     }
 }
 
 /// 次级表面（卡片/信息块，比 surface 再亮一档，用于会话 tab、chips 底）
 pub fn surface_2() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(21, 26, 38),
-        ThemeMode::Light => mapped(230, 235, 247),
+        ThemeMode::Dark => mapped(38, 37, 34),
+        ThemeMode::Light => mapped(236, 233, 224),
     }
 }
 
 /// 三级表面（最高亮层：激活胶囊、悬浮块）
 pub fn surface_3() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(31, 37, 54),
-        ThemeMode::Light => mapped(219, 226, 242),
+        ThemeMode::Dark => mapped(47, 46, 42),
+        ThemeMode::Light => mapped(228, 224, 213),
     }
 }
 
-/// 状态条分段分隔符（细竖线）：主色弱化，比 border 更贴近品牌
+/// 状态条分段分隔符（细竖线）：主色弱化蓝灰，比 border 更贴近品牌
 pub fn separator() -> Color {
     match ThemeMode::current() {
-        ThemeMode::Dark => mapped(52, 66, 110),
-        ThemeMode::Light => mapped(165, 185, 232),
+        ThemeMode::Dark => mapped(54, 66, 92),
+        ThemeMode::Light => mapped(170, 182, 208),
     }
 }
 
@@ -422,22 +457,24 @@ mod tests {
         let _g = lock_env();
         ColorDepth::set(ColorDepth::TrueColor);
         ThemeMode::set(ThemeMode::Dark);
-        assert_eq!(primary(), Color::Rgb(56, 102, 250));
-        assert_eq!(bg(), Color::Rgb(0, 0, 0));
+        assert_eq!(primary(), Color::Rgb(118, 152, 208));
+        assert_eq!(bg(), Color::Rgb(20, 20, 19));
 
         ColorDepth::set(ColorDepth::Color256);
-        // to_256(56,102,250) = 16 + 36*1 + 6*2 + 4 = 68；纯黑 = 立方起点 16
-        assert_eq!(primary(), Color::Indexed(68));
+        // to_256(118,152,208) = 16 + 36*2 + 6*2 + 4 = 104；暖黑 ≈ 立方起点 16
+        assert_eq!(primary(), Color::Indexed(104));
         assert_eq!(bg(), Color::Indexed(16));
 
         ColorDepth::set(ColorDepth::Basic);
-        // to_basic(56,102,250)：亮度 ~105，主色相蓝 → 16 色蓝
-        assert_eq!(primary(), Color::Indexed(4));
+        // to_basic(118,152,208)：亮度 ~148，主色相蓝 → 16 色亮蓝
+        assert_eq!(primary(), Color::Indexed(12));
+        // to_basic(233,229,220)：亮度 ~229 > 210 → 白
         assert_eq!(text(), Color::Indexed(15));
         ColorDepth::set(ColorDepth::TrueColor);
     }
 
-    /// W3：文本对比度 ≥ WCAG AA。正文 4.5:1，次要文字也按 AA 校验（实测均达）。
+    /// W3：文本/语义色对比度 ≥ WCAG AA 4.5:1。语义色常用于消息前缀与
+    /// 状态文本（如 "warning:"），按正文级 AA 门禁（3.0 起双端全量纳管）。
     #[test]
     fn token_text_contrast_meets_wcag_aa() {
         let _g = lock_env();
@@ -450,6 +487,13 @@ mod tests {
             ("text/surface", text(), source_rgb(surface()), 4.5),
             ("text/bar", text(), source_rgb(bar()), 4.5),
             ("dim/bg", dim(), dark_bg, 4.5),
+            ("primary/bg", primary(), dark_bg, 4.5),
+            ("accent/bg", accent(), dark_bg, 4.5),
+            ("success/bg", success(), dark_bg, 4.5),
+            ("warning/bg", warning(), dark_bg, 4.5),
+            ("danger/bg", danger(), dark_bg, 4.5),
+            ("magenta/bg", magenta(), dark_bg, 4.5),
+            ("cyan/bg", cyan(), dark_bg, 4.5),
         ];
         for (name, fg, bgc, min) in cases_dark {
             let r = wcag_contrast(source_rgb(fg), bgc);
@@ -469,6 +513,13 @@ mod tests {
             ("text/surface", text(), source_rgb(surface()), 4.5),
             ("text/bar", text(), source_rgb(bar()), 4.5),
             ("dim/bg", dim(), light_bg, 4.5),
+            ("primary/bg", primary(), light_bg, 4.5),
+            ("accent/bg", accent(), light_bg, 4.5),
+            ("success/bg", success(), light_bg, 4.5),
+            ("warning/bg", warning(), light_bg, 4.5),
+            ("danger/bg", danger(), light_bg, 4.5),
+            ("magenta/bg", magenta(), light_bg, 4.5),
+            ("cyan/bg", cyan(), light_bg, 4.5),
         ];
         for (name, fg, bgc, min) in cases_light {
             let r = wcag_contrast(source_rgb(fg), bgc);
@@ -489,13 +540,15 @@ mod tests {
         let _g = lock_env();
         ColorDepth::set(ColorDepth::TrueColor);
         ThemeMode::set(ThemeMode::Dark);
-        assert_eq!(bg(), Color::Rgb(0, 0, 0));
-        assert_eq!(text(), Color::Rgb(226, 232, 240));
+        assert_eq!(bg(), Color::Rgb(20, 20, 19));
+        assert_eq!(text(), Color::Rgb(233, 229, 220));
+        assert_eq!(primary(), Color::Rgb(118, 152, 208));
         ThemeMode::set(ThemeMode::Light);
-        assert_eq!(bg(), Color::Rgb(255, 255, 255));
-        assert_eq!(text(), Color::Rgb(30, 41, 59));
-        // 品牌色不随主题切换
-        assert_eq!(primary(), Color::Rgb(56, 102, 250));
+        assert_eq!(bg(), Color::Rgb(250, 249, 245));
+        assert_eq!(text(), Color::Rgb(38, 37, 33));
+        // 3.0：语义色随主题分层（深浅各自调优，浅色端 accent 2.x 仅
+        // ~1.9:1 的共用折中根因已移除）
+        assert_eq!(primary(), Color::Rgb(74, 110, 178));
         ThemeMode::set(ThemeMode::Dark);
     }
 }
