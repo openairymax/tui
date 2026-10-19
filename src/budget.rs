@@ -72,6 +72,8 @@ pub(crate) const MAX_PARENT_DEPTH: usize = 32;
 pub(crate) const CHILD_HISTORY_LIMIT: usize = 200;
 /// 同屏活跃 toast 上限（§6.3 #4）。
 pub(crate) const MAX_ACTIVE_TOASTS: usize = 3;
+/// toast 存活时长（ms，§6.3 #4）：到点自动消失。
+pub(crate) const TOAST_TTL_MS: u64 = 1_500;
 
 // ── 输入 / 输出 ──────────────────────────────────────────────────────────
 
@@ -136,6 +138,7 @@ const _: () = {
     assert!(MAX_PARENT_DEPTH > 0);
     assert!(CHILD_HISTORY_LIMIT > 0);
     assert!(MAX_ACTIVE_TOASTS > 0);
+    assert!(TOAST_TTL_MS > 0);
     assert!(MAX_OUTPUT_CHARACTERS > 0);
     assert!(MAX_TOOL_TEXT_BYTES > 0);
     assert!(DOUBLE_ESCAPE_WINDOW_MS > 0);

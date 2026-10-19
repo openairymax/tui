@@ -39,6 +39,7 @@ impl App {
             MessageRole::System,
             format!("模型已设置为：{}（已写回 model.yaml）", self.model),
         );
+        self.toast(format!("模型已切换：{}", self.model));
     }
 
     /// /set-key 命令：便捷写入 $AIRY_HOME/config/secrets.env 中的模型 API Key
@@ -87,6 +88,7 @@ impl App {
                         crate::secrets::mask(value)
                     ),
                 );
+                self.toast(format!("API Key 已写入：{}", key));
             }
             Err(e) => {
                 self.add_log("ERROR", format!("写入 secrets.env 失败：{}", e));

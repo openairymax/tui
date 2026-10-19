@@ -86,6 +86,7 @@ impl App {
                 "对话已清空。输入 /help 查看可用命令。".to_string(),
             );
             self.add_log("INFO", "对话已清空（/clear）".to_string());
+            self.toast("对话已清空");
             return Ok(());
         }
         if lower == "/status" {

@@ -79,6 +79,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if has_approval {
         constraints.push(Constraint::Length(2));
     }
+    // 瞬态提示（0.1.19 L7 U7，TUI 方案 §6.3 #4）：每条占一行，队列上限
+    // 三条；无提示时不占版面，输入栏位置与历史布局一致。
+    let toast_n = app.toasts().len();
+    if toast_n > 0 {
+        constraints.push(Constraint::Length(toast_n as u16));
+    }
     // IME 拼音态：输入框扩为两行（输入行 + 候选区）再叠底部细分隔线
     let ime_bar = app.ime_visible();
     constraints.push(Constraint::Length(if ime_bar { 3 } else { 2 })); // Input bar
@@ -130,8 +136,37 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_approval_banner(f, main_layout[idx], app);
         idx += 1;
     }
+    if toast_n > 0 {
+        render_toasts(f, main_layout[idx], app);
+        idx += 1;
+    }
     render_input_bar(f, main_layout[idx], app);
     render_shortcuts(f, main_layout[idx + 1], app);
+}
+
+/// 瞬态提示条（0.1.19 L7 U7，TUI 方案 §6.3 #4）：输入栏上方逐行展示，
+/// 先进先出、同屏不超过三条。文本按显示宽度裁剪，长提示不撑破版面。
+fn render_toasts(f: &mut Frame, area: Rect, app: &App) {
+    let limit = area.width.saturating_sub(4) as usize;
+    let lines: Vec<Line> = app
+        .toasts()
+        .active()
+        .map(|text| {
+            Line::from(vec![
+                Span::styled(
+                    " ✓ ",
+                    Style::default()
+                        .fg(theme::success())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(grid::clip(text, limit), Style::default().fg(theme::text())),
+            ])
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(theme::surface_2())),
+        area,
+    );
 }
 
 /// IME 候选区（输入框第二行）：`[中] 拼音` + 当前页候选。

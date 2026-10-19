@@ -341,6 +341,13 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
         let now_ms = base.elapsed().as_millis() as u64;
         let beats = sched.advance(now_ms);
 
+        // 瞬态提示到期清退（0.1.19 L7 U7，TUI 方案 §6.3 #4）：队列只按
+        // 注入时刻裁决，有提示消隐即补一帧，页面不停在过期内容上。
+        let now = Instant::now();
+        if app.toast_expire(now) {
+            sched.push(Lane::Panel);
+        }
+
         if app.mouse_capture != mouse_on {
             let res = if app.mouse_capture {
                 execute!(io::stdout(), EnableMouseCapture)
@@ -429,8 +436,12 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
         }
 
         // 事件等待：无事件时按调度器给出的最大等待挂起（空闲降频），有事件则
-        // 立即唤醒并处理。终端无"失焦"语义，故不做失焦降帧。
-        let wait = Duration::from_millis(sched.wait_ms());
+        // 立即唤醒并处理。终端无"失焦"语义，故不做失焦降帧。有瞬态提示在屏
+        // 时按最近到期时刻收窄等待，避免空闲节拍（250ms）拖长消隐延迟。
+        let mut wait = Duration::from_millis(sched.wait_ms());
+        if let Some(left) = app.toast_wait(Instant::now()) {
+            wait = wait.min(left);
+        }
         if !event::poll(wait)? {
             continue;
         }
