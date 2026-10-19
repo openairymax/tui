@@ -98,11 +98,19 @@ mod tests {
 
     #[test]
     fn ticks_stay_inside_range() {
-        for (lo, hi, n) in [(0.0, 6.0, 6), (-1.0, 1.0, 4), (-3.7, 8.2, 5), (0.0, 0.05, 4)] {
+        for (lo, hi, n) in [
+            (0.0, 6.0, 6),
+            (-1.0, 1.0, 4),
+            (-3.7, 8.2, 5),
+            (0.0, 0.05, 4),
+        ] {
             let t = ticks(lo, hi, n);
             assert!(!t.is_empty(), "量程 [{lo},{hi}] 应产出刻度");
             for v in &t {
-                assert!(*v >= lo - 1e-9 && *v <= hi + 1e-9, "刻度越界: {v} in [{lo},{hi}]");
+                assert!(
+                    *v >= lo - 1e-9 && *v <= hi + 1e-9,
+                    "刻度越界: {v} in [{lo},{hi}]"
+                );
             }
             assert!(t.len() <= n * 4);
         }

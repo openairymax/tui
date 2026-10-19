@@ -292,9 +292,7 @@ fn prepare(spec: &Spec, indent: usize, width: usize) -> Option<Chart> {
         let o = (si + 1).min(u8::MAX as usize) as u8;
         let mut prev: Option<(i64, i64)> = None;
         for (i, y) in ys.iter().enumerate() {
-            let cur = y
-                .filter(|v| v.is_finite())
-                .map(|v| (x_px(xs[i]), y_px(v)));
+            let cur = y.filter(|v| v.is_finite()).map(|v| (x_px(xs[i]), y_px(v)));
             match (prev, cur) {
                 (Some((ax, ay)), Some((bx, by))) => canvas.line(ax, ay, bx, by, o),
                 (None, Some((bx, by))) => canvas.dot(bx as usize, by as usize, o),
@@ -609,7 +607,10 @@ fn degrade(rows: &[String], indent: usize, width: usize, base: Style) -> Vec<Lin
     for line in rows {
         let pieces = grid::wrap(line, avail);
         if pieces.is_empty() {
-            out.push(Line::from(vec![Span::styled(lead.clone(), Style::default())]));
+            out.push(Line::from(vec![Span::styled(
+                lead.clone(),
+                Style::default(),
+            )]));
             continue;
         }
         for piece in pieces {
