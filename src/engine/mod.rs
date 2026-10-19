@@ -22,6 +22,7 @@
 pub(crate) mod boot;
 pub(crate) mod cache;
 pub(crate) mod compose;
+pub(crate) mod fold;
 pub(crate) mod grid;
 pub(crate) mod sched;
 pub(crate) mod view;

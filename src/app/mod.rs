@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::budget::DOUBLE_ESCAPE_WINDOW_MS;
+use crate::budget::{DOUBLE_ESCAPE_WINDOW_MS, MAX_TOOL_TEXT_BYTES};
 use crate::client::{
     GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
     RunResponse,
@@ -81,6 +81,8 @@ pub struct ChatMessage {
     pub timestamp: String,
     /// 稳定消息 id（0.1.9 W8）：虚拟滚动的行高缓存键，单调分配、永不复用
     pub id: u64,
+    /// 裁剪前原始字节数（0.1.19 §5.3 originalBytes）：未裁剪时等于 content 长度
+    pub original_bytes: usize,
 }
 
 impl ChatMessage {
@@ -602,11 +604,19 @@ impl App {
         // 时间戳：HH:MM:SS（消息气泡头部展示）
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
         self.msg_seq += 1;
+        // 单 cell 预算（0.1.19 §6.10 #6）：超 64KiB 头尾各半折叠，渲染树
+        // 不随单条内容无界增长；原始字节数照实记账（§5.3 originalBytes）。
+        let original_bytes = content.len();
+        let content = match crate::engine::fold::cap(&content, MAX_TOOL_TEXT_BYTES) {
+            Some(capped) => capped,
+            None => content,
+        };
         let msg = ChatMessage {
             role,
             content,
             timestamp,
             id: self.msg_seq,
+            original_bytes,
         };
 
         if self.messages.len() >= MAX_CHAT_MESSAGES {
