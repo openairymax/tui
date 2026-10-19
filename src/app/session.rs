@@ -127,6 +127,7 @@ impl App {
             tab.input = std::mem::take(&mut self.input);
             tab.cursor = self.cursor;
             tab.scroll_offset = self.scroll_offset;
+            tab.pastes = std::mem::take(&mut self.paste_folds);
             self.cursor = 0;
             self.scroll_offset = 0;
         }
@@ -141,6 +142,7 @@ impl App {
         self.input = tab.input.clone();
         self.cursor = tab.cursor;
         self.scroll_offset = tab.scroll_offset;
+        self.paste_folds = tab.pastes.clone();
         self.active_tab = if i == 0 { None } else { Some(i) };
     }
 
@@ -184,6 +186,7 @@ impl App {
             input: String::new(),
             cursor: 0,
             scroll_offset: 0,
+            pastes: Vec::new(),
         };
         self.session_tabs.push(tab);
         self.active_tab = Some(self.session_tabs.len() - 1);
@@ -191,6 +194,7 @@ impl App {
         self.messages.clear();
         self.input.clear();
         self.cursor = 0;
+        self.paste_folds.clear();
         self.scroll_offset = 0;
         self.streaming_text.clear();
         self.stream_reasoning.clear();

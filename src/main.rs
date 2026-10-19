@@ -428,7 +428,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
                 if app.wizard.active {
                     app.wizard.handle_paste(&text);
                 } else {
-                    app.input_insert_text(&text);
+                    app.input_paste(&text);
                 }
             }
             Event::Key(key) => {

@@ -119,6 +119,21 @@ pub struct SessionTab {
     pub input: String,
     pub cursor: usize,
     pub scroll_offset: u16,
+    /// 大粘贴折叠台账（0.1.19 L7 U3）：随输入缓冲一同存取，切 tab 不丢原文。
+    pub pastes: Vec<PasteFold>,
+}
+
+/// 大粘贴折叠（0.1.19 L7 U3，TUI 方案 §6.4 #3）。
+///
+/// 输入缓冲只保留 `slot` 占位，原文存于 `body`；提交时由
+/// [`App::take_input`] 展开。占位被用户删改时原文随之丢弃——输入框所见
+/// 即所发，不做隐式补全。
+#[derive(Debug, Clone)]
+pub struct PasteFold {
+    /// 输入框中的占位文本，形如「[已粘贴 32 KB · 900 行]」。
+    pub slot: String,
+    /// 粘贴原文（UTF-8 完整保留，不做任何切分）。
+    pub body: String,
 }
 
 /// Ctrl+C 双击退出守卫（0.1.19 L7 U2，TUI 方案 §6.6 #3）。
@@ -152,6 +167,8 @@ pub struct App {
     pub input: String,
     /// 输入光标位置（UTF-8 字节索引；←→ 移动、Backspace/Delete 删除、字符插入点）
     pub cursor: usize,
+    /// 大粘贴折叠台账（0.1.19 L7 U3）：占位 ↔ 原文，提交时展开。
+    paste_folds: Vec<PasteFold>,
     /// Currently active panel
     pub active_panel: ActivePanel,
     /// Scroll position in chat
@@ -467,6 +484,7 @@ impl App {
             messages: VecDeque::with_capacity(MAX_CHAT_MESSAGES),
             input: String::new(),
             cursor: 0,
+            paste_folds: Vec::new(),
             active_panel: ActivePanel::Chat,
             scroll_offset: 0,
             page_step: 10,
@@ -544,6 +562,7 @@ impl App {
                 input: String::new(),
                 cursor: 0,
                 scroll_offset: 0,
+                pastes: Vec::new(),
             }],
             active_tab: None,
             chain_pending: None,
