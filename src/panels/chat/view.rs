@@ -8,13 +8,24 @@
 // 每帧流程：头部全物化（恒小）→ 线性扫全部消息仅做 HashMap 查找与
 // 前缀和 → 只物化与窗口相交的消息块 → 流式尾段全物化（本身 O(1)）。
 // 行高依赖宽度与折叠态，任一变化全量失效。
+//
+// 0.1.19 U9（TUI 方案 §6.10 #2）：投影再收两道界——单轮块行数钳到
+// MAX_CELLS_PER_TURN（超出以裁剪标记收尾，Alt+O 展开取全量）；单帧物化
+// 区间由 engine::window 按「可视优先 + 60 条 / 1,000 行预算」裁定。行高
+// 记账仍按全量精确进行，总行数与滚动语义不随窗口变化。
 
 use std::collections::HashMap;
 
-use ratatui::text::Line;
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 
 use crate::app::{App, MessageRole};
+use crate::budget::MAX_CELLS_PER_TURN;
+use crate::engine::window::{self, Span as Win};
 use crate::gccp::FlowPhase;
+use crate::theme;
 
 use super::{block, flow, welcome};
 
@@ -42,6 +53,8 @@ pub struct ChatView {
     width: usize,
     expanded: bool,
     heights: HashMap<u64, (bool, u32)>,
+    /// 行高缓存是否已完整走完一帧；冷启动首帧据此启用 30 条初帧预算。
+    primed: bool,
     #[cfg(test)]
     measured: u64,
 }
@@ -95,28 +108,36 @@ impl ChatView {
             (from_top, from_top + viewport)
         };
 
-        // 只物化与窗口 [w0, w1) 相交的行块
+        // 只物化与窗口 [w0, w1) 相交的行块；窗口再经投影预算裁定
+        let win = if all {
+            Win {
+                start: 0,
+                end: offsets.len(),
+            }
+        } else {
+            let (m0, m1) = visible_msgs(&offsets, &spans, w0, w1);
+            if m0 >= m1 {
+                Win { start: 0, end: 0 }
+            } else {
+                // 冷启动且视口贴底：首帧只投影最近 30 条，第二帧补满
+                let initial = !self.primed && from_top + viewport >= total;
+                window::project(offsets.len(), m0, m1 - 1, &spans, initial)
+            }
+        };
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(w1.saturating_sub(w0));
         push_slice_window(&mut lines, &head, 0, w0, w1);
         if !welcome_seg.is_empty() {
             push_slice_window(&mut lines, &welcome_seg, head.len(), w0, w1);
         }
         let mut seg: Vec<Line<'static>> = Vec::new();
-        for idx in 0..offsets.len() {
-            let start = offsets[idx];
-            let end = start + spans[idx] as usize;
-            if end <= w0 {
-                continue;
-            }
-            if start >= w1 {
-                break;
-            }
+        for (idx, &start) in offsets.iter().enumerate().take(win.end).skip(win.start) {
             seg.clear();
             self.push_block(app, idx, width, &mut seg);
             push_slice_window(&mut lines, &seg, start, w0, w1);
         }
         push_slice_window(&mut lines, &tail, body_end, w0, w1);
 
+        self.primed = true;
         self.prune(app);
         ChatFrame {
             lines,
@@ -144,11 +165,10 @@ impl ChatView {
 
     /// 物化一次测量块高并写入缓存（与窗口物化走同一渲染路径，保证一致）。
     fn measure(&mut self, app: &App, idx: usize, width: usize, compact: bool) -> u32 {
-        let msg = &app.messages[idx];
         let mut seg: Vec<Line<'static>> = Vec::new();
-        block::render(&mut seg, msg, width, compact, self.expanded);
+        self.body(app, idx, width, compact, &mut seg);
         let h = seg.len() as u32;
-        self.heights.insert(msg.id, (compact, h));
+        self.heights.insert(app.messages[idx].id, (compact, h));
         #[cfg(test)]
         {
             self.measured += 1;
@@ -164,7 +184,33 @@ impl ChatView {
         }
         let compact =
             idx > 0 && block::is_tool(app.messages[idx - 1].role) && block::is_tool(msg.role);
-        block::render(out, msg, width, compact, self.expanded);
+        self.body(app, idx, width, compact, out);
+    }
+
+    /// 渲染单条消息块并按单轮 cell 上限钳位（展开态取全量）。
+    fn body(
+        &self,
+        app: &App,
+        idx: usize,
+        width: usize,
+        compact: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let base = out.len();
+        block::render(out, &app.messages[idx], width, compact, self.expanded);
+        if self.expanded {
+            return;
+        }
+        let len = out.len() - base;
+        if len <= MAX_CELLS_PER_TURN {
+            return;
+        }
+        let clipped = len - (MAX_CELLS_PER_TURN - 1);
+        out.truncate(base + MAX_CELLS_PER_TURN - 1);
+        out.push(Line::from(Span::styled(
+            window::clip_marker(clipped),
+            Style::default().fg(theme::faint()),
+        )));
     }
 
     /// 行数依赖宽度与折叠态：任一变化全量失效。
@@ -173,6 +219,7 @@ impl ChatView {
             self.heights.clear();
             self.width = width;
             self.expanded = expanded;
+            self.primed = false;
         }
     }
 
@@ -189,6 +236,26 @@ impl ChatView {
             None => self.heights.clear(),
         }
     }
+}
+
+/// 与行窗口 `[w0, w1)` 相交的消息下标区间 `[first, end)`；无相交时返回空区间。
+fn visible_msgs(offsets: &[usize], spans: &[u32], w0: usize, w1: usize) -> (usize, usize) {
+    let mut first = offsets.len();
+    let mut end = offsets.len();
+    for idx in 0..offsets.len() {
+        let start = offsets[idx];
+        if start >= w1 {
+            break;
+        }
+        if start + spans[idx] as usize <= w0 {
+            continue;
+        }
+        if first == offsets.len() {
+            first = idx;
+        }
+        end = idx + 1;
+    }
+    (first, end)
 }
 
 /// 截取片段 `seg`（全局起始行 = seg_start）与窗口 [w0, w1) 相交部分追加。
@@ -325,6 +392,68 @@ mod tests {
         );
         let front_id = app.messages.front().expect("front").id;
         assert!(view.heights.contains_key(&front_id), "现存消息缓存保留");
+    }
+
+    /// U9（§6.10 #2）：单轮 cell 钳位——长答复只物化 120 行、末行为裁剪
+    /// 标记；展开态（Alt+O）取全量，总行数随之增长。
+    #[test]
+    fn cell_budget_clamps_single_turn() {
+        let (mut app, _h) = make_app();
+        app.add_message(
+            MessageRole::Agent,
+            (0..500)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
+        let mut view = ChatView::new();
+        let frame = view.layout(&app, 80, 30, true);
+        let id = app.messages.back().expect("message").id;
+        let (_, h) = view.heights.get(&id).copied().expect("height cached");
+        assert_eq!(
+            h as usize,
+            crate::budget::MAX_CELLS_PER_TURN,
+            "单轮块应钳到上限"
+        );
+        let text: Vec<String> = frame.lines.iter().map(|l| l.to_string()).collect();
+        assert!(
+            text.iter().any(|l| l.contains("已裁剪")),
+            "钳位应留下裁剪标记"
+        );
+
+        app.browse_expanded = true;
+        let full = view.layout(&app, 80, 30, true);
+        let (_, h) = view.heights.get(&id).copied().expect("height cached");
+        assert!(
+            h as usize > crate::budget::MAX_CELLS_PER_TURN,
+            "展开态应取全量: {h}"
+        );
+        assert!(full.total > frame.total, "展开后总行数应增长");
+    }
+
+    /// U9（§6.10 #2）：超高视口下物化总量受投影预算约束（≤1,000 行）。
+    #[test]
+    fn projection_budget_bounds_materialization() {
+        let (mut app, _h) = make_app();
+        for i in 0..60 {
+            app.add_message(
+                MessageRole::Agent,
+                (0..100)
+                    .map(|k| format!("row {i}-{k}"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            );
+        }
+        let mut view = ChatView::new();
+        let all = view.layout(&app, 80, 4000, true);
+        assert!(all.total > 4000, "前置条件：内容应远超视口");
+        let win = view.layout(&app, 80, 4000, false);
+        assert!(
+            win.lines.len() <= crate::budget::MAX_PROJECTED_CELLS,
+            "物化行数应受 cell 界约束: {}",
+            win.lines.len()
+        );
+        assert!(win.lines.len() < all.total, "窗口应裁掉未读内容");
     }
 
     /// 窄屏空态渲染单行品牌（<44 列短路路径）。
