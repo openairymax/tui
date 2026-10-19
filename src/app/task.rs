@@ -5,8 +5,6 @@
 //
 // 对话与任务提交：输入分发、回合记录、流式与阻塞结果落盘。
 
-use crate::engine::grid;
-
 use super::context::HistoryPolicy;
 use super::*;
 
@@ -126,6 +124,16 @@ impl App {
         }
 
         // ── 运维命令（经 gateway RPC，结果异步回填对话区）──
+        if lower == "/health" {
+            // 健康面板（U12 §6.12 #3）：逐依赖端到端可达性与错误聚合
+            self.open_health();
+            return Ok(());
+        }
+        if lower == "/diag export" {
+            // 脱敏诊断快照导出（U12 §6.13 #5）
+            self.cmd_diag_export();
+            return Ok(());
+        }
         if lower == "/daemons" {
             self.cmd_daemons();
             return Ok(());
@@ -263,6 +271,9 @@ impl App {
     /// 普通对话（未连接时先检查；已连接走流式 SSE 增量渲染，Claude 风格）。
     /// 任务执行轮（flow_phase == Executing）走 agent 编排路径（非流式）。
     pub(super) fn chat_round(&mut self, input: &str) -> Result<()> {
+        // §6.12 #5：记录请求发起时刻 LLM 后端的真实可达性。落定时若请求
+        // 仍成功且后端当时不可达，说明回复经降级路径完成。
+        self.fallback = self.health.is_down("llm");
         // 构造增强 prompt：系统指令（LLM 判定任务集）+ 技能 + 记忆 + 项目上下文
         let prompt = self.build_context_prompt(input);
         // 完整对话历史（OpenAI messages 数组，末条为增强 prompt）：
@@ -338,6 +349,8 @@ impl App {
 
     /// 应用普通对话轮的 LLM 结果（按 LLM 判定的模式切换任务流）。
     pub(super) fn apply_chat_result(&mut self, input: String, res: Result<RunResponse>) {
+        // §6.12 #5：降级标记只消费一次；GCCP 早退分支也不会残留到下一轮。
+        let fallback = std::mem::take(&mut self.fallback);
         match res {
             Ok(response) => {
                 // GCCP 两段式交互第一段（P-A）：think.process 判定输入需要
@@ -448,7 +461,14 @@ impl App {
                         "（未产生回复：模型可能仅生成了思考内容，请重试）".to_string(),
                     );
                 } else {
-                    self.add_message(MessageRole::Agent, cleaned.clone());
+                    // §6.12 #5：降级路径完成的回复附角标（记忆只存正文，
+                    // 角标是瞬时呈现态，不得污染长期记忆）。
+                    let body = if fallback {
+                        format!("{}\n\n· via fallback", cleaned)
+                    } else {
+                        cleaned.clone()
+                    };
+                    self.add_message(MessageRole::Agent, body);
                     // 记忆：持久化助手响应。0.1.18 B4：思考链不再随记录落盘
                     // （长期记忆不得出现模型推理原文）；空回复不写记忆——空记录
                     // 是记忆污染源（无内容可召回，却混入 recent() 蒸馏/上下文）。
@@ -480,14 +500,9 @@ impl App {
                 }
             }
             Err(e) => {
-                self.add_log("ERROR", format!("LLM 调用失败：{}", e));
-                // 2.3.4：错误详情只进日志（F3 查看）；界面仅显示一句话摘要，
-                // 避免错误链（含 HTTP body 原文/内部路径）污染对话区。
-                let brief = e.to_string();
-                let brief = brief.lines().next().unwrap_or("请求失败");
-                // 上屏摘要按列裁决（错误原文含中文时按字符取会越过对话区右边界）
-                let brief = grid::clip(brief, 120);
-                self.add_message(MessageRole::System, format!("请求失败：{}", brief));
+                // §6.12 #4：可行动错误卡片——人话成因 + 修复命令 + 原始错误折叠，
+                // 裸错误串不再原样直达用户面。
+                self.fail_card(&e);
             }
         }
     }

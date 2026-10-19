@@ -14,6 +14,7 @@ use crate::client::{
     GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
     RunResponse,
 };
+use crate::engine::health::{Banner, ErrAgg, HealthTable, Stamp, Timeline};
 use crate::engine::leader::Leader;
 use crate::engine::sched::Lane;
 use crate::engine::toast::ToastQueue;
@@ -31,6 +32,7 @@ mod context;
 mod control;
 mod dispatch;
 mod gccp_flow;
+mod health;
 mod input;
 mod mode;
 mod panel;
@@ -40,6 +42,7 @@ mod task;
 mod text;
 
 use config::*;
+pub(crate) use health::dep_cn;
 pub use mode::{sanitize_reply, ModeMarker, StreamSanitizer};
 use text::*;
 
@@ -72,6 +75,9 @@ pub enum ActivePanel {
     /// 焦点视图（0.1.18 B11/W14）：最近一条回复的全屏只读覆盖层，
     /// 独立滚动，Esc 退出恢复原视口。
     Focus,
+    /// 健康面板（0.1.19 U12，TUI 方案 §6.12 #3）：逐依赖端到端可达性、
+    /// 最后成功时长与错误聚合，/health 打开。
+    Health,
 }
 
 /// Represents a chat message in the conversation.
@@ -223,6 +229,26 @@ pub struct App {
     /// 瞬态提示队列（0.1.19 L7 U7，TUI 方案 §6.3 #4）：同屏 ≤3 条、
     /// 1.5s 自动消失，溢出淘汰最旧。时刻由主循环注入，见 [`App::toast_expire`]。
     toasts: ToastQueue,
+    /// 依赖健康表（0.1.19 U12）：只由真实端到端探测回填，未探测的依赖
+    /// 不冒充正常也不冒充降级。
+    pub(crate) health: HealthTable,
+    /// 降级横幅状态机（§6.12 #1/#2/#6）：常显最重依赖，恢复后冷却防抖。
+    pub(crate) banner: Banner,
+    /// 错误聚合（§6.13 #2/#4）：同一错误码累计 ×N，条目有界。
+    pub(crate) err_agg: ErrAgg,
+    /// 时间线（§6.13 #1）：墙钟/单调钟配对，回拨按单调序修正。
+    pub(crate) timeline: Timeline,
+    /// 最近一次时钟注入的处理结果（诊断导出读取）。
+    pub(crate) stamp: Stamp,
+    /// 健康探测在途结果（主循环节拍触发，poll_health 消费）。
+    health_rx: Option<tokio::sync::oneshot::Receiver<Vec<health::Probe>>>,
+    /// 健康面板滚动偏移（正文首行下标，0 = 顶部）。
+    pub health_scroll: usize,
+    /// 主循环注入的单调时刻（毫秒）——应用层不自行读时钟。
+    pub clock_ms: u64,
+    /// 本轮对话发起时 LLM 后端是否不可达（§6.12 #5）：落定时据此标注
+    /// 「via fallback」。只记录请求发起时刻的真实状态，不伪造协议字段。
+    fallback: bool,
     /// 两段式 leader 前缀状态（0.1.19 L7 U8，TUI 方案 §5.4 #3 / §6.4 #7）：
     /// 前缀键按下后 500ms 未续键浮出提示，续键 `y` 复制最近代码块。
     leader: Leader,
@@ -519,6 +545,15 @@ impl App {
             session_start: Instant::now(),
             exit_guard: ExitGuard::default(),
             toasts: ToastQueue::new(),
+            health: HealthTable::new(),
+            banner: Banner::default(),
+            err_agg: ErrAgg::new(),
+            timeline: Timeline::new(),
+            stamp: Stamp::default(),
+            health_rx: None,
+            health_scroll: 0,
+            clock_ms: 0,
+            fallback: false,
             leader: Leader::new(),
             turn_started: Instant::now(),
             last_turn_elapsed: None,

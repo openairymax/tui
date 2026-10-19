@@ -162,13 +162,19 @@ impl App {
                     let mut text =
                         format!("daemon 在线状态（{} / {} 在线）", online, results.len());
                     for (ns, r) in results {
-                        let (icon, st) = if r.is_ok() {
+                        // /daemons 与 5s 保活探测同源（都是真实 RPC），结果一并
+                        // 回填健康表；只在状态迁移时记错误，避免重复刷屏。
+                        let ok = r.is_ok();
+                        let err = r.as_ref().err().map(|e| e.to_string());
+                        self.note_dep(&ns, ok, self.clock_ms, err.as_deref());
+                        let (icon, st) = if ok {
                             ("✓", "在线")
                         } else {
                             ("✗", "离线")
                         };
                         text.push_str(&format!("\n  {} {} {}", icon, st, ns));
                     }
+                    self.sync_banner(self.clock_ms);
                     self.add_message(MessageRole::System, text);
                 }
                 OpsOutcome::Call(Ok(v)) => {

@@ -51,7 +51,7 @@ const FPS_DEFAULT: u32 = 60;
 /// 帧度量日志节拍：每 N 帧一条 info 日志（按帧数而非时间，确定性）。
 const METRIC_EVERY: u64 = 512;
 /// 统一节拍表长度（须与 Beat 判别值一致，由单测守护）。
-const BEAT_N: usize = 5;
+const BEAT_N: usize = 6;
 
 const MS_PER_S: u64 = 1_000;
 const US_PER_MS: u64 = 1_000;
@@ -82,6 +82,8 @@ pub(crate) enum Beat {
     Hall,
     /// 审批轮询。
     Approvals,
+    /// 依赖健康探测（gateway 与关键 daemon 的端到端可达性）。
+    Health,
 }
 
 impl Beat {
@@ -93,6 +95,7 @@ impl Beat {
             Beat::Clock => 1_000,
             Beat::Hall => 1_000,
             Beat::Approvals => 1_500,
+            Beat::Health => 5_000,
         }
     }
 }
@@ -104,6 +107,7 @@ const BEATS: [Beat; BEAT_N] = [
     Beat::Clock,
     Beat::Hall,
     Beat::Approvals,
+    Beat::Health,
 ];
 
 /// 本轮到期节拍集合（位掩码，零分配）。

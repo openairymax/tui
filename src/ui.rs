@@ -16,8 +16,9 @@
 // └─ Shortcuts（居中）─────────────────────────────────────┘
 //  F1 帮助  F2 配置  F3 日志  F4 记忆  F5 插件  Ctrl+C 退出
 
-use crate::app::{ActivePanel, App};
+use crate::app::{dep_cn, ActivePanel, App};
 use crate::engine::grid;
+use crate::engine::health::dur_cn;
 use crate::gccp::FlowPhase;
 use crate::panels;
 use crate::theme;
@@ -72,9 +73,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // chat 空态欢迎区，避免与系统头重叠——2026-08-23 重设计）
     let mut constraints = vec![
         Constraint::Length(2), // System status bar + 主色细分隔线
-        Constraint::Min(3),    // Main content（自适应）
     ];
-    // 有未决议的工具审批时，在输入栏上方插入审批提示条（Claude Code 风格）
+    // 依赖降级横幅（0.1.19 U12，TUI 方案 §6.12 #1）：硬依赖缺位时全程常显，
+    // 附一行可复制的修复命令；恢复后由状态机撤销并进入冷却期。
+    let banner_on = app.banner.visible();
+    if banner_on {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(3)); // Main content（自适应）
+                                          // 有未决议的工具审批时，在输入栏上方插入审批提示条（Claude Code 风格）
     let has_approval = !app.approvals.is_empty();
     if has_approval {
         constraints.push(Constraint::Length(2));
@@ -100,6 +107,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .constraints(constraints)
         .split(area);
 
+    // 主内容区下标随横幅存在性移动：横幅占用第 1 行，其余布局整体下移。
+    let main_at = if banner_on { 2 } else { 1 };
     let hero_area = main_layout[0];
     let hero_split = Layout::default()
         .direction(Direction::Vertical)
@@ -115,29 +124,33 @@ pub fn render(f: &mut Frame, app: &mut App) {
             .border_style(Style::default().fg(theme::primary())),
         hero_split[1],
     );
+    if banner_on {
+        render_degraded(f, main_layout[1], app);
+    }
     // 多会话 tab 栏（Chat 面板顶部一行；仅存在多会话时渲染）
     if app.active_panel == ActivePanel::Chat && app.tab_count() > 1 {
         let tab_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(main_layout[1]);
+            .split(main_layout[main_at]);
         render_tab_bar(f, tab_layout[0], app);
         panels::chat::render(f, tab_layout[1], app);
     } else {
         match app.active_panel {
-            ActivePanel::Chat => panels::chat::render(f, main_layout[1], app),
-            ActivePanel::Focus => panels::chat::render_focus(f, main_layout[1], app),
-            ActivePanel::Help => panels::help::render(f, main_layout[1], app),
-            ActivePanel::Config => panels::config::render(f, main_layout[1], app),
-            ActivePanel::Logs => panels::logs::render(f, main_layout[1], app),
-            ActivePanel::Memory => panels::memory::render(f, main_layout[1], app),
-            ActivePanel::Plugins => panels::plugins::render(f, main_layout[1], app),
-            ActivePanel::Board => panels::board::render(f, main_layout[1], app),
-            ActivePanel::Events => panels::events::render(f, main_layout[1], app),
-            ActivePanel::Think => panels::think::render(f, main_layout[1], app),
+            ActivePanel::Chat => panels::chat::render(f, main_layout[main_at], app),
+            ActivePanel::Focus => panels::chat::render_focus(f, main_layout[main_at], app),
+            ActivePanel::Help => panels::help::render(f, main_layout[main_at], app),
+            ActivePanel::Config => panels::config::render(f, main_layout[main_at], app),
+            ActivePanel::Logs => panels::logs::render(f, main_layout[main_at], app),
+            ActivePanel::Memory => panels::memory::render(f, main_layout[main_at], app),
+            ActivePanel::Plugins => panels::plugins::render(f, main_layout[main_at], app),
+            ActivePanel::Board => panels::board::render(f, main_layout[main_at], app),
+            ActivePanel::Events => panels::events::render(f, main_layout[main_at], app),
+            ActivePanel::Think => panels::think::render(f, main_layout[main_at], app),
+            ActivePanel::Health => panels::health::render(f, main_layout[main_at], app),
         }
     }
-    let mut idx = 2;
+    let mut idx = main_at + 1;
     if has_approval {
         render_approval_banner(f, main_layout[idx], app);
         idx += 1;
@@ -152,6 +165,42 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     render_input_bar(f, main_layout[idx], app);
     render_shortcuts(f, main_layout[idx + 1], app);
+}
+
+/// 依赖降级横幅（0.1.19 U12，TUI 方案 §6.12 #1/#6）：单行常显最重依赖，
+/// 附真实存在的修复命令；恢复后由状态机撤销并进入冷却期，抖动计数进 /health。
+fn render_degraded(f: &mut Frame, area: Rect, app: &App) {
+    // 持续时长按注入的单调时刻计算：刚降级时不加噪声，超过 10s 才显示。
+    let age = app.clock_ms.saturating_sub(app.banner.since_ms());
+    let since = if age >= 10_000 {
+        format!(" · 已持续 {} ", dur_cn(age))
+    } else {
+        String::new()
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            " ▲ ",
+            Style::default()
+                .fg(theme::on_color())
+                .bg(theme::warning())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {} {} ", app.banner.text(), since),
+            Style::default()
+                .fg(theme::on_color())
+                .bg(theme::warning())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  修复：{} ", app.banner.remedy()),
+            Style::default().fg(theme::warning()),
+        ),
+    ]);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme::surface())),
+        area,
+    );
 }
 
 /// leader 提示浮层（0.1.19 L7 U8，TUI 方案 §6.4 #7）：单行说明可用续键，
@@ -471,6 +520,18 @@ fn render_hero(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
     }
+    // 依赖降级徽章（0.1.19 U12，TUI 方案 §6.12 #2）：符号 + 文字双编码，
+    // 只取最重依赖（持续不可达最长）；多依赖全量在 /health 面板。
+    if let Some(dep) = app.health.worst() {
+        spans.push(seg());
+        spans.push(Span::styled(
+            format!(" ▲ degraded: {} ", dep_cn(dep)),
+            Style::default()
+                .fg(theme::on_color())
+                .bg(theme::warning())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     // 渲染降级横幅（0.1.18 §5A.3 W10）：合成层故障（渲染回调 panic / 后端
     // 写失败）时置位。窄屏也保留——这是告警而非数据段；画面本身停在上一帧，
     // 横幅提示用户「会话仍在推进，画面正在重连」，自愈后由主循环回写消隐。
@@ -546,6 +607,7 @@ fn panel_read_hint(p: ActivePanel) -> Option<&'static str> {
         ActivePanel::Memory => Some("记忆只读 · PgUp/PgDn 翻页 · Esc 返回对话"),
         ActivePanel::Plugins => Some("插件只读 · Esc 返回对话"),
         ActivePanel::Think => Some("思考链只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
+        ActivePanel::Health => Some("健康只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
         ActivePanel::Focus => Some("焦点视图只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
         _ => None,
     }

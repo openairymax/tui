@@ -425,6 +425,8 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.think_scroll_up();
             } else if app.active_panel == ActivePanel::Focus {
                 app.focus_scroll_up();
+            } else if app.active_panel == ActivePanel::Health {
+                app.health_scroll_up();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                 app.history_prev();
             } else {
@@ -442,6 +444,8 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.think_scroll_down();
             } else if app.active_panel == ActivePanel::Focus {
                 app.focus_scroll_down();
+            } else if app.active_panel == ActivePanel::Health {
+                app.health_scroll_down();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                 app.history_next();
             } else {
@@ -459,6 +463,8 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.think_page_up();
             } else if app.active_panel == ActivePanel::Focus {
                 app.focus_page_up();
+            } else if app.active_panel == ActivePanel::Health {
+                app.health_page_up();
             } else {
                 app.scroll_page_up();
             }
@@ -474,6 +480,8 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.think_page_down();
             } else if app.active_panel == ActivePanel::Focus {
                 app.focus_page_down();
+            } else if app.active_panel == ActivePanel::Health {
+                app.health_page_down();
             } else {
                 app.scroll_page_down();
             }
@@ -581,6 +589,12 @@ async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Down if app.active_panel == ActivePanel::Focus => {
             app.focus_scroll_down();
         }
+        KeyCode::Up if app.active_panel == ActivePanel::Health => {
+            app.health_scroll_up();
+        }
+        KeyCode::Down if app.active_panel == ActivePanel::Health => {
+            app.health_scroll_down();
+        }
         KeyCode::Up => app.scroll_up(),
         KeyCode::Down => app.scroll_down(),
         KeyCode::PageUp if app.ime_visible() => {
@@ -600,6 +614,12 @@ async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         }
         KeyCode::PageDown if app.active_panel == ActivePanel::Focus => {
             app.focus_page_down();
+        }
+        KeyCode::PageUp if app.active_panel == ActivePanel::Health => {
+            app.health_page_up();
+        }
+        KeyCode::PageDown if app.active_panel == ActivePanel::Health => {
+            app.health_page_down();
         }
         KeyCode::PageUp => app.scroll_page_up(),
         KeyCode::PageDown => app.scroll_page_down(),
@@ -730,6 +750,7 @@ fn read_only_panel(p: ActivePanel) -> bool {
             | ActivePanel::Plugins
             | ActivePanel::Think
             | ActivePanel::Focus
+            | ActivePanel::Health
     )
 }
 

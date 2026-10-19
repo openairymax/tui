@@ -9,6 +9,7 @@ pub mod board;
 pub mod chat;
 pub mod config;
 pub mod events;
+pub mod health;
 pub mod help;
 pub mod logs;
 pub mod memory;
