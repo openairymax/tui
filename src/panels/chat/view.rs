@@ -11,10 +11,13 @@
 //
 // 0.1.19 U9（TUI 方案 §6.10 #2）：投影再收两道界——单轮块行数钳到
 // MAX_CELLS_PER_TURN（超出以裁剪标记收尾，Alt+O 展开取全量）；单帧物化
-// 区间由 engine::window 按「可视优先 + 60 条 / 1,000 行预算」裁定。行高
-// 记账仍按全量精确进行，总行数与滚动语义不随窗口变化。
+// 区间由 engine::window 按可视区间裁定，超出 60 条 / 1,000 行预算时裁剪。
+// 行高记账仍按全量精确进行，总行数与滚动语义不随窗口变化。
+//
+// 0.1.19 U10（§6.10 #3）：视口外旧回合只保留行高摘要，已物化的完整块
+// 最多保留 RETAINED_TURNS_LIMIT 条；上滚重新进入视口时按需重新投影。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use ratatui::{
     style::Style,
@@ -22,7 +25,7 @@ use ratatui::{
 };
 
 use crate::app::{App, MessageRole};
-use crate::budget::MAX_CELLS_PER_TURN;
+use crate::budget::{MAX_CELLS_PER_TURN, RETAINED_TURNS_LIMIT};
 use crate::engine::window::{self, Span as Win};
 use crate::gccp::FlowPhase;
 use crate::theme;
@@ -44,6 +47,13 @@ pub(crate) struct ChatFrame {
     pub(crate) from_top: usize,
 }
 
+/// 已物化回合块：`compact` 参与键，块高缓存与物化缓存同一失效口径。
+struct Cell {
+    id: u64,
+    compact: bool,
+    lines: Vec<Line<'static>>,
+}
+
 /// 对话虚拟视图：按消息稳定 id 缓存（compact, 折叠后行数）。
 ///
 /// 缓存随 App 生命周期跨帧、跨 tab 复用；消息 id 单调分配且从不复用，
@@ -53,10 +63,14 @@ pub struct ChatView {
     width: usize,
     expanded: bool,
     heights: HashMap<u64, (bool, u32)>,
+    /// 已物化旧回合（LRU 序）：视口外最多保留 RETAINED_TURNS_LIMIT 条。
+    cells: VecDeque<Cell>,
     /// 行高缓存是否已完整走完一帧；冷启动首帧据此启用 30 条初帧预算。
     primed: bool,
     #[cfg(test)]
     measured: u64,
+    #[cfg(test)]
+    rendered: u64,
 }
 
 impl ChatView {
@@ -109,20 +123,18 @@ impl ChatView {
         };
 
         // 只物化与窗口 [w0, w1) 相交的行块；窗口再经投影预算裁定
+        let (m0, m1) = visible_msgs(&offsets, &spans, w0, w1);
         let win = if all {
             Win {
                 start: 0,
                 end: offsets.len(),
             }
+        } else if m0 >= m1 {
+            Win { start: 0, end: 0 }
         } else {
-            let (m0, m1) = visible_msgs(&offsets, &spans, w0, w1);
-            if m0 >= m1 {
-                Win { start: 0, end: 0 }
-            } else {
-                // 冷启动且视口贴底：首帧只投影最近 30 条，第二帧补满
-                let initial = !self.primed && from_top + viewport >= total;
-                window::project(offsets.len(), m0, m1 - 1, &spans, initial)
-            }
+            // 冷启动且视口贴底：首帧只投影最近 30 条，第二帧补满
+            let initial = !self.primed && from_top + viewport >= total;
+            window::project(offsets.len(), m0, m1 - 1, &spans, initial)
         };
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(w1.saturating_sub(w0));
         push_slice_window(&mut lines, &head, 0, w0, w1);
@@ -132,11 +144,12 @@ impl ChatView {
         let mut seg: Vec<Line<'static>> = Vec::new();
         for (idx, &start) in offsets.iter().enumerate().take(win.end).skip(win.start) {
             seg.clear();
-            self.push_block(app, idx, width, &mut seg);
+            self.push_block(app, idx, width, &mut seg, !all);
             push_slice_window(&mut lines, &seg, start, w0, w1);
         }
         push_slice_window(&mut lines, &tail, body_end, w0, w1);
 
+        self.trim(app, m0, m1);
         self.primed = true;
         self.prune(app);
         ChatFrame {
@@ -176,15 +189,90 @@ impl ChatView {
         h
     }
 
-    /// 物化窗口相交块的行（含前置回合分隔线）。
-    fn push_block(&self, app: &App, idx: usize, width: usize, out: &mut Vec<Line<'static>>) {
+    /// 物化窗口相交块的行（含前置回合分隔线）。`cache = false` 时
+    /// 全量测试路径直接投影，不写物化缓存。
+    fn push_block(
+        &mut self,
+        app: &App,
+        idx: usize,
+        width: usize,
+        out: &mut Vec<Line<'static>>,
+        cache: bool,
+    ) {
         let msg = &app.messages[idx];
         if msg.role == MessageRole::User && idx > 0 {
             block::push_turn_separator(out, app);
         }
         let compact =
             idx > 0 && block::is_tool(app.messages[idx - 1].role) && block::is_tool(msg.role);
-        self.body(app, idx, width, compact, out);
+        if cache {
+            self.cell(app, idx, width, compact, out);
+        } else {
+            self.body(app, idx, width, compact, out);
+        }
+    }
+
+    /// 取一条已物化回合块：命中即复用（LRU 移到队尾），未命中才重新投影。
+    fn cell(
+        &mut self,
+        app: &App,
+        idx: usize,
+        width: usize,
+        compact: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let id = app.messages[idx].id;
+        let hit = self
+            .cells
+            .iter()
+            .position(|c| c.id == id && c.compact == compact);
+        if let Some(pos) = hit {
+            if let Some(cell) = self.cells.remove(pos) {
+                out.extend(cell.lines.iter().cloned());
+                self.cells.push_back(cell);
+            }
+            return;
+        }
+        let mut seg: Vec<Line<'static>> = Vec::new();
+        self.body(app, idx, width, compact, &mut seg);
+        out.extend(seg.iter().cloned());
+        self.cells.push_back(Cell {
+            id,
+            compact,
+            lines: seg,
+        });
+        #[cfg(test)]
+        {
+            self.rendered += 1;
+        }
+    }
+
+    /// 视口外旧回合降为行高摘要：完整块只保留最近 RETAINED_TURNS_LIMIT 条。
+    fn trim(&mut self, app: &App, lo: usize, hi: usize) {
+        let bounds = if lo < hi {
+            match (app.messages.get(lo), app.messages.get(hi - 1)) {
+                (Some(first), Some(last)) => (first.id, last.id),
+                _ => return,
+            }
+        } else {
+            (u64::MAX, 0)
+        };
+        let mut outside = self
+            .cells
+            .iter()
+            .filter(|c| c.id < bounds.0 || c.id > bounds.1)
+            .count();
+        while outside > RETAINED_TURNS_LIMIT {
+            let evictable = self
+                .cells
+                .front()
+                .is_some_and(|c| c.id < bounds.0 || c.id > bounds.1);
+            if !evictable {
+                break;
+            }
+            self.cells.pop_front();
+            outside -= 1;
+        }
     }
 
     /// 渲染单条消息块并按单轮 cell 上限钳位（展开态取全量）。
@@ -217,6 +305,7 @@ impl ChatView {
     fn sync(&mut self, width: usize, expanded: bool) {
         if self.width != width || self.expanded != expanded {
             self.heights.clear();
+            self.cells.clear();
             self.width = width;
             self.expanded = expanded;
             self.primed = false;
@@ -582,5 +671,45 @@ mod tests {
         app.stream_reasoning.push('中');
         let t = text(&mut view, &app);
         assert!(t.contains("已折叠 1 字"), "超一字即折叠: {t}");
+    }
+
+    /// U10（§6.10 #3）：视口外旧回合只保留行高摘要，完整块 ≤ 8；
+    /// 任意滚动位置物化缓存都有界，行高摘要覆盖全部历史。
+    #[test]
+    fn retained_cells_stay_bounded_across_scroll() {
+        let (mut app, _h) = make_app();
+        fill(&mut app, 400);
+        let mut view = ChatView::new();
+        let bound = crate::budget::MAX_PROJECTED_TURNS + RETAINED_TURNS_LIMIT;
+        for scroll in [0u16, 1, 13, 777, u16::MAX] {
+            app.scroll_offset = scroll;
+            view.layout(&app, 80, 30, false);
+            assert!(
+                view.cells.len() <= bound,
+                "物化缓存应有界(scroll={scroll}): {}",
+                view.cells.len()
+            );
+        }
+        assert_eq!(
+            view.heights.len(),
+            app.messages.len(),
+            "每条历史仅留一行摘要"
+        );
+    }
+
+    /// U10（§6.10 #3）：同视口第二帧零重投影；上滚离开缓存后按需重投影。
+    #[test]
+    fn retained_cells_reuse_on_revisit() {
+        let (mut app, _h) = make_app();
+        fill(&mut app, 120);
+        let mut view = ChatView::new();
+        view.layout(&app, 80, 30, false);
+        let first = view.rendered;
+        assert!(first > 0, "首帧应物化可见块");
+        view.layout(&app, 80, 30, false);
+        assert_eq!(view.rendered, first, "同视口第二帧零重投影");
+        app.scroll_offset = 500;
+        view.layout(&app, 80, 30, false);
+        assert!(view.rendered > first, "上滚应重新投影旧回合");
     }
 }
