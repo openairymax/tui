@@ -152,6 +152,65 @@ fn classify(name: &str, base: Style) -> Option<Style> {
     })
 }
 
+/// 解析一行围栏（CommonMark 形态）：行首最多 3 个空格，连续 ≥3 个反引号
+/// 或波浪号。返回（围栏字符、连续长度、围栏之后的剩余文本）。
+fn fence(line: &str) -> Option<(u8, usize, &str)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let ch = *rest.as_bytes().first()?;
+    if ch != b'`' && ch != b'~' {
+        return None;
+    }
+    let run = rest.bytes().take_while(|b| *b == ch).count();
+    if run < 3 {
+        return None;
+    }
+    Some((ch, run, &rest[run..]))
+}
+
+/// 提取最后一个完整围栏代码块的原文（TUI 方案 §6.3 #5：leader → y 复制）。
+///
+/// 只认完整块：未闭合的尾块不算（流式中途的半块不能被复制成残缺内容）。
+/// 返回内容保持原文换行，去掉闭合围栏前的行尾换行符；空块不参与选取。
+pub(crate) fn last_fenced(text: &str) -> Option<String> {
+    let mut open: Option<(u8, usize, usize)> = None;
+    let mut found: Option<String> = None;
+    let mut pos = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let raw = line.strip_suffix('\n').unwrap_or(line);
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        match open {
+            Some((ch, want, start)) => {
+                if let Some((c, n, tail)) = fence(raw) {
+                    if c == ch && n >= want && tail.trim().is_empty() {
+                        let body = &text[start..pos];
+                        let body = body.strip_suffix('\n').unwrap_or(body);
+                        let body = body.strip_suffix('\r').unwrap_or(body);
+                        if !body.is_empty() {
+                            found = Some(body.to_string());
+                        }
+                        open = None;
+                    }
+                }
+            }
+            None => {
+                if let Some((c, n, tail)) = fence(raw) {
+                    // 反引号围栏的信息串不得含反引号（CommonMark），波浪号不受限。
+                    if c == b'~' || !tail.contains('`') {
+                        open = Some((c, n, pos + line.len()));
+                    }
+                }
+            }
+        }
+        pos += line.len();
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +268,43 @@ mod tests {
     fn keeps_blank_lines() {
         let lines = render_code("", "a\n\nb", 0, 40, Style::default());
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn last_fenced_returns_latest_complete_block() {
+        let md = "before\n```rust\nfn a() {}\n```\nmid\n~~~py\nprint(1)\n~~~\n";
+        assert_eq!(last_fenced(md).as_deref(), Some("print(1)"));
+    }
+
+    #[test]
+    fn last_fenced_ignores_unclosed_tail() {
+        let md = "```sh\necho ok\n```\n```sh\necho half\n";
+        assert_eq!(
+            last_fenced(md).as_deref(),
+            Some("echo ok"),
+            "未闭合尾块不参与选取"
+        );
+    }
+
+    #[test]
+    fn last_fenced_accepts_indented_fence() {
+        let md = "   ```\n   x\n   ```\n";
+        assert_eq!(last_fenced(md).as_deref(), Some("   x"));
+    }
+
+    #[test]
+    fn last_fenced_requires_matching_char_and_length() {
+        let md = "````\na\n```\nb\n````\n";
+        assert_eq!(
+            last_fenced(md).as_deref(),
+            Some("a\n```\nb"),
+            "短围栏不能闭合长围栏"
+        );
+    }
+
+    #[test]
+    fn last_fenced_skips_inline_and_empty() {
+        assert_eq!(last_fenced("no code `inline` here"), None);
+        assert_eq!(last_fenced("```\n```\n"), None, "空块不参与选取");
     }
 }

@@ -14,6 +14,7 @@ use crate::client::{
     GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
     RunResponse,
 };
+use crate::engine::leader::Leader;
 use crate::engine::sched::Lane;
 use crate::engine::toast::ToastQueue;
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
@@ -222,6 +223,9 @@ pub struct App {
     /// 瞬态提示队列（0.1.19 L7 U7，TUI 方案 §6.3 #4）：同屏 ≤3 条、
     /// 1.5s 自动消失，溢出淘汰最旧。时刻由主循环注入，见 [`App::toast_expire`]。
     toasts: ToastQueue,
+    /// 两段式 leader 前缀状态（0.1.19 L7 U8，TUI 方案 §5.4 #3 / §6.4 #7）：
+    /// 前缀键按下后 500ms 未续键浮出提示，续键 `y` 复制最近代码块。
+    leader: Leader,
     /// 当前回合开始时刻（submit_input 记录，结果消费时结算）
     turn_started: Instant,
     /// 上一回合耗时（对话区回合分隔线展示：Worked for Ns）
@@ -512,6 +516,7 @@ impl App {
             session_start: Instant::now(),
             exit_guard: ExitGuard::default(),
             toasts: ToastQueue::new(),
+            leader: Leader::new(),
             turn_started: Instant::now(),
             last_turn_elapsed: None,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
@@ -671,6 +676,48 @@ impl App {
     /// 活跃提示只读视图（渲染层消费）。
     pub(crate) fn toasts(&self) -> &ToastQueue {
         &self.toasts
+    }
+
+    /// 进入 leader 待续态（TUI 方案 §5.4 #3：前缀键只登记时刻）。
+    pub(crate) fn leader_press(&mut self) {
+        self.leader.press(Instant::now());
+    }
+
+    /// 是否处于 leader 待续态。
+    pub(crate) fn leader_pending(&self) -> bool {
+        self.leader.pending()
+    }
+
+    /// 放弃 leader 序列（超时外的任意取消键）。
+    pub(crate) fn leader_cancel(&mut self) {
+        self.leader.cancel();
+    }
+
+    /// 到期浮出提示（时刻由主循环注入）；返回真表示需要补一帧。
+    pub(crate) fn leader_hint_due(&mut self, now: Instant) -> bool {
+        self.leader.hint_due(now)
+    }
+
+    /// 提示浮层当前是否可见（渲染层消费）。
+    pub(crate) fn leader_hint(&self) -> bool {
+        self.leader.hint_visible()
+    }
+
+    /// 距提示浮出还剩多久（主循环据此收窄事件等待）。
+    pub(crate) fn leader_wait(&self, now: Instant) -> Option<Duration> {
+        self.leader.wait(now)
+    }
+
+    /// 最近一个完整围栏代码块的原文（TUI 方案 §6.3 #5）。
+    ///
+    /// 逆序扫描对话消息，流式中的尾部文本作为兜底；未闭合围栏与空块不计。
+    pub(crate) fn last_code(&self) -> Option<String> {
+        for msg in self.messages.iter().rev() {
+            if let Some(code) = crate::markdown::last_fenced(&msg.content) {
+                return Some(code);
+            }
+        }
+        crate::markdown::last_fenced(&self.streaming_text)
     }
 }
 

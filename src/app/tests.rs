@@ -885,3 +885,49 @@ fn toasts_stay_bounded_and_expire() {
     assert!(app.toast_expire(deadline), "到期须报告变化以补帧");
     assert_eq!(app.toasts().len(), 0);
 }
+
+/// U8（0.1.19 L7）：leader 取最近完整围栏代码块，未闭合尾块与空块不计。
+#[test]
+fn last_code_picks_latest_complete_block() {
+    let _h = crate::test_env::Home::new("leader-code");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.add_message(
+        MessageRole::Agent,
+        "先看这段：\n```rust\nlet a = 1;\n```\n".into(),
+    );
+    assert_eq!(app.last_code().as_deref(), Some("let a = 1;"));
+    app.add_message(
+        MessageRole::Agent,
+        "```python\nprint(1)\n```\n尾块未闭合：\n```rust\nlet b = 2;\n".into(),
+    );
+    assert_eq!(
+        app.last_code().as_deref(),
+        Some("print(1)"),
+        "未闭合尾块不得遮蔽更早的完整块"
+    );
+    app.add_message(MessageRole::Agent, "```sh\necho done\n```".into());
+    assert_eq!(app.last_code().as_deref(), Some("echo done"));
+}
+
+/// U8（0.1.19 L7）：前缀键静置满 500ms 才浮出提示，取消即清空序列。
+#[test]
+fn leader_hint_waits_delay_and_cancels() {
+    let _h = crate::test_env::Home::new("leader-hint");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    let delay = Duration::from_millis(crate::budget::LEADER_HINT_DELAY_MS);
+    let t0 = std::time::Instant::now();
+    app.leader_press();
+    assert!(app.leader_pending());
+    assert!(!app.leader_hint());
+    assert!(app.leader_wait(t0).is_some(), "待续期须给出收窄等待");
+    assert!(!app.leader_hint_due(t0 + delay - Duration::from_millis(1)));
+    assert!(!app.leader_hint(), "未满 500ms 不得浮出");
+    assert!(app.leader_hint_due(t0 + delay + Duration::from_millis(50)));
+    assert!(app.leader_hint());
+    assert!(app.leader_wait(std::time::Instant::now()).is_none());
+    app.leader_cancel();
+    assert!(!app.leader_pending());
+    assert!(!app.leader_hint());
+}

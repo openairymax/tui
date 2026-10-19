@@ -21,7 +21,7 @@ use crossterm::{
 };
 use log::error;
 use std::cell::Cell;
-use std::io;
+use std::io::{self, Write};
 
 thread_local! {
     /// 渲染故障隔离窗口（§5A.3 W10）：L5 合成层在 `catch_unwind` 区间置位。
@@ -153,5 +153,146 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         self.restore();
+    }
+}
+
+/// 最小 base64 编码（RFC 4648 标准字母表，含填充）。
+///
+/// 自实现而不引入依赖：仅 OSC52 一处消费，离线构建不新增第三方包。
+fn b64(input: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = chunk.get(1).copied().map_or(0, u32::from);
+        let b2 = chunk.get(2).copied().map_or(0, u32::from);
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(char::from(T[((n >> 18) & 63) as usize]));
+        out.push(char::from(T[((n >> 12) & 63) as usize]));
+        out.push(if chunk.len() > 1 {
+            char::from(T[((n >> 6) & 63) as usize])
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            char::from(T[(n & 63) as usize])
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// OSC52 剪贴板序列；编码后超界返回 None（改走平台命令链）。
+fn osc52(text: &str) -> Option<String> {
+    let encoded = b64(text.as_bytes());
+    if encoded.len() > crate::budget::MAX_OSC52_ENCODED_LENGTH {
+        return None;
+    }
+    Some(format!("\x1b]52;c;{encoded}\x07"))
+}
+
+/// 写入终端控制序列。write/flush 任一失败即视为不可用。
+fn emit_seq(seq: &str) -> bool {
+    let mut out = io::stdout();
+    out.write_all(seq.as_bytes()).is_ok() && out.flush().is_ok()
+}
+
+/// 经平台命令写入剪贴板：逐个尝试，前一个不可用或失败才试下一个。
+fn platform_copy(text: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    const CMDS: &[(&str, &[&str])] = &[("pbcopy", &[])];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const CMDS: &[(&str, &[&str])] = &[
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+    ];
+    #[cfg(target_os = "windows")]
+    const CMDS: &[(&str, &[&str])] = &[
+        (
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "[Console]::InputEncoding=[Text.Encoding]::UTF8; $input | Set-Clipboard",
+            ],
+        ),
+        ("clip", &[]),
+    ];
+    #[cfg(not(any(unix, windows)))]
+    const CMDS: &[(&str, &[&str])] = &[];
+
+    CMDS.iter().any(|(cmd, args)| pipe_to(cmd, args, text))
+}
+
+/// 把文本经标准输入交给子命令；子命令缺失、写入失败或非零退出均返回假。
+fn pipe_to(cmd: &str, args: &[&str], text: &str) -> bool {
+    let Ok(mut child) = std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut sin| sin.write_all(text.as_bytes()).is_ok());
+    wrote && child.wait().is_ok_and(|s| s.success())
+}
+
+/// 复制文本到系统剪贴板（TUI 方案 §6.3 #3）。
+///
+/// 双通道：先发 OSC52（终端原生，跨 ssh/多路复用同样可用），编码长度受
+/// `MAX_OSC52_ENCODED_LENGTH` 约束；序列超长或写入失败时退平台命令链。
+/// 返回假表示两条通道均不可用，调用方据此给出提示而非静默。
+pub(crate) fn copy_text(text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if osc52(text).is_some_and(|seq| emit_seq(&seq)) {
+        return true;
+    }
+    platform_copy(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn b64_matches_rfc4648_vectors() {
+        let cases = [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(b64(raw.as_bytes()), want, "raw={raw:?}");
+        }
+    }
+
+    #[test]
+    fn b64_keeps_utf8_bytes() {
+        assert_eq!(b64("中".as_bytes()), "5Lit");
+    }
+
+    #[test]
+    fn osc52_enforces_encoded_budget() {
+        let max_src = crate::budget::MAX_OSC52_ENCODED_LENGTH / 4 * 3;
+        assert!(osc52(&"a".repeat(max_src)).is_some(), "界内可用");
+        assert!(osc52(&"a".repeat(max_src + 3)).is_none(), "超界改走平台链");
+    }
+
+    #[test]
+    fn empty_text_is_not_copied() {
+        assert!(!copy_text(""));
     }
 }

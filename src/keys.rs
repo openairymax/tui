@@ -29,10 +29,54 @@ pub(crate) enum Flow {
 /// 两条分支均只改应用状态——等待节拍、结果消费与插入对话推进都归主循环
 /// （0.1.18 §5A.3 W4：等待泵并入统一调度，不再有第二套节拍）。
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> Result<Flow> {
+    if !app.wizard.active {
+        if let Some(flow) = leader_key(app, key) {
+            return Ok(flow);
+        }
+    }
     if app.is_busy() {
         busy_key(app, key).await
     } else {
         idle_key(app, key).await
+    }
+}
+
+/// 两段式 leader 拦截（0.1.19 L7 U8，TUI 方案 §5.4 #3 / §6.4 #7）。
+///
+/// 前缀键登记后进入待续态：续键 `y` 复制最近完整代码块，其余键取消并吞掉，
+/// 避免误触落到普通输入面。wizard 打开时整段让行（见 `handle`）。
+fn leader_key(app: &mut App, key: KeyEvent) -> Option<Flow> {
+    let ctrl = key.modifiers.contains(event::KeyModifiers::CONTROL);
+    if app.leader_pending() {
+        app.leader_cancel();
+        // Ctrl+C 始终回到退出守卫，不被前缀序列吞掉。
+        if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')) {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('g') | KeyCode::Char('G') if ctrl => app.leader_press(),
+            KeyCode::Char('y') | KeyCode::Char('Y') if !ctrl => copy_code(app),
+            _ => {}
+        }
+        return Some(Flow::Continue);
+    }
+    if ctrl && matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G')) {
+        app.leader_press();
+        return Some(Flow::Continue);
+    }
+    None
+}
+
+/// leader 续键：把最近完整代码块送入剪贴板（OSC52 优先，平台命令兜底）。
+fn copy_code(app: &mut App) {
+    let Some(code) = app.last_code() else {
+        app.toast("没有可复制的代码块");
+        return;
+    };
+    if crate::term::copy_text(&code) {
+        app.toast("已复制代码块");
+    } else {
+        app.toast("复制失败：剪贴板不可用");
     }
 }
 

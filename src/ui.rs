@@ -85,6 +85,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if toast_n > 0 {
         constraints.push(Constraint::Length(toast_n as u16));
     }
+    // leader 提示浮层（0.1.19 L7 U8，TUI 方案 §6.4 #7）：前缀键静置 500ms
+    // 后浮出，单行、不遮挡对话。
+    let leader_hint = app.leader_hint();
+    if leader_hint {
+        constraints.push(Constraint::Length(1));
+    }
     // IME 拼音态：输入框扩为两行（输入行 + 候选区）再叠底部细分隔线
     let ime_bar = app.ime_visible();
     constraints.push(Constraint::Length(if ime_bar { 3 } else { 2 })); // Input bar
@@ -140,8 +146,25 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_toasts(f, main_layout[idx], app);
         idx += 1;
     }
+    if leader_hint {
+        render_leader_hint(f, main_layout[idx]);
+        idx += 1;
+    }
     render_input_bar(f, main_layout[idx], app);
     render_shortcuts(f, main_layout[idx + 1], app);
+}
+
+/// leader 提示浮层（0.1.19 L7 U8，TUI 方案 §6.4 #7）：单行说明可用续键，
+/// 前缀序列的取消与超时由状态机负责，此处只读展示。
+fn render_leader_hint(f: &mut Frame, area: Rect) {
+    let line = Line::from(vec![
+        Span::styled(" Ctrl+G ", Style::default().fg(theme::primary())),
+        Span::styled(
+            "前缀 · y 复制最近代码块 · Esc 取消",
+            Style::default().fg(theme::dim()),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 /// 瞬态提示条（0.1.19 L7 U7，TUI 方案 §6.3 #4）：输入栏上方逐行展示，
