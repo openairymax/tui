@@ -13,6 +13,7 @@
 use anyhow::Result;
 use crossterm::event::{self, KeyCode, KeyEvent};
 use log::{debug, info, warn};
+use std::time::Instant;
 
 use crate::app::{ActivePanel, App, MessageRole};
 use crate::gccp::TaskControl;
@@ -41,7 +42,12 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Char('c') | KeyCode::Char('C')
             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
         {
-            info!("User pressed Ctrl+C, shutting down...");
+            // 双击退出守卫（0.1.19 L7 U2）：首次误触只提示，不中断会话。
+            if !app.confirm_exit(Instant::now()) {
+                debug!("Ctrl+C armed (idle); press again to exit");
+                return Ok(Flow::Continue);
+            }
+            info!("User pressed Ctrl+C twice, shutting down...");
             app.shutdown().await?;
             return Ok(Flow::Exit);
         }
@@ -443,11 +449,16 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
 async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
     match key.code {
         // 与空闲态一致：busy（等待回复/任务执行）期间按
-        // Ctrl+C 同样退出 TUI，不再被 busy 内层循环吞键
+        // Ctrl+C 同样退出 TUI，不再被 busy 内层循环吞键；
+        // 同样受双击守卫约束（0.1.19 L7 U2）。
         KeyCode::Char('c') | KeyCode::Char('C')
             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
         {
-            info!("User pressed Ctrl+C while busy, shutting down...");
+            if !app.confirm_exit(Instant::now()) {
+                debug!("Ctrl+C armed (busy); press again to exit");
+                return Ok(Flow::Continue);
+            }
+            info!("User pressed Ctrl+C twice while busy, shutting down...");
             app.shutdown().await?;
             return Ok(Flow::Exit);
         }

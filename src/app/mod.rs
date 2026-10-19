@@ -9,6 +9,7 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::Instant;
 
+use crate::budget::DOUBLE_ESCAPE_WINDOW_MS;
 use crate::client::{
     GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
     RunResponse,
@@ -120,6 +121,27 @@ pub struct SessionTab {
     pub scroll_offset: u16,
 }
 
+/// Ctrl+C 双击退出守卫（0.1.19 L7 U2，TUI 方案 §6.6 #3）。
+///
+/// 首次触发只记时刻（由上层给出提示），`DOUBLE_ESCAPE_WINDOW_MS` 内再次
+/// 触发才确认退出；窗口外触发视为新一次误触并重新计时。空闲态与 busy
+/// 态同规——守卫只裁决"是否确认"，不感知在途请求。
+#[derive(Debug, Default)]
+pub struct ExitGuard {
+    armed_at: Option<Instant>,
+}
+
+impl ExitGuard {
+    /// 记一次退出意图；窗口内二次触发返回 true 并复位。
+    pub fn confirm(&mut self, now: Instant) -> bool {
+        let hit = self.armed_at.is_some_and(|t| {
+            now.saturating_duration_since(t).as_millis() < u128::from(DOUBLE_ESCAPE_WINDOW_MS)
+        });
+        self.armed_at = if hit { None } else { Some(now) };
+        hit
+    }
+}
+
 /// Application state.
 pub struct App {
     /// Agent file being used
@@ -175,6 +197,8 @@ pub struct App {
     pub cost: f64,
     /// Elapsed time since session start
     pub session_start: Instant,
+    /// Ctrl+C 双击退出守卫（0.1.19 L7 U2）：见 [`ExitGuard`]。
+    exit_guard: ExitGuard,
     /// 当前回合开始时刻（submit_input 记录，结果消费时结算）
     turn_started: Instant,
     /// 上一回合耗时（对话区回合分隔线展示：Worked for Ns）
@@ -460,6 +484,7 @@ impl App {
             tokens: 0,
             cost: 0.0,
             session_start: Instant::now(),
+            exit_guard: ExitGuard::default(),
             turn_started: Instant::now(),
             last_turn_elapsed: None,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
