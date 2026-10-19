@@ -21,7 +21,14 @@ use crossterm::{
 };
 use log::error;
 use std::cell::Cell;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use super::probe::{self, Caps, Src};
+use crate::budget::CAP_PROBE_TIMEOUT_MS;
 
 thread_local! {
     /// 渲染故障隔离窗口（§5A.3 W10）：L5 合成层在 `catch_unwind` 区间置位。
@@ -242,6 +249,156 @@ fn pipe_to(cmd: &str, args: &[&str], text: &str) -> bool {
         .take()
         .is_some_and(|mut sin| sin.write_all(text.as_bytes()).is_ok());
     wrote && child.wait().is_ok_and(|s| s.success())
+}
+
+/// 终端能力探测句柄（§5.5 #1）：首帧并发、晚到热修正。
+///
+/// 线程在 crossterm 接手 stdin 之前独占读取最多 `CAP_PROBE_TIMEOUT_MS`；
+/// `collect` 必然 stop + join 后才返回，保证主循环进入事件轮询时不存在
+/// 第二个读者（stdin 竞态会导致按键被探测线程吞掉）。OSC11 应答先到即
+/// 提前结束（分级：OSC11 > DEC2031），否则等满窗口收集 DEC2031。
+pub(crate) struct Probe {
+    rx: mpsc::Receiver<Caps>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    deadline: Instant,
+}
+
+impl Probe {
+    /// 显式主题或非 TTY 时不起探测：前者结论不会被采用，后者读不到应答。
+    pub(crate) fn spawn() -> Option<Self> {
+        if explicit_theme() || !io::stdin().is_terminal() {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("caps-probe".into())
+            .spawn(move || probe_loop(&flag, &tx))
+            .ok()?;
+        Some(Self {
+            rx,
+            stop,
+            handle: Some(handle),
+            deadline: Instant::now() + Duration::from_millis(CAP_PROBE_TIMEOUT_MS),
+        })
+    }
+
+    /// 等待探测结论并回收线程；窗口内无应答时返回空结论。
+    pub(crate) fn collect(&mut self) -> Caps {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        let caps = self.rx.recv_timeout(left).unwrap_or_default();
+        self.shutdown();
+        caps
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// 显式主题（AIRY_TUI_THEME）优先于一切探测结论。
+fn explicit_theme() -> bool {
+    std::env::var("AIRY_TUI_THEME")
+        .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "light" | "dark"))
+}
+
+/// 探测线程主体：先发 OSC11 与 DEC2031 查询，再按短片轮询原始输入。
+fn probe_loop(stop: &AtomicBool, tx: &mpsc::Sender<Caps>) {
+    if !emit_seq("\x1b]11;?\x1b\\\x1b[?996n") {
+        let _ = tx.send(Caps::default());
+        return;
+    }
+    let end = Instant::now() + Duration::from_millis(CAP_PROBE_TIMEOUT_MS);
+    let mut buf = Vec::with_capacity(256);
+    while Instant::now() < end && !stop.load(Ordering::Relaxed) {
+        if !read_some(&mut buf) {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        if buf.len() > 1024 {
+            buf.drain(..512);
+        }
+        let caps = probe::caps(&buf);
+        if matches!(caps.scheme, Some((_, Src::Osc11))) {
+            let _ = tx.send(caps);
+            return;
+        }
+    }
+    let _ = tx.send(probe::caps(&buf));
+}
+
+/// 非阻塞读取 stdin 原始字节；无数据返回假（unix: poll + read）。
+#[cfg(unix)]
+fn read_some(buf: &mut Vec<u8>) -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let mut pfd = libc::pollfd {
+        fd: io::stdin().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: pfd 为单个有效 pollfd，nfds=1，超时 10ms 内不写越界。
+    if unsafe { libc::poll(&mut pfd, 1, 10) } <= 0 {
+        return false;
+    }
+    let mut chunk = [0u8; 256];
+    // SAFETY: chunk 为 256 字节可写缓冲，fd 来自标准输入且长度如实传入。
+    let n = unsafe { libc::read(pfd.fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+    if n <= 0 {
+        return false;
+    }
+    buf.extend_from_slice(&chunk[..n as usize]);
+    true
+}
+
+/// 非阻塞读取控制台宽字符；无数据返回假（windows）。
+#[cfg(windows)]
+fn read_some(buf: &mut Vec<u8>) -> bool {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Console::{GetStdHandle, ReadConsoleW, STD_INPUT_HANDLE};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    // SAFETY: 句柄来自 GetStdHandle；缓冲区为本栈上 128 个 u16，
+    // 读入长度由 n 回写且不以 n 以外内容构造字符串。
+    unsafe {
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        if handle.is_null() || WaitForSingleObject(handle, 10) != WAIT_OBJECT_0 {
+            return false;
+        }
+        let mut wide = [0u16; 128];
+        let mut n = 0u32;
+        if ReadConsoleW(
+            handle,
+            wide.as_mut_ptr().cast(),
+            wide.len() as u32,
+            &mut n,
+            std::ptr::null(),
+        ) == 0
+        {
+            return false;
+        }
+        let text: String = char::decode_utf16(wide[..n as usize].iter().copied())
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        buf.extend_from_slice(text.as_bytes());
+    }
+    true
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_some(_buf: &mut Vec<u8>) -> bool {
+    false
 }
 
 /// 复制文本到系统剪贴板（TUI 方案 §6.3 #3）。

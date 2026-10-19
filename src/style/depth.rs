@@ -47,17 +47,29 @@ impl ColorDepth {
 }
 
 /// 探测终端色深：COLORTERM=truecolor/24bit/direct → truecolor；
-/// TERM 含 direct/truecolor → truecolor；TERM 含 256color → 256；
-/// 否则 16 色。
+/// TERM 含 direct/truecolor → truecolor；含 256color → 256；TERM=dumb 或
+/// 无任何信号 → 16 色。
 pub(super) fn detect_depth() -> ColorDepth {
-    if let Ok(ct) = std::env::var("COLORTERM") {
+    decide(
+        std::env::var("COLORTERM").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+    )
+}
+
+/// 色深决策链（§5.5 #2）的纯函数形态：环境取值的语义裁决只在此实现，
+/// 单测直接注入取值，不再改写进程环境。
+fn decide(colorterm: Option<&str>, term: Option<&str>) -> ColorDepth {
+    if let Some(ct) = colorterm {
         let ct = ct.to_ascii_lowercase();
         if ct == "truecolor" || ct == "24bit" || ct.contains("direct") {
             return ColorDepth::TrueColor;
         }
     }
-    if let Ok(term) = std::env::var("TERM") {
+    if let Some(term) = term {
         let t = term.to_ascii_lowercase();
+        if t == "dumb" {
+            return ColorDepth::Basic;
+        }
         if t.contains("truecolor") || t.contains("direct") {
             return ColorDepth::TrueColor;
         }
@@ -76,31 +88,70 @@ fn to_256(r: u8, g: u8, b: u8) -> u8 {
     (16 + 36 * r + 6 * g + b) as u8
 }
 
-/// Rgb → ANSI 16 色（亮度加权 + 主色调，保持语义色）
-/// 注意：亮度加权和 255*587 超过 u16 上限（149685 > 65535），必须用 u32
-/// 累加，否则 debug 构建溢出 panic、release 构建静默回绕得错色（W3 测试捕获）。
+/// Rgb → ANSI 16 色反查（§5.5 #3、§6.8 #6）。
+///
+/// 以 HSL 语义做最近色裁决，而非对 xterm 色板做 RGB 距离最近邻：设计令牌
+/// 是低饱和暖色系，距离最近邻会把品牌蓝映射到灰档、把 warning/danger 压成
+/// 同一档橙。规则：色度（chroma/max）低于 0.15 视为中性色走灰阶 ramp，
+/// 否则按色相扇区取基色、按明度决定是否加亮档。
 fn to_basic(r: u8, g: u8, b: u8) -> u8 {
-    let lum = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
-    if lum > 210 {
-        15 // 白
-    } else if lum < 40 {
-        0 // 黑
-    } else if r >= g && r >= b {
-        if lum > 128 {
-            9
-        } else {
-            1
-        } // 红
-    } else if g >= r && g >= b {
-        if lum > 128 {
-            10
-        } else {
-            2
-        } // 绿
-    } else if lum > 128 {
-        12 // 蓝
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let luma = (u32::from(max) + u32::from(min)) as f32 / 510.0;
+    let chroma = if max == 0 {
+        0.0
     } else {
-        4
+        f32::from(max - min) / f32::from(max)
+    };
+    if chroma < 0.15 {
+        return match luma {
+            l if l < 0.25 => 0,
+            l if l < 0.60 => 8,
+            l if l < 0.875 => 7,
+            _ => 15,
+        };
+    }
+    let hue = hue(r, g, b);
+    let base = if !(15.0..345.0).contains(&hue) {
+        1 // 红（danger 6.7°）
+    } else if hue < 75.0 {
+        3 // 黄/橙（warning 22.6°）
+    } else if hue < 165.0 {
+        2 // 绿（success 81.8°）
+    } else if hue < 195.0 {
+        6 // 青（cyan 186.3°）
+    } else if hue < 255.0 {
+        4 // 蓝（primary 217.3°）
+    } else {
+        5 // 品红（magenta 271.0°）
+    };
+    if luma >= 0.5 {
+        base + 8
+    } else {
+        base
+    }
+}
+
+/// 标准 HSL 色相角（0..360）。
+fn hue(r: u8, g: u8, b: u8) -> f32 {
+    let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
+    let max = r.max(g).max(b);
+    let d = max - r.min(g).min(b);
+    if d == 0.0 {
+        return 0.0;
+    }
+    let h = if max == r {
+        ((g - b) / d) % 6.0
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    let h = h * 60.0;
+    if h < 0.0 {
+        h + 360.0
+    } else {
+        h
     }
 }
 
@@ -116,52 +167,51 @@ pub(super) fn mapped(r: u8, g: u8, b: u8) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_env::lock_env;
 
-    fn restore(ct: Option<String>, term: Option<String>) {
-        match ct {
-            Some(v) => std::env::set_var("COLORTERM", v),
-            None => std::env::remove_var("COLORTERM"),
-        }
-        match term {
-            Some(v) => std::env::set_var("TERM", v),
-            None => std::env::remove_var("TERM"),
-        }
+    #[test]
+    fn colorterm_truecolor_wins() {
+        assert_eq!(decide(Some("truecolor"), None), ColorDepth::TrueColor);
+        assert_eq!(decide(Some("24bit"), None), ColorDepth::TrueColor);
+        assert_eq!(
+            decide(Some("truecolor"), Some("xterm-256color")),
+            ColorDepth::TrueColor
+        );
     }
 
     #[test]
-    fn detect_truecolor_from_colorterm() {
-        let _g = lock_env();
-        let (ct, term) = (std::env::var("COLORTERM").ok(), std::env::var("TERM").ok());
-        std::env::set_var("COLORTERM", "truecolor");
-        std::env::remove_var("TERM");
-        assert_eq!(detect_depth(), ColorDepth::TrueColor);
-        std::env::set_var("COLORTERM", "24bit");
-        assert_eq!(detect_depth(), ColorDepth::TrueColor);
-        restore(ct, term);
+    fn term_256color_chain() {
+        assert_eq!(decide(None, Some("xterm-256color")), ColorDepth::Color256);
+        assert_eq!(decide(None, Some("screen-256color")), ColorDepth::Color256);
     }
 
     #[test]
-    fn detect_256_from_term() {
-        let _g = lock_env();
-        let (ct, term) = (std::env::var("COLORTERM").ok(), std::env::var("TERM").ok());
-        std::env::remove_var("COLORTERM");
-        std::env::set_var("TERM", "xterm-256color");
-        assert_eq!(detect_depth(), ColorDepth::Color256);
-        std::env::set_var("TERM", "screen-256color");
-        assert_eq!(detect_depth(), ColorDepth::Color256);
-        restore(ct, term);
+    fn dumb_and_silent_fall_back_to_basic() {
+        assert_eq!(decide(None, Some("dumb")), ColorDepth::Basic);
+        assert_eq!(decide(None, Some("xterm")), ColorDepth::Basic);
+        assert_eq!(decide(None, None), ColorDepth::Basic);
+    }
+
+    /// §5.5 #3：16 色反查须保住语义区分（danger≠warning、primary 蓝、
+    /// 中性灰阶不染色）。
+    #[test]
+    fn ansi16_reverse_map_keeps_semantics() {
+        assert_eq!(to_basic(118, 152, 208), 12); // primary dark
+        assert_eq!(to_basic(233, 229, 220), 15); // text dark
+        assert_eq!(to_basic(20, 20, 19), 0); // bg dark
+        assert_eq!(to_basic(208, 112, 100), 9); // danger dark
+        assert_eq!(to_basic(214, 138, 92), 11); // warning dark
+        assert_eq!(to_basic(150, 174, 108), 10); // success dark
+        assert_eq!(to_basic(110, 178, 186), 14); // cyan dark
+        assert_eq!(to_basic(172, 142, 200), 13); // magenta dark
+        assert_eq!(to_basic(74, 110, 178), 4); // primary light
+        assert_eq!(to_basic(250, 249, 245), 15); // bg light
     }
 
     #[test]
-    fn detect_fallback_to_basic() {
-        let _g = lock_env();
-        let (ct, term) = (std::env::var("COLORTERM").ok(), std::env::var("TERM").ok());
-        std::env::remove_var("COLORTERM");
-        std::env::set_var("TERM", "xterm");
-        assert_eq!(detect_depth(), ColorDepth::Basic);
-        std::env::remove_var("TERM");
-        assert_eq!(detect_depth(), ColorDepth::Basic);
-        restore(ct, term);
+    fn ansi16_gray_ramp() {
+        assert_eq!(to_basic(0, 0, 0), 0);
+        assert_eq!(to_basic(72, 70, 64), 8); // border dark
+        assert_eq!(to_basic(166, 162, 152), 7); // dim dark
+        assert_eq!(to_basic(255, 255, 255), 15);
     }
 }

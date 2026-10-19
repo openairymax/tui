@@ -21,10 +21,11 @@
 //   - 双主题适配：深色（默认，"暖石"）/ 浅色（"羊皮纸"，适配浅色
 //     终端背景），中性色与语义色均随主题切换。
 //
-// 主题选择优先级（init_from_env）：
+// 主题选择优先级：
 //   1. AIRY_TUI_THEME=dark|light 显式指定；
-//   2. COLORFGBG 环境变量（终端导出的前景/背景色，bg>6 视为浅色背景）；
-//   3. 默认深色。
+//   2. OSC11（背景 RGB）/ DEC2031（明暗偏好）探测结论，首帧后晚到热修正；
+//   3. COLORFGBG 环境变量（终端导出的前景/背景色，bg>6 视为浅色背景）；
+//   4. 默认深色。
 
 use ratatui::style::Color;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -70,20 +71,10 @@ pub fn init_from_env() {
     ColorDepth::set(detect_depth());
     log::info!("theme: color depth = {:?}", ColorDepth::current());
     // 1. 显式指定
-    if let Ok(v) = std::env::var("AIRY_TUI_THEME") {
-        match v.to_ascii_lowercase().as_str() {
-            "light" => {
-                log::info!("theme: explicit light (AIRY_TUI_THEME)");
-                ThemeMode::Light.set();
-                return;
-            }
-            "dark" => {
-                log::info!("theme: explicit dark (AIRY_TUI_THEME)");
-                ThemeMode::Dark.set();
-                return;
-            }
-            _ => {}
-        }
+    if let Some(mode) = explicit() {
+        log::info!("theme: explicit {mode:?} (AIRY_TUI_THEME)");
+        mode.set();
+        return;
     }
     // 2. COLORFGBG 启发式（"fg;bg"，bg>6 为亮色 → 浅色背景）
     if let Ok(v) = std::env::var("COLORFGBG") {
@@ -99,6 +90,39 @@ pub fn init_from_env() {
         }
     }
     ThemeMode::Dark.set();
+}
+
+/// 显式主题（唯一裁决点，探测结果不得覆盖）。
+fn explicit() -> Option<ThemeMode> {
+    match std::env::var("AIRY_TUI_THEME")
+        .ok()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "light" => Some(ThemeMode::Light),
+        "dark" => Some(ThemeMode::Dark),
+        _ => None,
+    }
+}
+
+/// 探测结论热修正主题（§5.5 #1、§6.8 #3）：首帧后才拿到应答，
+/// 与启动期 COLORFGBG 推断相比更权威。返回是否发生变更，
+/// 调用方据此补一帧（不重建终端，不打断输入）。
+pub(crate) fn apply_scheme(light: bool) -> bool {
+    if explicit().is_some() {
+        return false;
+    }
+    let want = if light {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    };
+    if want == ThemeMode::current() {
+        return false;
+    }
+    want.set();
+    log::info!("theme: probe switched to {want:?}");
+    true
 }
 
 // ─────────────────────── 品牌 / 语义色（随主题分层） ───────────────────────

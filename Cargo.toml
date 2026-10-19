@@ -83,6 +83,20 @@ unicodeit = "0.2"
 # theme::* 设计令牌统一裁决，随深浅主题与色深切换，无硬编码调色板。
 syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy", "default-syntaxes"] }
 
+# 终端能力探测（0.1.19 §5.5 #1）：探测线程需在 crossterm 接手 stdin 前
+# 以短超时轮询原始字节。unix 用 poll/read，windows 用 WaitForSingleObject +
+# ReadConsoleW（控制台输入句柄不能走 ReadFile——返回的是 INPUT_RECORD）。
+# 两者均已在 Cargo.lock 中（libc / windows-sys），不新增传递依赖。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # 单测临时目录（项目上下文/配置持久化等）
 tempfile = "3"

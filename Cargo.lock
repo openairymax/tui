@@ -37,6 +37,7 @@ dependencies = [
  "crossterm",
  "env_logger",
  "futures",
+ "libc",
  "log",
  "pulldown-cmark",
  "ratatui",
@@ -51,6 +52,7 @@ dependencies = [
  "tokio-stream",
  "unicode-width",
  "unicodeit",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

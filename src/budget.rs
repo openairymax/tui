@@ -39,6 +39,8 @@ pub(crate) const THINKING_PREVIEW_MAX_CHARS: usize = 2_000;
 pub(crate) const FIRST_FRAME_BUDGET_MS: u64 = 100;
 /// leader 键提示浮层延迟（ms，§6.4 #7）。
 pub(crate) const LEADER_HINT_DELAY_MS: u64 = 500;
+/// 终端能力探测窗口（ms，§5.5 #1）：OSC11/DEC2031 应答等待上限，与首帧并发。
+pub(crate) const CAP_PROBE_TIMEOUT_MS: u64 = 250;
 
 // ── 外壳行高（TUI 方案 §4.2 布局计划）────────────────────────────────────
 
@@ -149,6 +151,7 @@ const _: () = {
     assert!(THINKING_PREVIEW_MAX_CHARS > 0);
     assert!(FIRST_FRAME_BUDGET_MS > 0);
     assert!(LEADER_HINT_DELAY_MS > 0);
+    assert!(CAP_PROBE_TIMEOUT_MS > 0 && CAP_PROBE_TIMEOUT_MS <= IDLE_WAIT_MS);
     assert!(MAX_INITIAL_TURNS > 0);
     assert!(MAX_CELLS_PER_TURN > 0);
     assert!(MAX_PROJECTED_TURNS > 0);
