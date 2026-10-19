@@ -11,8 +11,9 @@
 //   - MAX_PROJECTED_TURNS：单帧物化消息条数上限 60；
 //   - MAX_PROJECTED_CELLS：单帧物化行数上限 1,000。
 //
-// 可视区间 [first, last] 永远优先保留；预算有余先向更早的消息扩张（补阅读
-// 方向的上文），再向更新的消息扩张。超界时按阅读顺序先裁头部、再裁尾部。
+// 可视区间 [first, last] 即投影区间（§6.10 #2「只投影可视窗口内 cell」）；
+// 三常量只在可视区间自身超界时钳位，超界按阅读顺序先裁头部、再裁尾部。
+// 视口外历史仅保留行高摘要，上滚时重新进入可视区间再投影。
 // 行高记账仍按全量精确进行（缓存命中 O(1)），窗口只约束 cell 物化——总行数
 // 与滚动位置不受窗口影响。
 //
@@ -43,7 +44,8 @@ impl Span {
 
 /// 计算本帧投影窗口。`heights` 为每条消息块行数（含回合分隔线）。
 ///
-/// `initial` 只在行高缓存冷启动且视口贴底时为真；此时窗口起点抬到最近
+/// 正常情况下窗口与可视区间一致；只有可视区间自身超过回合/行数预算时才
+/// 裁剪。`initial` 只在行高缓存冷启动且视口贴底时为真；此时窗口起点抬到最近
 /// `MAX_INITIAL_TURNS` 条，但不越过可视首条——视口本身就已覆盖更多消息时
 /// 以可视区间为准，避免首帧缺行、次帧跳变。
 pub(crate) fn project(
@@ -83,27 +85,6 @@ pub(crate) fn project(
         cells -= heights[end] as usize;
         rounds -= 1;
     }
-
-    if initial {
-        return Span::of(start, end);
-    }
-
-    while start > 0 && end - start < MAX_PROJECTED_TURNS {
-        let h = heights[start - 1] as usize;
-        if cells + h > MAX_PROJECTED_CELLS {
-            break;
-        }
-        start -= 1;
-        cells += h;
-    }
-    while end < total && end - start < MAX_PROJECTED_TURNS {
-        let h = heights[end] as usize;
-        if cells + h > MAX_PROJECTED_CELLS {
-            break;
-        }
-        end += 1;
-        cells += h;
-    }
     Span::of(start, end)
 }
 
@@ -126,17 +107,13 @@ mod tests {
         );
     }
 
-    /// 可视区间永远在窗口内，且预算内向前补上下文。
+    /// 可视区间永远原样投影，不向视口外扩张。
     #[test]
     fn visible_range_is_always_kept() {
         let heights = vec![1u32; 200];
         let span = project(200, 100, 110, &heights, false);
-        assert!(
-            span.start <= 100 && span.end >= 111,
-            "可视区间被裁: {span:?}"
-        );
+        assert_eq!(span, Span::of(100, 111), "只投影可视窗口");
         assert!(span.len() <= MAX_PROJECTED_TURNS);
-        assert_eq!(span.end, 111, "不向未读方向扩张");
     }
 
     /// 冷启动贴底：只投影最近 30 条（起点抬到 total - 30）。
@@ -159,20 +136,20 @@ mod tests {
         assert_eq!(span, Span::of(10, 13));
     }
 
-    /// 回合数上限：可视 11 条时向前补到 60 条即停。
+    /// 回合数上限：可视 61 条时裁到 60 条。
     #[test]
     fn turn_budget_caps_projection() {
         let heights = vec![1u32; 200];
-        let span = project(200, 100, 110, &heights, false);
-        assert_eq!(span, Span::of(111 - MAX_PROJECTED_TURNS, 111));
+        let span = project(200, 100, 160, &heights, false);
+        assert_eq!(span, Span::of(100, 100 + MAX_PROJECTED_TURNS));
     }
 
-    /// cell 上限：每条 100 行时最多投影 10 条。
+    /// cell 上限：可视 40 条、每条 100 行时最多投影 10 条。
     #[test]
     fn cell_budget_caps_projection() {
         let heights = vec![100u32; 100];
-        let span = project(100, 50, 51, &heights, false);
-        assert_eq!(span, Span::of(42, 52));
+        let span = project(100, 50, 89, &heights, false);
+        assert_eq!(span, Span::of(50, 60));
         assert_eq!(span.len() * 100, MAX_PROJECTED_CELLS);
     }
 
