@@ -5,6 +5,9 @@
 //
 // 异步轮询：chain / ops / hall / pending / approvals 的状态推进与结果落地。
 
+use std::collections::VecDeque;
+
+use crate::budget::MAX_DEDUPE_KEYS;
 use crate::engine::grid;
 
 use super::*;
@@ -13,15 +16,53 @@ use super::*;
 /// 保留最新 N 条（渲染 take 256，缓存留余量防抖动）。
 const HALL_EVENTS_MAX: usize = 1024;
 
+/// 去重键：file_id 非空时以其为键；无 file_id 的合成事件沿用既有行为
+/// （不去重），避免用可能跨进程重启复位的 seq 作键造成误抑制。
+fn event_key(e: &HallEvent) -> Option<&str> {
+    (!e.file_id.is_empty()).then_some(e.file_id.as_str())
+}
+
 /// 合并本地事件与拉取/推送事件（M5 W4）。
 ///
 /// hall_events 保持升序（渲染层 rev 展示最新在前）；合并按 (ts_utc, seq)
 /// 稳定全局序（跨进程 gseq 会重启，不能作排序键），以 file_id 去重
 /// （事件文件 id 全局唯一）。SSE 增量与 RPC 全量两路数据在 gateway 侧
 /// 同为扁平事件形态（SSoT），此处即可用同一合并逻辑收敛。
-fn merge_hall_events(local: &mut Vec<HallEvent>, incoming: Vec<HallEvent>) {
-    if !incoming.is_empty() {
-        local.extend(incoming);
+///
+/// `seen` 是跨轮次的有界去重键 LRU（§6.10 #5）：本地窗口只保留最新
+/// HALL_EVENTS_MAX 条，窗口外的旧事件若被 RPC 全量重放，仅靠窗口内去重
+/// 会重新入列并挤掉新事件；键 LRU 把重放挡在合并之前。容量
+/// MAX_DEDUPE_KEYS，长会话不随事件总量爬坡。
+fn merge_hall_events(
+    local: &mut Vec<HallEvent>,
+    incoming: Vec<HallEvent>,
+    seen: &mut VecDeque<String>,
+) {
+    let mut fresh: Vec<HallEvent> = Vec::with_capacity(incoming.len());
+    for ev in incoming {
+        let dup = match event_key(&ev) {
+            Some(k) => {
+                seen.iter().any(|s| s.as_str() == k)
+                    || fresh.iter().any(|f| f.file_id.as_str() == k)
+            }
+            None => false,
+        };
+        if !dup {
+            fresh.push(ev);
+        }
+    }
+    if !fresh.is_empty() {
+        // 先排序再记键：LRU 按时间序淘汰，留下的是最新 256 个键
+        fresh.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| a.seq.cmp(&b.seq)));
+        for ev in &fresh {
+            if let Some(key) = event_key(ev) {
+                seen.push_back(key.to_string());
+            }
+        }
+        while seen.len() > MAX_DEDUPE_KEYS {
+            seen.pop_front();
+        }
+        local.extend(fresh);
         local.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| a.seq.cmp(&b.seq)));
         local.dedup_by(|a, b| !a.file_id.is_empty() && a.file_id == b.file_id);
     }
@@ -190,7 +231,7 @@ impl App {
                 if !incoming.is_empty() {
                     self.mark_landed(Lane::Panel);
                 }
-                merge_hall_events(&mut self.hall_events, incoming);
+                merge_hall_events(&mut self.hall_events, incoming, &mut self.hall_seen);
             }
         }
         // 消费在途结果（pull 结果与本地合并去重，避免覆盖 SSE 增量）
@@ -213,7 +254,7 @@ impl App {
                         if !evts.is_empty() {
                             self.mark_landed(Lane::Panel);
                         }
-                        merge_hall_events(&mut self.hall_events, evts);
+                        merge_hall_events(&mut self.hall_events, evts, &mut self.hall_seen);
                         self.clear_hall_error("hall.stream");
                     }
                     Err(e) => {
@@ -597,7 +638,8 @@ mod tests {
                 "result",
             ),
         ];
-        merge_hall_events(&mut local, incoming);
+        let mut seen: VecDeque<String> = VecDeque::new();
+        merge_hall_events(&mut local, incoming, &mut seen);
         assert_eq!(local.len(), 3);
         assert_eq!(local[2].file_id, "c.20260901T000000200.0001.json");
     }
@@ -633,7 +675,8 @@ mod tests {
                 "issue",
             ),
         ];
-        merge_hall_events(&mut local, incoming);
+        let mut seen: VecDeque<String> = VecDeque::new();
+        merge_hall_events(&mut local, incoming, &mut seen);
         assert_eq!(local.len(), 3);
     }
 
@@ -652,7 +695,8 @@ mod tests {
             1,
             "progress",
         )];
-        merge_hall_events(&mut local, incoming);
+        let mut seen: VecDeque<String> = VecDeque::new();
+        merge_hall_events(&mut local, incoming, &mut seen);
         assert_eq!(local.len(), 2);
         assert!(local[0].ts_utc < local[1].ts_utc);
     }
@@ -665,10 +709,41 @@ mod tests {
             let ts = format!("20260901T{:06}000", 0);
             local.push(evt(&format!("f{}.json", i), &ts, i as u64, "progress"));
         }
-        merge_hall_events(&mut local, Vec::new());
+        let mut seen: VecDeque<String> = VecDeque::new();
+        merge_hall_events(&mut local, Vec::new(), &mut seen);
         assert_eq!(local.len(), HALL_EVENTS_MAX);
         // 保留的是最大 seq（最新）
         assert_eq!(local.last().unwrap().seq, (HALL_EVENTS_MAX + 49) as u64);
         assert_eq!(local.first().unwrap().seq, 50);
+    }
+
+    #[test]
+    fn merge_dedup_keys_stay_bounded() {
+        /* §6.10 #5：去重键 LRU 容量 256，长会话不随事件总量爬坡 */
+        let mut local: Vec<HallEvent> = Vec::new();
+        let mut seen: VecDeque<String> = VecDeque::new();
+        let total = HALL_EVENTS_MAX + 50;
+        let batch: Vec<HallEvent> = (0..total)
+            .map(|i| {
+                let ts = format!("20260901T{:06}000", i);
+                evt(&format!("k{i}.json"), &ts, i as u64, "progress")
+            })
+            .collect();
+        merge_hall_events(&mut local, batch, &mut seen);
+        assert_eq!(seen.len(), MAX_DEDUPE_KEYS, "去重键应有界");
+        assert_eq!(local.len(), HALL_EVENTS_MAX, "事件窗口仍有界");
+
+        let newest = format!("k{}.json", total - 1);
+        let count = |v: &[HallEvent], id: &str| v.iter().filter(|e| e.file_id == id).count();
+        let ts = format!("20260901T{:06}000", total - 1);
+        let replay = evt(&newest, &ts, (total - 1) as u64, "progress");
+        merge_hall_events(&mut local, vec![replay], &mut seen);
+        assert_eq!(local.len(), HALL_EVENTS_MAX, "近期重放不入列");
+        assert_eq!(count(&local, &newest), 1, "近期重放不产生重复");
+
+        let replay = evt("k0.json", "20260901T000000000", 0, "progress");
+        merge_hall_events(&mut local, vec![replay], &mut seen);
+        assert_eq!(local.len(), HALL_EVENTS_MAX, "窗口外重放不挤占容量");
+        assert_eq!(seen.len(), MAX_DEDUPE_KEYS, "去重键重放后仍有界");
     }
 }
