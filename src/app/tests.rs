@@ -8,6 +8,7 @@
 use super::context::HistoryPolicy;
 use super::*;
 use crate::memory::GatewayMemory;
+use std::time::Duration;
 
 /// SSE 工具事件渲染：tool_call / tool_result JSON → 过程化状态行。
 /// 只展示动作名与成败，不暴露参数与返回内容（2026-08-17）。
@@ -681,4 +682,54 @@ fn b11_focus_scroll_clamps() {
     app.focus_page_down();
     app.focus_page_down();
     assert_eq!(app.focus_scroll, 0, "下封 0（顶部）");
+}
+
+/// U2（0.1.19 L7）：Ctrl+C 双击退出守卫——首按只提示，窗口内二次按下
+/// 才确认；窗口边界按严格小于裁决，超时复位；busy 态共用同一入口。
+#[test]
+fn ctrl_c_exit_guard_window() {
+    let _h = crate::test_env::Home::new("exit-guard");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    let t0 = Instant::now();
+
+    assert!(!app.confirm_exit(t0), "首次误触不得退出");
+    assert!(
+        app.messages.iter().any(|m| m.content.contains("Ctrl+C")),
+        "首次误触须给出提示"
+    );
+
+    // busy 态同规：窗口内二次按下即确认
+    app.loading = true;
+    assert!(app.confirm_exit(t0 + Duration::from_millis(499)));
+
+    // 确认后复位：紧邻的下一次按下重新武装
+    assert!(!app.confirm_exit(t0 + Duration::from_millis(500)));
+    // 恰好 500ms 不算窗口内：重新计时
+    assert!(!app.confirm_exit(t0 + Duration::from_millis(1_000)));
+    // 新窗口内再次按下：确认退出
+    assert!(app.confirm_exit(t0 + Duration::from_millis(1_100)));
+}
+
+/// U2（0.1.19 L7）：键位分派接线——空闲态连续两次 Ctrl+C 才请求退出。
+#[tokio::test]
+async fn ctrl_c_key_needs_two_presses() {
+    let _h = crate::test_env::Home::new("exit-guard-key");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    let key = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('c'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
+
+    let first = crate::keys::handle(&mut app, key).await.expect("handle");
+    assert!(
+        matches!(first, crate::keys::Flow::Continue),
+        "首按 Ctrl+C 不得退出"
+    );
+    let second = crate::keys::handle(&mut app, key).await.expect("handle");
+    assert!(
+        matches!(second, crate::keys::Flow::Exit),
+        "窗口内二次按下应退出"
+    );
 }

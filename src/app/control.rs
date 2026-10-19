@@ -343,6 +343,17 @@ impl App {
         self.think_scroll = self.think_scroll.saturating_sub(10);
     }
 
+    /// Ctrl+C 退出确认（0.1.19 L7 U2）：首次按下只提示，窗口内二次按下
+    /// 才返回 true；空闲态与 busy 态共用本入口。`now` 由调用方注入，
+    /// 便于窗口边界的确定性单测。
+    pub fn confirm_exit(&mut self, now: Instant) -> bool {
+        if self.exit_guard.confirm(now) {
+            return true;
+        }
+        self.add_message(MessageRole::System, "再按一次 Ctrl+C 退出".to_string());
+        false
+    }
+
     /// Shutdown gracefully.
     pub async fn shutdown(&mut self) -> Result<()> {
         if self.connected {
