@@ -7,7 +7,7 @@
 
 use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::budget::{DOUBLE_ESCAPE_WINDOW_MS, MAX_TOOL_TEXT_BYTES};
 use crate::client::{
@@ -15,6 +15,7 @@ use crate::client::{
     RunResponse,
 };
 use crate::engine::sched::Lane;
+use crate::engine::toast::ToastQueue;
 use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
 use crate::ime::ImeEngine;
 use crate::memory::{self, ConversationMemory};
@@ -218,6 +219,9 @@ pub struct App {
     pub session_start: Instant,
     /// Ctrl+C 双击退出守卫（0.1.19 L7 U2）：见 [`ExitGuard`]。
     exit_guard: ExitGuard,
+    /// 瞬态提示队列（0.1.19 L7 U7，TUI 方案 §6.3 #4）：同屏 ≤3 条、
+    /// 1.5s 自动消失，溢出淘汰最旧。时刻由主循环注入，见 [`App::toast_expire`]。
+    toasts: ToastQueue,
     /// 当前回合开始时刻（submit_input 记录，结果消费时结算）
     turn_started: Instant,
     /// 上一回合耗时（对话区回合分隔线展示：Worked for Ns）
@@ -507,6 +511,7 @@ impl App {
             cost: 0.0,
             session_start: Instant::now(),
             exit_guard: ExitGuard::default(),
+            toasts: ToastQueue::new(),
             turn_started: Instant::now(),
             last_turn_elapsed: None,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
@@ -643,6 +648,29 @@ impl App {
     /// （0.1.18 A 轨 §5A.3 W4，L4 调度器的成帧输入之一）。无落地返回 `None`。
     pub fn take_landed(&mut self) -> Option<Lane> {
         self.landed.take()
+    }
+
+    /// 入队一条瞬态提示（0.1.19 L7 U7，TUI 方案 §6.3 #4）。
+    ///
+    /// 时刻在此取一次，队列本身不读时钟；主循环下一轮 `toast_expire`
+    /// 负责到期清退并补帧。
+    pub(crate) fn toast(&mut self, text: impl Into<String>) {
+        self.toasts.push(text, Instant::now());
+    }
+
+    /// 清退到期提示（时刻由主循环注入）；有变化返回真，调用方补一帧。
+    pub(crate) fn toast_expire(&mut self, now: Instant) -> bool {
+        self.toasts.expire(now)
+    }
+
+    /// 距最近一条提示到期还剩多久（主循环据此收窄事件等待）。
+    pub(crate) fn toast_wait(&self, now: Instant) -> Option<Duration> {
+        self.toasts.wait(now)
+    }
+
+    /// 活跃提示只读视图（渲染层消费）。
+    pub(crate) fn toasts(&self) -> &ToastQueue {
+        &self.toasts
     }
 }
 

@@ -295,6 +295,7 @@ impl App {
             "INFO",
             format!("大粘贴已折叠：{}（{} 字节）", slot, text.len()),
         );
+        self.toast(slot.clone());
         self.paste_folds.push(PasteFold {
             slot,
             body: text.to_string(),

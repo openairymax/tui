@@ -864,3 +864,24 @@ fn add_message_caps_oversized_cell() {
         "标记须携带原始字节数"
     );
 }
+
+/// U7（0.1.19 L7）：提示同屏不超过三条，到期由注入时刻裁决清退。
+#[test]
+fn toasts_stay_bounded_and_expire() {
+    let _h = crate::test_env::Home::new("toast-cap");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    for i in 0..5 {
+        app.toast(format!("提示 {i}"));
+    }
+    assert_eq!(
+        app.toasts().len(),
+        crate::budget::MAX_ACTIVE_TOASTS,
+        "溢出淘汰最旧，同屏守住上限"
+    );
+    assert!(app.toast_wait(std::time::Instant::now()).is_some());
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(crate::budget::TOAST_TTL_MS);
+    assert!(app.toast_expire(deadline), "到期须报告变化以补帧");
+    assert_eq!(app.toasts().len(), 0);
+}
