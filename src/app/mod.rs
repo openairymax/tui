@@ -666,6 +666,9 @@ impl App {
         // 时间戳：HH:MM:SS（消息气泡头部展示）
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
         self.msg_seq += 1;
+        // 终端控制序列净化（0.1.19 §5.5 #8）：所有消息最终都经本入口落屏，
+        // 在此统一剥离 OSC/CSI 等序列，避免模型输出或粘贴内容注入终端。
+        let content = crate::engine::sanitize::strip(&content);
         // 单 cell 预算（0.1.19 §6.10 #6）：超 64KiB 头尾各半折叠，渲染树
         // 不随单条内容无界增长；原始字节数照实记账（§5.3 originalBytes）。
         let original_bytes = content.len();

@@ -119,6 +119,14 @@ pub(crate) const MAX_PASTE_FOLD_BYTES: usize = 16 * 1024;
 /// 通知正文/标题字符上限（§5.5 #5）：超长截断，防超长 OSC 序列。
 pub(crate) const NOTIFY_TEXT_MAX: usize = 120;
 
+// ── 控制序列净化（§5.5 #8）───────────────────────────────────────────────
+
+/// 字符串序列（OSC/DCS/PM/APC/SOS）单序列字符上限：超限视为未终止
+/// 攻击向量，中止剥离回到地面态，避免吞掉后续正文。
+pub(crate) const MAX_CTRL_STR_CHARS: usize = 4_096;
+/// CSI 序列参数与中间字节上限：正常序列远低于该值，超限同样中止。
+pub(crate) const MAX_CTRL_CSI_CHARS: usize = 64;
+
 // ── 降级态与可观测性 ─────────────────────────────────────────────────────
 
 /// 健康面板条目上限（§6.12 #3）。
@@ -177,6 +185,8 @@ const _: () = {
     assert!(DEFAULT_LIVE_PUBLISH_INTERVAL_MS > 0);
     assert!(MAX_PASTE_FOLD_BYTES > 0);
     assert!(NOTIFY_TEXT_MAX > 0 && NOTIFY_TEXT_MAX <= MAX_OUTPUT_CHARACTERS);
+    assert!(MAX_CTRL_STR_CHARS > 0);
+    assert!(MAX_CTRL_CSI_CHARS > 0 && MAX_CTRL_CSI_CHARS <= MAX_CTRL_STR_CHARS);
     assert!(MAX_HEALTH_PANEL_ITEMS > 0);
     assert!(MAX_ERROR_AGG_ENTRIES > 0);
     assert!(DEGRADED_BANNER_COOLDOWN_MS > 0);
