@@ -348,6 +348,12 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
             sched.push(Lane::Panel);
         }
 
+        // leader 提示浮层到期（0.1.19 L7 U8，TUI 方案 §6.4 #7）：前缀键静置
+        // 满 500ms 才浮出，浮出即补一帧。
+        if app.leader_hint_due(now) {
+            sched.push(Lane::Panel);
+        }
+
         if app.mouse_capture != mouse_on {
             let res = if app.mouse_capture {
                 execute!(io::stdout(), EnableMouseCapture)
@@ -440,6 +446,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
         // 时按最近到期时刻收窄等待，避免空闲节拍（250ms）拖长消隐延迟。
         let mut wait = Duration::from_millis(sched.wait_ms());
         if let Some(left) = app.toast_wait(Instant::now()) {
+            wait = wait.min(left);
+        }
+        if let Some(left) = app.leader_wait(Instant::now()) {
             wait = wait.min(left);
         }
         if !event::poll(wait)? {

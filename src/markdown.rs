@@ -27,6 +27,8 @@ mod math;
 mod plot;
 mod table;
 
+pub(crate) use code::last_fenced;
+
 use pulldown_cmark::{Options, Parser};
 use ratatui::{style::Style, text::Line};
 
