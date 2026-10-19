@@ -7,6 +7,11 @@
 // 标记判定对话/任务/大任务集。协议段（前导元话语 + 标记 + 未识别残留）
 // 一律从用户面正文剥离、仅进入诊断通道；流式与非流式路径共享同一剥离
 // 语义，流式中间态亦保证 `[MODE:` 零渲染。
+//
+// 两条路径在返回前还要过 engine/sanitize（§5.5 #8）：模型正文与协议段
+// 都可能携带可被终端解释的控制序列，上屏与落日志前必须净化。
+
+use crate::engine::sanitize::Stripper;
 
 /// LLM 判定的模式（任务集判定结果）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +139,8 @@ pub fn sanitize_reply(resp: &str) -> SanitizedReply {
         out.body = t.to_string();
     }
     strip_mode_segments(&mut out.body, &mut out.protocol);
+    out.body = crate::engine::sanitize::strip(&out.body);
+    out.protocol = crate::engine::sanitize::strip(&out.protocol);
     out
 }
 
@@ -150,6 +157,8 @@ pub struct StreamSanitizer {
     /// 刚剥完一个闭合标记且其后内容尚未到达：下一正文块开头折叠一个
     /// 空格/制表，避免剥除位残留双空白。
     just_marker: bool,
+    /// 终端控制序列净化器：标记剥离后的正文再过一道，相位跨块保持。
+    term: Stripper,
     /// 本轮累计剥出的控制面文本（诊断通道在落定时取用并清空）
     pub protocol_buf: String,
 }
@@ -167,6 +176,7 @@ impl StreamSanitizer {
             header_done: false,
             lead_ws: true,
             just_marker: false,
+            term: Stripper::new(),
             protocol_buf: String::new(),
         }
     }
@@ -176,6 +186,7 @@ impl StreamSanitizer {
         self.header_done = false;
         self.lead_ws = true;
         self.just_marker = false;
+        self.term.reset();
         self.protocol_buf.clear();
     }
 
@@ -190,6 +201,8 @@ impl StreamSanitizer {
         if self.header_done {
             self.flush_body(&mut clean, &mut protocol);
         }
+        // 控制序列可能被 SSE 块边界切成两半，相位由 Stripper 跨块保持。
+        let clean = self.term.feed(&clean);
         if !protocol.is_empty() {
             self.protocol_buf.push_str(&protocol);
         }
@@ -422,6 +435,15 @@ mod tests {
         assert!(r.protocol.is_empty());
     }
 
+    #[test]
+    fn replies_are_terminal_escape_free() {
+        // §5.5 #8：正文与协议段都不得残留可被终端解释的序列
+        let r = sanitize_reply("\x1b]0;pwned\x07[MODE:CHAT]\x1b[2J真实正文");
+        assert_eq!(r.mode, ModeMarker::Chat);
+        assert_eq!(r.body, "真实正文");
+        assert!(!r.protocol.contains('\x1b'));
+    }
+
     /* ---- StreamSanitizer ---- */
 
     fn feed_all(s: &mut StreamSanitizer, chunks: &[&str]) -> String {
@@ -483,6 +505,14 @@ mod tests {
         let clean = feed_all(&mut s, &["回答正文 [MODE:CHAT]", " 后续"]);
         assert_eq!(clean, "回答正文 后续");
         assert_eq!(s.protocol_buf, "[MODE:CHAT]");
+    }
+
+    #[test]
+    fn stream_strips_control_sequences_across_chunks() {
+        // 控制序列被 SSE 块边界切开：净化相位须跨块保持
+        let mut s = StreamSanitizer::new();
+        let clean = feed_all(&mut s, &["\x1b]0;t", "\x07正文", "\x1b[3", "1m红"]);
+        assert_eq!(clean, "正文红");
     }
 
     #[test]
