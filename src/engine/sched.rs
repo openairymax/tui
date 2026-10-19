@@ -38,19 +38,14 @@
 
 use std::collections::VecDeque;
 
-/// 空闲降频上限（ms）：无事件且无到期事项时的最长等待（§5A.3 W4）。
-const IDLE_MS: u64 = 250;
-/// 单帧时间预算（μs）：排版 + 差异 + 合成超过即降级（§3.5 帧预算）。
-const BUDGET_US: u64 = 8_000;
-/// 合帧窗口下限（ms）：§5A.3 W4 的 16–33ms 区间。
-const COALESCE_MIN_MS: u64 = 16;
+use crate::budget::{
+    FRAME_BUDGET_US, FRAME_QUEUE_CAP, IDLE_WAIT_MS, MAX_FPS, MIN_RENDER_INTERVAL_MS,
+};
+
 /// 合帧窗口上限（ms）：低帧率档也仍成帧，不因窗口过长而迟滞。
 const COALESCE_MAX_MS: u64 = 33;
-/// 待办队列上限（§3.5 背压）。
-const QUEUE_CAP: usize = 64;
-/// 帧率上限的容许区间（§5 W4：帧率可配置且有上限）。
+/// 帧率下限：低于 1fps 无实用意义，且除零无定义。
 const FPS_MIN: u32 = 1;
-const FPS_MAX: u32 = 240;
 /// 缺省帧率上限：未配置 `AIRY_TUI_MAX_FPS` 时取 60（合帧窗口 16ms）。
 const FPS_DEFAULT: u32 = 60;
 /// 帧度量日志节拍：每 N 帧一条 info 日志（按帧数而非时间，确定性）。
@@ -148,12 +143,12 @@ impl Cfg {
     /// 参数取自 `AIRY_TUI_MAX_FPS`（§5 W4：帧率可配置且有上限）；越界取值
     /// 收敛到容许区间，避免窗口退化为 0（忙等）或长于空闲节拍（迟滞）。
     pub(crate) fn from_fps(fps: u32) -> Self {
-        let window = (MS_PER_S / u64::from(fps.clamp(FPS_MIN, FPS_MAX)))
-            .clamp(COALESCE_MIN_MS, COALESCE_MAX_MS);
+        let window = (MS_PER_S / u64::from(fps.clamp(FPS_MIN, MAX_FPS)))
+            .clamp(MIN_RENDER_INTERVAL_MS, COALESCE_MAX_MS);
         Self {
             coalesce_ms: window,
-            idle_ms: IDLE_MS,
-            budget_us: BUDGET_US,
+            idle_ms: IDLE_WAIT_MS,
+            budget_us: FRAME_BUDGET_US,
         }
     }
 
@@ -299,7 +294,7 @@ impl Sched {
     /// 返回是否入队：队列已满且无可丢弃的低优先级条目时为假（队列中仅有
     /// 输入档）。调用方应停止继续取事件，余量留在终端输入缓冲，勿丢业务事件。
     pub(crate) fn push(&mut self, lane: Lane) -> bool {
-        if self.queue.len() >= QUEUE_CAP && !self.drop_lowest() {
+        if self.queue.len() >= FRAME_QUEUE_CAP && !self.drop_lowest() {
             return false;
         }
         self.queue.push_back((lane, self.now_ms));
@@ -426,7 +421,8 @@ impl Sched {
 
 #[cfg(test)]
 mod tests {
-    use super::{Beat, Beats, Cfg, Lane, Sched, BEATS, BEAT_N, IDLE_MS, METRIC_EVERY, QUEUE_CAP};
+    use super::{Beat, Beats, Cfg, Lane, Sched, BEATS, BEAT_N, METRIC_EVERY};
+    use crate::budget::{FRAME_QUEUE_CAP, IDLE_WAIT_MS};
 
     /// 60fps：合帧窗口为区间下限 16ms。
     fn fixture() -> Sched {
@@ -530,11 +526,11 @@ mod tests {
     #[test]
     fn sheds_middle_hiding_head_and_tail() {
         let mut sched = fixture();
-        let total = QUEUE_CAP + 36;
+        let total = FRAME_QUEUE_CAP + 36;
         for i in 0..total {
             sched.advance(i as u64);
             assert!(sched.push(Lane::Stream));
-            assert!(sched.queue.len() <= QUEUE_CAP, "队列须恒以 64 为上限");
+            assert!(sched.queue.len() <= FRAME_QUEUE_CAP, "队列须恒以 64 为上限");
         }
         assert_eq!(sched.queue.front().map(|(_, at)| *at), Some(0), "保留首条");
         assert_eq!(
@@ -550,12 +546,12 @@ mod tests {
     fn input_lane_is_never_shed() {
         let mut sched = fixture();
         sched.advance(0);
-        for _ in 0..QUEUE_CAP {
+        for _ in 0..FRAME_QUEUE_CAP {
             assert!(sched.push(Lane::Input));
         }
         assert!(!sched.push(Lane::Input), "仅输入档占满时拒收");
         assert_eq!(sched.shed, 0, "业务事件不得丢弃");
-        assert_eq!(sched.queue.len(), QUEUE_CAP);
+        assert_eq!(sched.queue.len(), FRAME_QUEUE_CAP);
     }
 
     /// §3.5 帧预算：超预算置降级态，新帧起算清零。
@@ -584,14 +580,14 @@ mod tests {
     fn idles_at_upper_bound_when_nothing_pending() {
         let mut sched = fixture();
         sched.advance(0);
-        assert_eq!(sched.wait_ms(), IDLE_MS, "静止界面按空闲节拍等待");
+        assert_eq!(sched.wait_ms(), IDLE_WAIT_MS, "静止界面按空闲节拍等待");
 
         sched.push(Lane::Stream);
         assert_eq!(sched.wait_ms(), 16, "有待办时等待收窄到合帧窗口");
 
         sched.advance(16);
         assert!(sched.take_frame(), "窗口到期成帧");
-        assert_eq!(sched.wait_ms(), IDLE_MS, "清算后回到空闲节拍");
+        assert_eq!(sched.wait_ms(), IDLE_WAIT_MS, "清算后回到空闲节拍");
     }
 
     /// §5A.3 W4 统一节拍表：启用即到期，每周期至多一次，停用即静默。
@@ -599,7 +595,7 @@ mod tests {
     fn beats_fire_once_per_period_and_stop() {
         let mut sched = fixture();
         sched.advance(0);
-        assert_eq!(sched.wait_ms(), IDLE_MS, "无启用节拍时不介入等待");
+        assert_eq!(sched.wait_ms(), IDLE_WAIT_MS, "无启用节拍时不介入等待");
 
         sched.beat_set(Beat::Hall, true);
         assert_eq!(sched.wait_ms(), 0, "启用即到期，须立即处理");
@@ -611,13 +607,13 @@ mod tests {
         assert!(sched.advance(1_000).has(Beat::Hall), "满周期后再次到期");
         assert_eq!(
             sched.wait_ms(),
-            IDLE_MS,
+            IDLE_WAIT_MS,
             "下周期余量超出空闲上限，等待按上限封顶"
         );
 
         sched.beat_set(Beat::Hall, false);
         assert!(!sched.advance(9_999).has(Beat::Hall), "停用后不再到期");
-        assert_eq!(sched.wait_ms(), IDLE_MS, "停用后退出等待计算");
+        assert_eq!(sched.wait_ms(), IDLE_WAIT_MS, "停用后退出等待计算");
     }
 
     /// 显式刷新请求：未启用的节拍不因强制而介入。

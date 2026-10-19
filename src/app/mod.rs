@@ -44,7 +44,8 @@ use text::*;
 ///
 /// 0.1.9 W8：渲染改为按消息块虚拟滚动后，内存条数与每帧渲染行数解耦，
 /// 上限从 500 提升至 2000（长会话保留更多历史，帧成本仍只与视口高度相关）。
-pub(crate) const MAX_CHAT_MESSAGES: usize = 2000;
+/// 0.1.19 L7：界值收敛到 budget.rs 单一来源，此处仅保留调用路径。
+pub(crate) use crate::budget::MAX_CHAT_MESSAGES;
 
 /// Maximum number of log entries to keep.
 const MAX_LOG_ENTRIES: usize = 200;
