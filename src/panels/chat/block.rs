@@ -178,6 +178,19 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
             format!("{:width$}{}", "", preview, width = INDENT),
             base,
         )));
+        // 折叠说明（0.1.19 §6.10 #6）：工具预览只取首行，体内的截断标记与
+        // 原始字节数都不可见，故单独补一行「已折叠 · 原始 N KiB」。
+        if msg.original_bytes > msg.content.len() {
+            out.push(Line::from(Span::styled(
+                format!(
+                    "{:width$}└ 已折叠 · 原始 {} KiB",
+                    "",
+                    msg.original_bytes / 1024,
+                    width = INDENT
+                ),
+                Style::default().fg(theme::faint()),
+            )));
+        }
     } else {
         // 身份键取稳定消息 id；流式哨兵（NO_ID）是逐帧增长的半成品，旁路缓存
         let key = (msg.id != ChatMessage::NO_ID).then_some(crate::engine::view::Key::msg(msg.id));
@@ -221,6 +234,7 @@ mod tests {
             content: content.to_string(),
             timestamp: "00:00:00".to_string(),
             id: ChatMessage::NO_ID,
+            original_bytes: content.len(),
         }
     }
 
@@ -318,6 +332,27 @@ mod tests {
         let body = multi.last().unwrap().to_string();
         assert!(body.ends_with('…'), "多行应补省略号: {body:?}");
         assert_eq!(body.matches('…').count(), 1, "{body:?}");
+    }
+
+    /// §6.10 #6：工具预览只显示首行，折叠后的原始字节数须单独可见；
+    /// 未折叠的消息不得多出说明行。
+    #[test]
+    fn folded_tool_shows_original_size() {
+        let plain = msg(MessageRole::ToolResult, "{\"ok\":1}");
+        let mut plain_lines: Vec<Line<'static>> = Vec::new();
+        render(&mut plain_lines, &plain, 80, true, false);
+        let plain_text: String = plain_lines.iter().map(|l| l.to_string()).collect();
+        assert!(!plain_text.contains("已折叠"), "未折叠不应有说明行");
+
+        let mut folded = msg(MessageRole::ToolResult, "{\"ok\":1}");
+        folded.original_bytes = 70_000;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        render(&mut lines, &folded, 80, true, false);
+        let tail = lines.last().unwrap().to_string();
+        assert!(
+            tail.contains("已折叠 · 原始 68 KiB"),
+            "说明行须记原始字节数: {tail}"
+        );
     }
 
     /// 块内折叠：长思考链截断为 KEEP 行 + 折叠尾；展开态/短块/Agent 长文不折叠。

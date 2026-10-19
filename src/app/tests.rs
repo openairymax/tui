@@ -842,3 +842,25 @@ fn boot_probe_applies_late_result() {
     );
     assert_eq!(app.take_landed(), Some(crate::engine::sched::Lane::Poll));
 }
+
+/// U6（0.1.19 L7）：大 cell 入库即裁剪——头尾保留、标记含原始字节数、
+/// originalBytes 照实记账，渲染树不随单条内容无界增长。
+#[test]
+fn add_message_caps_oversized_cell() {
+    let _h = crate::test_env::Home::new("cell-cap");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    let body = format!("HEAD{}TAIL", "x".repeat(crate::budget::MAX_TOOL_TEXT_BYTES));
+
+    app.add_message(MessageRole::Agent, body.clone());
+    let msg = app.messages.back().expect("消息已入库");
+    assert_eq!(msg.original_bytes, body.len(), "原始字节数照实记账");
+    assert!(msg.content.len() < body.len(), "超预算须折叠");
+    assert!(msg.content.starts_with("HEAD"), "头段保留");
+    assert!(msg.content.ends_with("TAIL"), "尾段保留");
+    assert!(
+        msg.content
+            .contains(&format!("[truncated: {} bytes total]", body.len())),
+        "标记须携带原始字节数"
+    );
+}

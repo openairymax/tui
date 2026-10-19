@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::app::{App, ChatMessage, MessageRole};
-use crate::budget::THINKING_PREVIEW_MAX_CHARS;
+use crate::budget::{MAX_TOOL_TEXT_BYTES, THINKING_PREVIEW_MAX_CHARS};
 use crate::engine::grid;
 use crate::gccp::FlowPhase;
 use crate::theme;
@@ -275,11 +275,16 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
     if app.loading && !app.streaming_text.is_empty() {
         // 增量到达即整块上屏（0.1.18 §5A.3 W4 B2：本地打字机已移除，逐字观感
         // 由服务端真流式给出）；尾随光标块表示"仍在生成"。
+        // 单 cell 预算（0.1.19 §6.10 #6）：超 64KiB 的流式正文同样头尾各半
+        // 折叠，尾段随增量滚动更新；落定消息走 add_message 的统一裁剪。
+        let preview = crate::engine::fold::cap(&app.streaming_text, MAX_TOOL_TEXT_BYTES)
+            .unwrap_or_else(|| app.streaming_text.clone());
         let streaming_msg = ChatMessage {
             role: MessageRole::Agent,
-            content: format!("{}▍", app.streaming_text),
+            content: format!("{}▍", preview),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             id: ChatMessage::NO_ID,
+            original_bytes: app.streaming_text.len(),
         };
         block::render(out, &streaming_msg, width, false, false);
     }
