@@ -94,7 +94,9 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use crate::app::{ActivePanel, App};
+use crate::budget::FIRST_FRAME_BUDGET_MS;
 use crate::client::GatewayClient;
+use crate::engine::boot::Boot;
 use crate::engine::sched::{Beat, Cfg, Lane, Sched};
 
 /// AgentRT Terminal User Interface
@@ -139,6 +141,9 @@ fn default_gateway_url() -> String {
 
 #[tokio::main]
 async fn main() {
+    // 首帧预算的计时基准：进程进入 main 的第一时刻（§6.1 #1）。
+    let boot = Boot::mark();
+
     // ── Phase 0: Initialize logging（写入文件，避免污染 TUI 画面）──
     if let Err(e) = term::init_file_logger() {
         // 日志文件不可用时退回 stderr（仅启动期，进入 TUI 前）
@@ -199,7 +204,7 @@ async fn main() {
     // ── Phase 3: Start TUI ──
     info!("Setting up terminal (raw mode + alternate screen)...");
 
-    let tui_result = run_tui(&cli, gateway).await;
+    let tui_result = run_tui(&cli, gateway, &boot).await;
 
     // ── Phase 4: Shutdown diagnostics ──
     let total_time = start_time.elapsed();
@@ -218,7 +223,7 @@ async fn main() {
     }
 }
 
-async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
+async fn run_tui(cli: &Cli, gateway: GatewayClient, boot: &Boot) -> Result<()> {
     // T-03（P0-8）：崩溃瞬间先还原终端再打印 panic 报文，用户保住 shell。
     term::install_panic_hook();
 
@@ -253,17 +258,13 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
         info!("Session resume: restored {} messages", n);
     }
 
-    // ── Phase 3b: Deferred connection check in app ──
-    if let Err(e) = app.check_connection().await {
-        debug!("Initial connection check returned error (non-fatal): {}", e);
-    }
-    info!(
-        "App state initialized. connected={}, version={:?}",
-        app.connected, app.gateway_version
-    );
+    // ── Phase 3b: 启动期连接探测与首帧并发（§6.1 #1）──
+    // 健康探针异步落地，结果由主循环 poll_boot 热修正连接态；首绘不等网络。
+    app.probe_connection();
+    info!("App state initialized. boot probe dispatched");
 
     // Main event loop
-    let result = run_app(&mut terminal, &mut app).await;
+    let result = run_app(&mut terminal, &mut app, boot).await;
 
     // Restore terminal —— T-03（P0-8）：每步独立容错，绝不 `?` 短路
     // （原还原链首步 disable_raw_mode 失败即跳过后续全部步骤，终端
@@ -318,11 +319,13 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient) -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &Boot) -> Result<()> {
     // 0.1.18 A 轨 §5A.3 W4：L4 调度层持有者，唯一节拍权威。时刻一律由本基准
     // 的单调毫秒注入（调度层禁止自取时钟），故节拍判定可被虚拟时钟直接驱动。
     let base = Instant::now();
     let mut sched = Sched::new(Cfg::from_env());
+    // §6.1 #1：首帧耗时只上报一次；超预算告警，不阻塞、不重试。
+    let mut first_drawn = false;
 
     // 0.1.18 A 轨 §5A.3 W3：L5 合成层持有者。全仓唯一成帧出口在此收敛，
     // 不再直调 terminal.draw。失效时刻由调度层给出——输入事件、节拍到期或
@@ -369,6 +372,8 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
             app.poll_chain();
             app.poll_ops();
         }
+        // 启动期连接探测结果消费（§6.1 #1）：晚到即热修正连接态，不阻塞首绘。
+        app.poll_boot();
         // 在途请求结果消费（流式增量 / 结果落定 / 审批待决议）。空闲期内部早退
         // 无开销；busy 期它是唯一的流式与落定入口——等待期不再有独立内层循环。
         app.poll_pending(beats.has(Beat::Approvals));
@@ -401,6 +406,17 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
             layout_us = laid.elapsed().as_micros() as u64;
         });
         if outcome == engine::compose::FrameOutcome::Drawn {
+            if !first_drawn {
+                first_drawn = true;
+                let ms = boot.elapsed_ms();
+                if engine::boot::over_budget(ms) {
+                    warn!(
+                        "engine/boot: 首帧 {ms}ms 超预算 {FIRST_FRAME_BUDGET_MS}ms（告警不阻塞，后续帧照常）"
+                    );
+                } else {
+                    info!("engine/boot: 首帧 {ms}ms（预算 {FIRST_FRAME_BUDGET_MS}ms）");
+                }
+            }
             let total_us = started.elapsed().as_micros() as u64;
             sched.note_frame(layout_us, total_us.saturating_sub(layout_us));
         }

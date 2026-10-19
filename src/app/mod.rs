@@ -311,6 +311,8 @@ pub struct App {
     pub project_context: String,
     /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
     approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Vec<PendingApproval>>>,
+    /// 启动期连接探测在途结果（§6.1 #1：与首帧并发，晚到热修正连接态）
+    boot_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::client::HealthResponse>>>,
     /// 2026-08-17：F8 请求切换到 CLI（airy_cli）——主循环收到标志后
     /// 恢复终端并以 exec 语义替换当前进程（见 main.rs run_tui）。
     pub switch_to_cli: bool,
@@ -549,6 +551,7 @@ impl App {
             approvals: Vec::new(),
             project_context: String::new(),
             approval_poll_rx: None,
+            boot_rx: None,
             switch_to_cli: false,
             hall_board: None,
             hall_events: Vec::new(),

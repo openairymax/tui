@@ -804,3 +804,41 @@ fn paste_fold_multi_and_stale() {
     assert_eq!(app.take_input(), "", "占位被删则原文随之丢弃");
     assert!(app.paste_folds.is_empty());
 }
+
+/// U5（0.1.19 L7）：启动期连接探测晚到结果热修正——成功落连接态与版本
+/// 并排 Poll 帧；失败落不可达且不残留上一次的版本信息。
+#[test]
+fn boot_probe_applies_late_result() {
+    let _h = crate::test_env::Home::new("boot-probe");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.take_landed();
+
+    app.apply_probe(Ok(crate::client::HealthResponse {
+        status: "healthy".to_string(),
+        version: Some("9.9.9".to_string()),
+        uptime_seconds: None,
+    }));
+    assert!(app.connected, "成功探测应置连接态");
+    assert_eq!(app.gateway_version.as_deref(), Some("9.9.9"));
+    assert!(
+        app.status_message.contains("9.9.9"),
+        "状态条应携带网关版本: {}",
+        app.status_message
+    );
+    assert_eq!(
+        app.take_landed(),
+        Some(crate::engine::sched::Lane::Poll),
+        "探测结果落地应排帧刷新"
+    );
+
+    app.apply_probe(Err(anyhow!("connection refused")));
+    assert!(!app.connected, "失败探测应置不可达");
+    assert!(app.gateway_version.is_none(), "失败探测不得残留旧版本");
+    assert!(
+        app.status_message.contains("unreachable"),
+        "状态条应提示不可达: {}",
+        app.status_message
+    );
+    assert_eq!(app.take_landed(), Some(crate::engine::sched::Lane::Poll));
+}

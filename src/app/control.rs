@@ -193,9 +193,36 @@ impl App {
         self.pending.is_some()
     }
 
-    /// Check gateway connection.
-    pub async fn check_connection(&mut self) -> Result<()> {
-        match self.gateway.health_check().await {
+    /// 启动期连接探测（§6.1 #1）：与首帧并发，结果异步落地，不阻塞首绘。
+    pub fn probe_connection(&mut self) {
+        if self.boot_rx.is_some() {
+            return;
+        }
+        let gw = self.gateway.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(gw.health_check().await);
+        });
+        self.boot_rx = Some(rx);
+    }
+
+    /// 消费启动期连接探测结果：未返回则保留接收端，结果到达即热修正连接态。
+    pub fn poll_boot(&mut self) {
+        let Some(mut rx) = self.boot_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => self.apply_probe(result),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => self.boot_rx = Some(rx),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.apply_probe(Err(anyhow!("启动期连接探测任务异常终止")));
+            }
+        }
+    }
+
+    /// 应用探测结果：连接态/版本/状态条/日志的唯一改写落点。
+    pub(super) fn apply_probe(&mut self, result: Result<crate::client::HealthResponse>) {
+        match result {
             Ok(health) => {
                 self.connected = true;
                 self.gateway_version = health.version.clone();
@@ -205,11 +232,12 @@ impl App {
             }
             Err(e) => {
                 self.connected = false;
+                self.gateway_version = None;
                 self.status_message = format!("Gateway unreachable: {}", e);
                 self.add_log("ERROR", format!("网关不可达：{}", e));
             }
         }
-        Ok(())
+        self.mark_landed(Lane::Poll);
     }
 
     /// 对话滚动（0.1.18 B11/W14 滚动契约）：偏移钳位到可滚总量
