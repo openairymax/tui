@@ -339,6 +339,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
 
     loop {
         let now_ms = base.elapsed().as_millis() as u64;
+        // 单调时刻注入（U12）：应用层不自行读时钟，健康时长/时间线/诊断
+        // 快照全部以主循环时刻为准。
+        app.set_clock(now_ms);
         let beats = sched.advance(now_ms);
 
         // 瞬态提示到期清退（0.1.19 L7 U7，TUI 方案 §6.3 #4）：队列只按
@@ -377,6 +380,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
             matches!(app.active_panel, ActivePanel::Board | ActivePanel::Events),
         );
         sched.beat_set(Beat::Approvals, app.is_busy());
+        // 依赖健康保活（U12 §6.12 #1/#3）：5s 一次的轻量端到端探测。
+        // 与渲染降级解耦——降级期更需要知道依赖何时恢复。
+        sched.beat_set(Beat::Health, true);
 
         // 看板/事件流面板数据拉取 + /chain、运维命令异步结果消费。上一帧超预算
         // 时抑制这类最低优先级工作：降级不阻塞渲染，也不引入第二套差异实现。
@@ -385,6 +391,11 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
             app.poll_chain();
             app.poll_ops();
         }
+        // 健康探测：节拍到期发起一轮，结果按就绪消费（不阻塞主循环）。
+        if beats.has(Beat::Health) {
+            app.start_health(false);
+        }
+        app.poll_health(now_ms);
         // 启动期连接探测结果消费（§6.1 #1）：晚到即热修正连接态，不阻塞首绘。
         app.poll_boot();
         // 在途请求结果消费（流式增量 / 结果落定 / 审批待决议）。空闲期内部早退

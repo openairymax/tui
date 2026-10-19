@@ -221,7 +221,12 @@ impl App {
     }
 
     /// 应用探测结果：连接态/版本/状态条/日志的唯一改写落点。
+    ///
+    /// 同一份真实探测同时回填健康表（U12）：连接态与健康表同源，不会出现
+    /// 「状态条已连接、健康面板显示不可达」的自相矛盾。
     pub(super) fn apply_probe(&mut self, result: Result<crate::client::HealthResponse>) {
+        let ok = result.is_ok();
+        let mut err: Option<String> = None;
         match result {
             Ok(health) => {
                 self.connected = true;
@@ -235,8 +240,11 @@ impl App {
                 self.gateway_version = None;
                 self.status_message = format!("Gateway unreachable: {}", e);
                 self.add_log("ERROR", format!("网关不可达：{}", e));
+                err = Some(e.to_string());
             }
         }
+        self.note_dep("gateway", ok, self.clock_ms, err.as_deref());
+        self.sync_banner(self.clock_ms);
         self.mark_landed(Lane::Poll);
     }
 
