@@ -25,7 +25,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::theme;
+use crate::style;
 
 /// 渲染对话主面板。
 ///
@@ -73,9 +73,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         let sb = Scrollbar::default()
             .orientation(ScrollbarOrientation::VerticalRight)
             .thumb_symbol("█")
-            .thumb_style(Style::default().fg(theme::primary()))
+            .thumb_style(Style::default().fg(style::primary()))
             .track_symbol(Some("│"))
-            .track_style(Style::default().fg(theme::faint()));
+            .track_style(Style::default().fg(style::faint()));
         f.render_stateful_widget(sb, sb_area, &mut state);
     }
 
@@ -101,7 +101,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             f.render_widget(
                 Paragraph::new(text)
                     .alignment(Alignment::Right)
-                    .style(Style::default().fg(theme::faint()).bg(theme::surface())),
+                    .style(Style::default().fg(style::faint()).bg(style::surface())),
                 hint,
             );
         }
@@ -123,7 +123,7 @@ pub fn render_focus(f: &mut Frame, area: Rect, app: &mut App) {
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
             " 焦点视图 · Esc 返回 · ↑↓ 滚动 · PgUp/PgDn 翻页",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )),
         Line::raw(""),
     ];
@@ -144,7 +144,7 @@ pub fn render_focus(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(
             Paragraph::new(text)
                 .alignment(Alignment::Right)
-                .style(Style::default().fg(theme::faint()).bg(theme::surface())),
+                .style(Style::default().fg(style::faint()).bg(style::surface())),
             hint,
         );
     }

@@ -7,13 +7,13 @@
 //
 // 主题纪律：本层只消费 syntect 的 scope 分类（keyword/string/comment/number/
 // function/type...），不消费其调色板——Cargo.toml 关掉 default-themes，着色一律
-// 由本仓 theme::* 设计令牌裁决，随深浅主题与色深切换，无第二套颜色来源。
+// 由本仓 style::* 设计令牌裁决，随深浅主题与色深切换，无第二套颜色来源。
 //
 // 宽度纪律：超长行经 L2 唯一裁决点 `crate::engine::grid::clip_spans` 横向省略，
 // 本模块不自行测量后截断。
 
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -42,15 +42,15 @@ pub(super) fn render_code(
     let mut out: Vec<Line<'static>> = Vec::new();
     // 正文每行另占 indent + 1 列前缀，预算须先扣除，否则窄屏下必然右溢
     let budget = width.saturating_sub(indent + 1);
-    let bg = base.bg(theme::surface());
+    let bg = base.bg(style::surface());
 
     if !lang.is_empty() {
         out.push(Line::from(vec![
             Span::styled(" ".repeat(indent), Style::default()),
             Span::styled(
                 format!("  {}  ", grid::clip(lang, budget)),
-                base.fg(theme::accent())
-                    .bg(theme::surface_active())
+                base.fg(style::accent())
+                    .bg(style::surface_active())
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -120,34 +120,34 @@ fn scope_style(stack: &ScopeStack, base: Style) -> Style {
 fn classify(name: &str, base: Style) -> Option<Style> {
     let head = name.split('.').next().unwrap_or(name);
     Some(match head {
-        "comment" => base.fg(theme::faint()).add_modifier(Modifier::ITALIC),
-        "string" => base.fg(theme::success()),
+        "comment" => base.fg(style::faint()).add_modifier(Modifier::ITALIC),
+        "string" => base.fg(style::success()),
         "constant" => {
             if name.starts_with("constant.numeric") {
-                base.fg(theme::magenta())
+                base.fg(style::magenta())
             } else {
-                base.fg(theme::warning())
+                base.fg(style::warning())
             }
         }
-        "keyword" => base.fg(theme::primary()).add_modifier(Modifier::BOLD),
-        "storage" => base.fg(theme::primary()),
+        "keyword" => base.fg(style::primary()).add_modifier(Modifier::BOLD),
+        "storage" => base.fg(style::primary()),
         "entity" => {
             if name.starts_with("entity.name.function") {
-                base.fg(theme::cyan())
+                base.fg(style::cyan())
             } else {
-                base.fg(theme::accent())
+                base.fg(style::accent())
             }
         }
         "support" => {
             if name.starts_with("support.function") {
-                base.fg(theme::cyan())
+                base.fg(style::cyan())
             } else {
-                base.fg(theme::accent())
+                base.fg(style::accent())
             }
         }
-        "variable" => base.fg(theme::text()),
-        "punctuation" => base.fg(theme::dim()),
-        "invalid" => base.fg(theme::danger()),
+        "variable" => base.fg(style::text()),
+        "punctuation" => base.fg(style::dim()),
+        "invalid" => base.fg(style::danger()),
         _ => return None,
     })
 }
@@ -250,7 +250,7 @@ mod tests {
         let colored = lines[1]
             .spans
             .iter()
-            .any(|s| s.content.contains("let") && s.style.fg == Some(theme::primary()));
+            .any(|s| s.content.contains("let") && s.style.fg == Some(style::primary()));
         assert!(colored, "关键字应取主色: {:?}", lines[1]);
     }
 

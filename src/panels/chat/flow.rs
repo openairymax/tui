@@ -16,7 +16,7 @@ use crate::app::{App, ChatMessage, MessageRole};
 use crate::budget::{MAX_TOOL_TEXT_BYTES, THINKING_PREVIEW_MAX_CHARS};
 use crate::engine::grid;
 use crate::gccp::FlowPhase;
-use crate::theme;
+use crate::style;
 
 use super::block;
 
@@ -81,12 +81,12 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 .collect();
             out.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::styled("任务事实确认", Style::default().fg(theme::primary())),
+                Span::styled("任务事实确认", Style::default().fg(style::primary())),
                 Span::styled(" ", Style::default()),
-                Span::styled(dots, Style::default().fg(theme::primary())),
+                Span::styled(dots, Style::default().fg(style::primary())),
                 Span::styled(
                     format!("  {answered}/5"),
-                    Style::default().fg(theme::faint()),
+                    Style::default().fg(style::faint()),
                 ),
             ]));
             out.push(Line::raw(""));
@@ -96,10 +96,10 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
             // 逐条展示（id + 问题 + 提示），等待用户作答后携带 gccp_answers 重发。
             out.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::styled("目标澄清", Style::default().fg(theme::primary())),
+                Span::styled("目标澄清", Style::default().fg(style::primary())),
                 Span::styled(
                     "  请回答以下问题（逐行作答，或输入「跳过」放弃本轮问答）",
-                    Style::default().fg(theme::dim()),
+                    Style::default().fg(style::dim()),
                 ),
             ]));
             out.push(Line::raw(""));
@@ -109,20 +109,20 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                     let marker = if done { "●" } else { "○" };
                     let mut spans = vec![Span::styled(
                         format!("  {marker} "),
-                        Style::default().fg(theme::primary()),
+                        Style::default().fg(style::primary()),
                     )];
                     spans.push(Span::styled(
                         format!("{}. {}", i + 1, q.question),
                         Style::default().fg(if done {
-                            theme::faint()
+                            style::faint()
                         } else {
-                            theme::accent()
+                            style::accent()
                         }),
                     ));
                     if !q.hint.is_empty() {
                         spans.push(Span::styled(
                             format!("  （{}）", q.hint),
-                            Style::default().fg(theme::faint()),
+                            Style::default().fg(style::faint()),
                         ));
                     }
                     out.push(Line::from(spans));
@@ -136,12 +136,12 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 Span::styled(
                     "任务流程图确认",
                     Style::default()
-                        .fg(theme::magenta())
+                        .fg(style::magenta())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "  输入「确认」开始执行，或输入修改意见",
-                    Style::default().fg(theme::dim()),
+                    Style::default().fg(style::dim()),
                 ),
             ]));
             out.push(Line::raw(""));
@@ -151,7 +151,7 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 for line in crate::gccp::render_dag_lines(dag, dag_width) {
                     out.push(Line::from(vec![
                         Span::styled("  ", Style::default()),
-                        Span::styled(line, Style::default().fg(theme::accent())),
+                        Span::styled(line, Style::default().fg(style::accent())),
                     ]));
                 }
                 out.push(Line::raw(""));
@@ -176,9 +176,9 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 Span::styled(
                     format!("任务集执行中{node_hint}"),
                     // 苹果轻量字重风格：无粗体，暖黄
-                    Style::default().fg(theme::warning()),
+                    Style::default().fg(style::warning()),
                 ),
-                Span::styled(control_hint, Style::default().fg(theme::dim())),
+                Span::styled(control_hint, Style::default().fg(style::dim())),
             ]));
 
             // DAG 节点状态持续渲染（P2-C 过程可视化；2026-08-21 增甘特式进度条）：
@@ -199,17 +199,17 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                     let bar = gantt_bar(done, n, bar_w);
                     out.push(Line::from(vec![
                         Span::styled("    ", Style::default()),
-                        Span::styled("进度", Style::default().fg(theme::primary())),
+                        Span::styled("进度", Style::default().fg(style::primary())),
                         Span::styled(" ", Style::default()),
                         Span::styled(
                             bar.clone(),
                             Style::default().fg(if done == n {
-                                theme::success()
+                                style::success()
                             } else {
-                                theme::warning()
+                                style::warning()
                             }),
                         ),
-                        Span::styled(format!("  {done}/{n}"), Style::default().fg(theme::faint())),
+                        Span::styled(format!("  {done}/{n}"), Style::default().fg(style::faint())),
                     ]));
                     for (i, node) in dag.nodes.iter().enumerate() {
                         let state = app
@@ -226,21 +226,21 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                             "◐"
                         };
                         let (mark, color) = match state {
-                            crate::gccp::NodeState::Pending => ("○", theme::faint()),
-                            crate::gccp::NodeState::Running => (spin, theme::warning()),
-                            crate::gccp::NodeState::Done => ("●", theme::success()),
-                            crate::gccp::NodeState::Failed => ("✕", theme::danger()),
+                            crate::gccp::NodeState::Pending => ("○", style::faint()),
+                            crate::gccp::NodeState::Running => (spin, style::warning()),
+                            crate::gccp::NodeState::Done => ("●", style::success()),
+                            crate::gccp::NodeState::Failed => ("✕", style::danger()),
                         };
                         // 分支符号：末节点 └，其余 ├（层级先导）
                         let branch = if i == n - 1 { "└─" } else { "├─" };
                         // 节点行：状态标记 + 标签 + 甘特式状态短条（宽度足够时）
                         let mut spans = vec![
                             Span::styled("    ", Style::default()),
-                            Span::styled(branch, Style::default().fg(theme::faint())),
+                            Span::styled(branch, Style::default().fg(style::faint())),
                             Span::styled(" ", Style::default()),
                             Span::styled(mark, Style::default().fg(color)),
                             Span::styled(" ", Style::default()),
-                            Span::styled(node.label.clone(), Style::default().fg(theme::text())),
+                            Span::styled(node.label.clone(), Style::default().fg(style::text())),
                         ];
                         if width >= 56 {
                             spans.push(Span::styled("  ", Style::default()));
@@ -266,7 +266,7 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
     for evt in app.stream_tool_events.iter() {
         out.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(evt.clone(), Style::default().fg(theme::tool_fg())),
+            Span::styled(evt.clone(), Style::default().fg(style::tool_fg())),
         ]));
     }
 
@@ -301,31 +301,31 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
             Span::styled("  ", Style::default()),
             Span::styled(
                 format!(" {} ", THINKING[frame]),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ),
         ];
         if !app.streaming_text.is_empty() {
-            spans.push(Span::styled("生成中", Style::default().fg(theme::faint())));
+            spans.push(Span::styled("生成中", Style::default().fg(style::faint())));
             spans.push(Span::styled(
                 format!(" · {:.1}s", secs),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ));
         } else if !thinking {
-            spans.push(Span::styled("已受理", Style::default().fg(theme::faint())));
+            spans.push(Span::styled("已受理", Style::default().fg(style::faint())));
             spans.push(Span::styled(
                 format!(" · {:.1}s", secs),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ));
         } else {
             // 思考链实时可见：模型轨标签区分快/慢/专业思考，计时与预览
             // 由下方折叠块承载（§6.2 #3），状态行只留字数。
             spans.push(Span::styled(
                 dual_think_label(&app.stream_reasoning_model),
-                Style::default().fg(theme::primary()),
+                Style::default().fg(style::primary()),
             ));
             spans.push(Span::styled(
                 format!(" · {} 字", app.stream_reasoning.chars().count()),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ));
         }
         out.push(Line::from(spans));
@@ -347,11 +347,11 @@ fn render_think_preview(out: &mut Vec<Line<'static>>, app: &App, width: usize) {
         .map(|t| t.elapsed().as_secs())
         .unwrap_or(0);
     out.push(Line::from(vec![
-        Span::styled("  ╭ ", Style::default().fg(theme::faint())),
+        Span::styled("  ╭ ", Style::default().fg(style::faint())),
         Span::styled(
             format!("思考中 · {secs}s"),
             Style::default()
-                .fg(theme::warning())
+                .fg(style::warning())
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -364,8 +364,8 @@ fn render_think_preview(out: &mut Vec<Line<'static>>, app: &App, width: usize) {
     let budget = width.saturating_sub(4).max(8);
     for line in preview.lines() {
         out.push(Line::from(vec![
-            Span::styled("  │ ", Style::default().fg(theme::faint())),
-            Span::styled(grid::clip(line, budget), Style::default().fg(theme::dim())),
+            Span::styled("  │ ", Style::default().fg(style::faint())),
+            Span::styled(grid::clip(line, budget), Style::default().fg(style::dim())),
         ]));
     }
 
@@ -378,7 +378,7 @@ fn render_think_preview(out: &mut Vec<Line<'static>>, app: &App, width: usize) {
     };
     out.push(Line::from(Span::styled(
         tail,
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     )));
 }
 

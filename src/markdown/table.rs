@@ -13,7 +13,7 @@
 // 本模块不得自行测量后截断或填充。
 
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 use pulldown_cmark::Alignment;
 use ratatui::{
     style::{Modifier, Style},
@@ -68,7 +68,7 @@ pub(super) fn render_table(
             .join("┼");
         out.push(Line::from(vec![
             Span::styled(" ".repeat(indent), Style::default()),
-            Span::styled(format!("├{sep}┤"), base.fg(theme::dim())),
+            Span::styled(format!("├{sep}┤"), base.fg(style::dim())),
         ]));
     }
     for row in rows {
@@ -85,7 +85,7 @@ fn row_line(
     base: Style,
     header: bool,
 ) -> Line<'static> {
-    let border = base.fg(theme::dim());
+    let border = base.fg(style::dim());
     let mut spans = vec![Span::styled(" ".repeat(indent), Style::default())];
 
     for (ci, cw) in col_w.iter().enumerate() {
@@ -119,9 +119,9 @@ fn cell_style(s: Style, base: Style, header: bool) -> Style {
     let mut st = s;
     if st.fg.is_none() {
         st = st.fg(if header {
-            theme::text()
+            style::text()
         } else {
-            base.fg.unwrap_or_else(theme::text)
+            base.fg.unwrap_or_else(style::text)
         });
     }
     if header {
@@ -148,7 +148,7 @@ fn degrade(
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (ci, cell) in row.iter().enumerate() {
             if ci > 0 {
-                spans.push(Span::styled(" | ".to_string(), base.fg(theme::dim())));
+                spans.push(Span::styled(" | ".to_string(), base.fg(style::dim())));
             }
             spans.extend(cell.iter().cloned());
         }

@@ -18,7 +18,7 @@ use ratatui::{
 use crate::app::App;
 use crate::client::HallEvent;
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 
 /// 七类事件的语义标签（与 C 版 airy_cli 标签映射对齐）
 pub fn category_label(cat: &str) -> &'static str {
@@ -42,14 +42,14 @@ pub(crate) use crate::budget::MAX_EVENT_ROWS;
 
 fn category_color(cat: &str) -> Color {
     match cat {
-        "blueprint" => theme::primary(),
-        "command" => theme::cyan(),
-        "progress" => theme::warning(),
-        "result" => theme::success(),
-        "issue" => theme::danger(),
-        "verify" => theme::magenta(),
-        "chain" => theme::accent(),
-        _ => theme::dim(),
+        "blueprint" => style::primary(),
+        "command" => style::cyan(),
+        "progress" => style::warning(),
+        "result" => style::success(),
+        "issue" => style::danger(),
+        "verify" => style::magenta(),
+        "chain" => style::accent(),
+        _ => style::dim(),
     }
 }
 
@@ -130,7 +130,7 @@ fn event_row(e: &HallEvent, selected: bool) -> Line<'static> {
     let label = category_label(&e.category);
     let task = grid::clip(&e.task_id, 20);
     let base = if selected {
-        Style::default().bg(theme::surface_active())
+        Style::default().bg(style::surface_active())
     } else {
         Style::default()
     };
@@ -141,8 +141,8 @@ fn event_row(e: &HallEvent, selected: bool) -> Line<'static> {
             base.fg(category_color(&e.category))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {} ", task), base.fg(theme::accent())),
-        Span::styled(content_summary(e), base.fg(theme::text())),
+        Span::styled(format!(" {} ", task), base.fg(style::accent())),
+        Span::styled(content_summary(e), base.fg(style::text())),
     ])
 }
 
@@ -150,11 +150,11 @@ fn event_row(e: &HallEvent, selected: bool) -> Line<'static> {
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 事件流 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -172,13 +172,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![Line::from(vec![
         Span::styled(
             format!("  全局 gseq 因果序 · 最新 {} 条  ", total),
-            Style::default().fg(theme::dim()),
+            Style::default().fg(style::dim()),
         ),
-        Span::styled("过滤: ", Style::default().fg(theme::faint())),
+        Span::styled("过滤: ", Style::default().fg(style::faint())),
         Span::styled(
             filter_tip,
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -189,9 +189,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             },
             Style::default()
                 .fg(if app.connected {
-                    theme::success()
+                    style::success()
                 } else {
-                    theme::danger()
+                    style::danger()
                 })
                 .add_modifier(Modifier::BOLD),
         ),
@@ -201,7 +201,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     if total == 0 {
         lines.push(Line::from(Span::styled(
             "  暂无事件：任务执行产生的 progress/result/issue/verify 事件将在此回放。",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     } else {
         // hall.stream 已返回最新 N 条（升序），此处倒序展示（最新在前）。
@@ -228,7 +228,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     events.len(),
                     MAX_EVENT_ROWS
                 ),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )));
         }
     }
@@ -236,10 +236,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // 操作提示条（简约：↑↓ 选择 · 数字过滤 · Enter 详情 · Esc 返回）
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("  ↑↓ 选择", Style::default().fg(theme::faint())),
-        Span::styled("  0-7 过滤", Style::default().fg(theme::faint())),
-        Span::styled("  Enter 详情", Style::default().fg(theme::faint())),
-        Span::styled("  Esc 返回", Style::default().fg(theme::faint())),
+        Span::styled("  ↑↓ 选择", Style::default().fg(style::faint())),
+        Span::styled("  0-7 过滤", Style::default().fg(style::faint())),
+        Span::styled("  Enter 详情", Style::default().fg(style::faint())),
+        Span::styled("  Esc 返回", Style::default().fg(style::faint())),
     ]));
 
     f.render_widget(Paragraph::new(lines).block(block), area);

@@ -47,7 +47,7 @@ use ratatui::backend::Backend;
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use crate::term;
+use super::term;
 
 /// 帧度量日志节拍：每 N 帧（成帧 + 零绘制）输出一条 info 日志。与 L4 帧度量
 /// 节拍取同一数值，便于同窗口比对成帧比与分段耗时。

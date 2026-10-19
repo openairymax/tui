@@ -14,17 +14,17 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::theme;
+use crate::style;
 
 /// 渲染帮助面板。
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 帮助 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -42,7 +42,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     t.to_string(),
                     Style::default()
-                        .fg(theme::primary())
+                        .fg(style::primary())
                         .add_modifier(Modifier::BOLD),
                 ),
             ]));
@@ -57,21 +57,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         key.to_string(),
                         Style::default()
-                            .fg(theme::accent())
+                            .fg(style::accent())
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(rest, Style::default().fg(theme::dim())),
+                    Span::styled(rest, Style::default().fg(style::dim())),
                 ]));
             } else {
                 lines.push(Line::from(vec![
                     Span::styled("    ", Style::default()),
-                    Span::styled(t.to_string(), Style::default().fg(theme::dim())),
+                    Span::styled(t.to_string(), Style::default().fg(style::dim())),
                 ]));
             }
         } else {
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::styled(t.to_string(), Style::default().fg(theme::text())),
+                Span::styled(t.to_string(), Style::default().fg(style::text())),
             ]));
         }
     }

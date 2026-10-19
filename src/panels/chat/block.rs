@@ -16,7 +16,7 @@ use ratatui::{
 
 use crate::app::{App, ChatMessage, MessageRole};
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 
 /// 长回复折叠（2026-08-17，与 C 版 airy_cli 对齐）：折叠仅作用于 System
 /// 消息（Agent 最终答复不折叠，完整展示）。渲染行数超过 FOLD_MAX_LINES
@@ -51,7 +51,7 @@ pub(super) fn push_turn_separator(out: &mut Vec<Line<'static>>, app: &App) {
     let text = format!("{}{}{}{}", sep, elapsed, metrics, sep);
     out.push(Line::from(Span::styled(
         text,
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     )));
     out.push(Line::raw(""));
 }
@@ -88,9 +88,9 @@ pub(super) fn render(
 /// 头部行：角色名（加粗语义色）+ 状态图标 + 时间戳（极弱色）。
 fn push_header(out: &mut Vec<Line<'static>>, msg: &ChatMessage) {
     let (name, color) = match msg.role {
-        MessageRole::User => ("[For Thee]".to_string(), theme::primary()),
-        MessageRole::Agent => ("[Super Agent]".to_string(), theme::success()),
-        MessageRole::System => ("[Dual Think]".to_string(), theme::dim()),
+        MessageRole::User => ("[For Thee]".to_string(), style::primary()),
+        MessageRole::Agent => ("[Super Agent]".to_string(), style::success()),
+        MessageRole::System => ("[Dual Think]".to_string(), style::dim()),
         MessageRole::ToolCall | MessageRole::ToolResult => {
             // [Sub <tag> Agent]：tag 取工具名（ToolCall 首 token）；ToolResult
             // 是工具结果（JSON 等），无工具名可识别时回退 "exec"。
@@ -108,9 +108,9 @@ fn push_header(out: &mut Vec<Line<'static>>, msg: &ChatMessage) {
             };
             // 工具调用品红（调用侧）· 工具结果青（回传侧），Claude Code 风格
             let c = if msg.role == MessageRole::ToolCall {
-                theme::magenta()
+                style::magenta()
             } else {
-                theme::cyan()
+                style::cyan()
             };
             (name, c)
         }
@@ -121,13 +121,13 @@ fn push_header(out: &mut Vec<Line<'static>>, msg: &ChatMessage) {
     let (icon, icon_color) = match msg.role {
         MessageRole::ToolCall => {
             if msg.content.contains("（失败）") {
-                (" ✗", theme::danger())
+                (" ✗", style::danger())
             } else {
-                (" ✓", theme::success())
+                (" ✓", style::success())
             }
         }
-        MessageRole::ToolResult => (" ▸", theme::faint()),
-        _ => ("", theme::faint()),
+        MessageRole::ToolResult => (" ▸", style::faint()),
+        _ => ("", style::faint()),
     };
 
     out.push(Line::from(vec![
@@ -141,7 +141,7 @@ fn push_header(out: &mut Vec<Line<'static>>, msg: &ChatMessage) {
         ),
         Span::styled(
             format!("  {}", msg.timestamp),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         ),
     ]));
 }
@@ -154,15 +154,15 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
     // 工具调用/结果与思考链为次要信息：轻量 dim 色
     let base = match msg.role {
         MessageRole::ToolCall | MessageRole::ToolResult | MessageRole::System => {
-            Style::default().fg(theme::dim())
+            Style::default().fg(style::dim())
         }
-        _ => Style::default().fg(theme::text()),
+        _ => Style::default().fg(style::text()),
     };
 
     if msg.content.is_empty() {
         out.push(Line::from(Span::styled(
             format!("{:width$}（空）", "", width = INDENT),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     } else if is_tool(msg.role) {
         let max = width.saturating_sub(INDENT + 3).max(8);
@@ -188,7 +188,7 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
                     msg.original_bytes / 1024,
                     width = INDENT
                 ),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )));
         }
     } else {
@@ -198,7 +198,7 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
         // 用户消息：气泡背景色块（Claude 式左右分层）；Airymax 回复左对齐流式
         if msg.role == MessageRole::User {
             for line in rendered.iter_mut() {
-                let bg = theme::surface_active();
+                let bg = style::surface_active();
                 let spans: Vec<Span<'static>> =
                     line.spans.iter().map(|s| s.clone().bg(bg)).collect();
                 *line = Line::from(spans);
@@ -219,7 +219,7 @@ fn fold_block(out: &mut Vec<Line<'static>>, start: usize, expanded: bool) {
     out.truncate(start + FOLD_KEEP_LINES);
     out.push(Line::from(Span::styled(
         format!("  └ … {more} more lines · Alt+O 展开"),
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     )));
 }
 

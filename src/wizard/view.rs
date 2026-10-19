@@ -14,7 +14,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 
 use super::lang::Lang;
 use super::state::WizardState;
@@ -25,7 +25,7 @@ use super::text::byte_to_char;
 pub fn render(f: &mut Frame, area: Rect, w: &WizardState) {
     // 全屏填充背景：确保居中视图外无任何残留（视觉干净，居中明确）
     f.render_widget(
-        Paragraph::new(Text::raw("")).style(Style::default().bg(theme::bg())),
+        Paragraph::new(Text::raw("")).style(Style::default().bg(style::bg())),
         area,
     );
 
@@ -53,7 +53,7 @@ pub fn render(f: &mut Frame, area: Rect, w: &WizardState) {
             height: area.height.saturating_sub(pad_top),
         };
         f.render_widget(
-            Paragraph::new(Text::from(lines)).style(Style::default().bg(theme::bg())),
+            Paragraph::new(Text::from(lines)).style(Style::default().bg(style::bg())),
             body,
         );
         return;
@@ -71,7 +71,7 @@ pub fn render(f: &mut Frame, area: Rect, w: &WizardState) {
         height: area.height,
     };
     f.render_widget(
-        Paragraph::new(Text::from(view)).style(Style::default().bg(theme::bg())),
+        Paragraph::new(Text::from(view)).style(Style::default().bg(style::bg())),
         body,
     );
 }
@@ -226,11 +226,11 @@ fn field_line(
         (
             "▸",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (" ", Style::default().fg(theme::dim()))
+        (" ", Style::default().fg(style::dim()))
     };
     let raw = w.form.get(idx).map(|x| x.value.as_str()).unwrap_or("");
     let value = if editing {
@@ -245,12 +245,12 @@ fn field_line(
     };
     let value_style = if editing {
         Style::default()
-            .fg(theme::primary())
+            .fg(style::primary())
             .add_modifier(Modifier::BOLD)
     } else if value.is_empty() {
-        Style::default().fg(theme::faint())
+        Style::default().fg(style::faint())
     } else {
-        Style::default().fg(theme::text())
+        Style::default().fg(style::text())
     };
     let label_w = if zh { 10 } else { 12 };
     lines.push(Line::from(vec![
@@ -258,9 +258,9 @@ fn field_line(
         Span::styled(
             format!("{:<w$}", t(zh, f.label), w = label_w),
             Style::default().fg(if selected {
-                theme::primary()
+                style::primary()
             } else {
-                theme::dim()
+                style::dim()
             }),
         ),
         Span::styled(format!("[{}]", value), value_style),
@@ -343,11 +343,11 @@ fn option_line(selected: bool, text: &str) -> Line<'static> {
         (
             "▸",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (" ", Style::default().fg(theme::dim()))
+        (" ", Style::default().fg(style::dim()))
     };
     Line::from(vec![
         Span::styled(format!("    {} ", marker), style),
@@ -361,7 +361,7 @@ fn desc_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     for piece in grid::wrap(text, width.saturating_sub(8).max(10)) {
         out.push(Line::from(Span::styled(
             format!("      {}", piece),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
     if out.is_empty() {

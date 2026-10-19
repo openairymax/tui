@@ -12,7 +12,7 @@
 // 数学降级归 math 层；本层只负责把降级结果放进正确的样式槽位。
 
 use crate::markdown::math;
-use crate::theme;
+use crate::style;
 use pulldown_cmark::{Event, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
@@ -71,21 +71,21 @@ impl Inline {
             Event::Code(c) => {
                 self.spans.push(Span::styled(
                     c.to_string(),
-                    self.base.fg(theme::cyan()).bg(theme::surface_2()),
+                    self.base.fg(style::cyan()).bg(style::surface_2()),
                 ));
                 true
             }
             Event::InlineMath(t) => {
                 let d = math::degrade(t);
                 self.spans
-                    .push(Span::styled(d, self.base.fg(theme::magenta())));
+                    .push(Span::styled(d, self.base.fg(style::magenta())));
                 true
             }
             Event::DisplayMath(t) => {
                 let d = math::degrade(t);
                 self.spans.push(Span::styled(
                     format!(" {d} "),
-                    self.base.fg(theme::magenta()),
+                    self.base.fg(style::magenta()),
                 ));
                 true
             }
@@ -96,7 +96,7 @@ impl Inline {
             Event::FootnoteReference(name) => {
                 self.spans.push(Span::styled(
                     format!("[{name}]"),
-                    self.base.fg(theme::accent()),
+                    self.base.fg(style::accent()),
                 ));
                 true
             }
@@ -130,7 +130,7 @@ impl Inline {
             Tag::Image { dest_url, .. } => {
                 self.spans.push(Span::styled(
                     "[图片: ".to_string(),
-                    self.base.fg(theme::dim()),
+                    self.base.fg(style::dim()),
                 ));
                 self.link = Some(dest_url.to_string());
                 self.link_at = self.spans.len();
@@ -160,7 +160,7 @@ impl Inline {
             }
             TagEnd::Image => {
                 self.spans
-                    .push(Span::styled("]".to_string(), self.base.fg(theme::dim())));
+                    .push(Span::styled("]".to_string(), self.base.fg(style::dim())));
                 self.link_tail();
                 true
             }
@@ -178,7 +178,7 @@ impl Inline {
         if !url.is_empty() && text != url {
             self.spans.push(Span::styled(
                 format!(" ({url})"),
-                self.base.fg(theme::faint()),
+                self.base.fg(style::faint()),
             ));
         }
     }
@@ -198,7 +198,7 @@ impl Inline {
             self.spans.push(Span::styled(
                 tail[..end].to_string(),
                 self.base
-                    .fg(theme::accent())
+                    .fg(style::accent())
                     .add_modifier(Modifier::UNDERLINED),
             ));
             rest = &tail[end..];
@@ -218,9 +218,9 @@ impl Inline {
 
     fn style(&self) -> Style {
         // 基础样式已带前景色时不得覆盖：标题的层次色由 block 层经 set_base 注入，
-        // 若在此强制回落 theme::text() 会抹掉标题与普通文本的区分。
+        // 若在此强制回落 style::text() 会抹掉标题与普通文本的区分。
         let mut s = if self.base.fg.is_none() {
-            self.base.fg(theme::text())
+            self.base.fg(style::text())
         } else {
             self.base
         };
@@ -234,7 +234,7 @@ impl Inline {
             s = s.add_modifier(Modifier::CROSSED_OUT);
         }
         if self.link.is_some() {
-            s = s.fg(theme::accent()).add_modifier(Modifier::UNDERLINED);
+            s = s.fg(style::accent()).add_modifier(Modifier::UNDERLINED);
         }
         s
     }

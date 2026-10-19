@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 
 /// Render the plugins panel.
 ///
@@ -24,11 +24,11 @@ use crate::theme;
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 插件 / 技能库 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -37,11 +37,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let text = vec![
             Line::from(Span::styled(
                 "  技能库为空",
-                Style::default().fg(theme::dim()),
+                Style::default().fg(style::dim()),
             )),
             Line::from(Span::styled(
                 "  任务成功后经验会自动沉淀为可复用技能（经网关 mem.* 与 CLI 共享）。",
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )),
         ];
         f.render_widget(Paragraph::new(text).block(block), area);
@@ -50,11 +50,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled("  技能条数  ", Style::default().fg(theme::faint())),
+            Span::styled("  技能条数  ", Style::default().fg(style::faint())),
             Span::styled(
                 format!("{}", skills.len()),
                 Style::default()
-                    .fg(theme::magenta())
+                    .fg(style::magenta())
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
@@ -66,29 +66,29 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!("  {} ", skill.name),
                 Style::default()
-                    .fg(theme::primary())
+                    .fg(style::primary())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("[{}] ", skill.category),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ),
             Span::styled(
                 format!("复用 {} 次", skill.success_count),
-                Style::default().fg(theme::dim()),
+                Style::default().fg(style::dim()),
             ),
         ]));
         // 技能摘要缩进一行，边界按列裁决（中文摘要按字符取会越过面板右边界）
         let summary = grid::clip(&skill.summary, 70);
         lines.push(Line::from(Span::styled(
             format!("    {}", summary),
-            Style::default().fg(theme::text()),
+            Style::default().fg(style::text()),
         )));
     }
     if skills.len() > 10 {
         lines.push(Line::from(Span::styled(
             format!("  … 共 {} 条", skills.len()),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
 

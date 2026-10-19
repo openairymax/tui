@@ -24,17 +24,17 @@ use ratatui::{
 
 use crate::app::App;
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 
 /// Render the logs panel.
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 运行时日志 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -44,15 +44,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let text = vec![
             Line::from(Span::styled(
                 "  暂无日志",
-                Style::default().fg(theme::dim()),
+                Style::default().fg(style::dim()),
             )),
             Line::from(Span::styled(
                 "  本 TUI 进程的连接/权限/控制等运行时事件将在此显示。",
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )),
             Line::from(Span::styled(
                 format!("  完整 daemon 运行日志：{home}/logs/*.log"),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )),
         ];
         f.render_widget(Paragraph::new(text).block(block), area);
@@ -70,13 +70,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     for entry in app.logs.iter().rev().skip(offset).take(view_rows) {
         let level_style = match entry.level.as_str() {
             "ERROR" => Style::default()
-                .fg(theme::danger())
+                .fg(style::danger())
                 .add_modifier(Modifier::BOLD),
             "WARN" => Style::default()
-                .fg(theme::warning())
+                .fg(style::warning())
                 .add_modifier(Modifier::BOLD),
-            "INFO" => Style::default().fg(theme::accent()),
-            _ => Style::default().fg(theme::text()),
+            "INFO" => Style::default().fg(style::accent()),
+            _ => Style::default().fg(style::text()),
         };
         // 条目恒占一行：内嵌换行展平为空格（anyhow 链式错误常含多行）
         let flat: String = entry.message.replace(['\n', '\r'], " ");
@@ -91,7 +91,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let room = inner_w.saturating_sub(head_cols);
         let msg = grid::clip(&flat, room);
         let mut spans = vec![
-            Span::styled(&entry.timestamp, Style::default().fg(theme::faint())),
+            Span::styled(&entry.timestamp, Style::default().fg(style::faint())),
             Span::raw(" "),
             Span::styled(&entry.level, level_style),
             Span::raw(" "),
@@ -99,10 +99,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         if !daemon_head.is_empty() {
             spans.push(Span::styled(
                 daemon_head,
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ));
         }
-        spans.push(Span::styled(msg, Style::default().fg(theme::dim())));
+        spans.push(Span::styled(msg, Style::default().fg(style::dim())));
         lines.push(Line::from(spans));
     }
 
