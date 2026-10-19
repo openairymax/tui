@@ -28,3 +28,4 @@ pub(crate) mod leader;
 pub(crate) mod sched;
 pub(crate) mod toast;
 pub(crate) mod view;
+pub(crate) mod window;
