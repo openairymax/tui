@@ -64,7 +64,12 @@ struct State {
 }
 
 /// 渲染入口：消费事件流，产出终端行序列。
-pub(super) fn render<'a, I>(events: I, indent: usize, width: usize, base: Style) -> Vec<Line<'static>>
+pub(super) fn render<'a, I>(
+    events: I,
+    indent: usize,
+    width: usize,
+    base: Style,
+) -> Vec<Line<'static>>
 where
     I: Iterator<Item = Event<'a>>,
 {
@@ -302,7 +307,9 @@ impl State {
     fn task_mark(&mut self, done: bool) {
         self.mark = Mark::Task(done);
         self.inline.set_base(if done {
-            self.base.fg(theme::faint()).add_modifier(Modifier::CROSSED_OUT)
+            self.base
+                .fg(theme::faint())
+                .add_modifier(Modifier::CROSSED_OUT)
         } else {
             self.base
         });
@@ -347,11 +354,7 @@ impl State {
         if self.table.is_some() {
             self.close_table();
         }
-        while self
-            .out
-            .last()
-            .is_some_and(|l| grid::line_w(&l.spans) == 0)
-        {
+        while self.out.last().is_some_and(|l| grid::line_w(&l.spans) == 0) {
             self.out.pop();
         }
         self.out
@@ -376,7 +379,10 @@ impl State {
             Mark::None => {}
             Mark::Bullet => v.push(Span::styled("• ".to_string(), dim)),
             Mark::Ordered(n) => v.push(Span::styled(format!("{n}. "), dim)),
-            Mark::Task(true) => v.push(Span::styled("● ".to_string(), self.base.fg(theme::accent()))),
+            Mark::Task(true) => v.push(Span::styled(
+                "● ".to_string(),
+                self.base.fg(theme::accent()),
+            )),
             Mark::Task(false) => v.push(Span::styled("○ ".to_string(), dim)),
         }
         self.prefix = v;
@@ -452,10 +458,7 @@ mod tests {
     #[test]
     fn heading_is_bold_and_colored() {
         let lines = render_md("# 大标题", 40);
-        let span = lines[0]
-            .spans
-            .iter()
-            .find(|s| s.content.contains("大标题"));
+        let span = lines[0].spans.iter().find(|s| s.content.contains("大标题"));
         assert!(span.is_some_and(|s| s.style.add_modifier.contains(Modifier::BOLD)));
         assert!(span.is_some_and(|s| s.style.fg == Some(theme::primary())));
     }

@@ -368,10 +368,7 @@ fn ident_at(b: &[u8], mut i: usize) -> (String, usize) {
     while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
         i += 1;
     }
-    (
-        String::from_utf8_lossy(&b[start..i]).into_owned(),
-        i,
-    )
+    (String::from_utf8_lossy(&b[start..i]).into_owned(), i)
 }
 
 fn func_of(name: &str) -> Option<Func> {

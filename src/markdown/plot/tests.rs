@@ -25,9 +25,11 @@ fn has_braille(s: &str) -> bool {
 }
 
 fn shaded(lines: &[Line<'static>]) -> bool {
-    lines
-        .iter()
-        .any(|l| l.spans.iter().any(|sp| sp.style.bg == Some(theme::surface_2())))
+    lines.iter().any(|l| {
+        l.spans
+            .iter()
+            .any(|sp| sp.style.bg == Some(theme::surface_2()))
+    })
 }
 
 #[test]
@@ -169,15 +171,30 @@ fn unknown_function_degrades_instead_of_panicking() {
 #[test]
 fn expression_out_of_domain_yields_gaps_not_failure() {
     // sqrt(x) 在 x<0 无定义：左半段应断线，右半段仍绘制
-    let out = render_plot(&rows(&["x: -2 .. 2", "f: sqrt(x)"]), 0, 80, Style::default());
+    let out = render_plot(
+        &rows(&["x: -2 .. 2", "f: sqrt(x)"]),
+        0,
+        80,
+        Style::default(),
+    );
     assert!(has_braille(&joined(&out)));
 }
 
 #[test]
 fn sampling_density_tracks_terminal_width() {
     // 采样点数 = 画布像素宽 = cols*2，故加宽终端不会让曲线变稀疏
-    let narrow = render_plot(&rows(&["x: 0 .. 100", "f: sin(x)"]), 0, 30, Style::default());
-    let wide = render_plot(&rows(&["x: 0 .. 100", "f: sin(x)"]), 0, 120, Style::default());
+    let narrow = render_plot(
+        &rows(&["x: 0 .. 100", "f: sin(x)"]),
+        0,
+        30,
+        Style::default(),
+    );
+    let wide = render_plot(
+        &rows(&["x: 0 .. 100", "f: sin(x)"]),
+        0,
+        120,
+        Style::default(),
+    );
     let w = |ls: &[Line<'static>]| ls.iter().map(|l| grid::line_w(&l.spans)).max().unwrap_or(0);
     assert!(w(&wide) > w(&narrow), "画布应随终端宽度增长");
 }

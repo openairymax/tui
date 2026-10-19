@@ -157,7 +157,11 @@ mod tests {
     use super::*;
 
     fn joined(lines: &[Line<'static>]) -> String {
-        lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")
+        lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]

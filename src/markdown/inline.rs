@@ -83,8 +83,10 @@ impl Inline {
             }
             Event::DisplayMath(t) => {
                 let d = math::degrade(t);
-                self.spans
-                    .push(Span::styled(format!(" {d} "), self.base.fg(theme::magenta())));
+                self.spans.push(Span::styled(
+                    format!(" {d} "),
+                    self.base.fg(theme::magenta()),
+                ));
                 true
             }
             Event::SoftBreak => {
@@ -126,8 +128,10 @@ impl Inline {
                 true
             }
             Tag::Image { dest_url, .. } => {
-                self.spans
-                    .push(Span::styled("[图片: ".to_string(), self.base.fg(theme::dim())));
+                self.spans.push(Span::styled(
+                    "[图片: ".to_string(),
+                    self.base.fg(theme::dim()),
+                ));
                 self.link = Some(dest_url.to_string());
                 self.link_at = self.spans.len();
                 true
@@ -172,8 +176,10 @@ impl Inline {
             .map(|s| s.content.as_ref())
             .collect();
         if !url.is_empty() && text != url {
-            self.spans
-                .push(Span::styled(format!(" ({url})"), self.base.fg(theme::faint())));
+            self.spans.push(Span::styled(
+                format!(" ({url})"),
+                self.base.fg(theme::faint()),
+            ));
         }
     }
 
@@ -259,7 +265,10 @@ mod tests {
         opts.insert(Options::ENABLE_STRIKETHROUGH);
         let mut inline = Inline::new(Style::default());
         for ev in Parser::new_ext(md, opts) {
-            if matches!(ev, Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)) {
+            if matches!(
+                ev,
+                Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)
+            ) {
                 continue;
             }
             inline.on(&ev);
@@ -278,9 +287,7 @@ mod tests {
         let inner = s.iter().find(|sp| sp.content == "斜");
         let style = inner.map(|sp| sp.style);
         assert!(
-            style.is_some_and(|st| st
-                .add_modifier
-                .contains(Modifier::BOLD | Modifier::ITALIC)),
+            style.is_some_and(|st| st.add_modifier.contains(Modifier::BOLD | Modifier::ITALIC)),
             "嵌套强调应同时具备粗体与斜体: {s:?}"
         );
     }

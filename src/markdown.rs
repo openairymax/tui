@@ -28,10 +28,7 @@ mod plot;
 mod table;
 
 use pulldown_cmark::{Options, Parser};
-use ratatui::{
-    style::Style,
-    text::Line,
-};
+use ratatui::{style::Style, text::Line};
 
 #[cfg(test)]
 use plot::braille_set;
@@ -117,9 +114,7 @@ mod tests {
         // plot 关键字出现在普通文本中不应触发画板模式
         let out = joined("plot is a word\ntitle: not a plot\nxs: 1,2\nys: 1,2", 60);
         assert!(out.contains("not a plot"));
-        assert!(!out
-            .chars()
-            .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)));
+        assert!(!out.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)));
     }
 
     #[test]

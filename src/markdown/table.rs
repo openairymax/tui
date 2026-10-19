@@ -177,7 +177,11 @@ mod tests {
                 cell("１２３"),
                 cell("混合 mix 文字"),
             ],
-            vec![cell("a你b好c"), cell("456"), cell("组合字符 e\u{0301} 结束")],
+            vec![
+                cell("a你b好c"),
+                cell("456"),
+                cell("组合字符 e\u{0301} 结束"),
+            ],
         ];
         (head, rows)
     }
