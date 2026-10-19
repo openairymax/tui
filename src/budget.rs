@@ -64,6 +64,10 @@ pub(crate) const SHELL_INPUT_ROWS: u16 = 2;
 pub(crate) const SHELL_INPUT_IME_ROWS: u16 = 3;
 /// 快捷键行高度。
 pub(crate) const SHELL_SHORTCUT_ROWS: u16 = 1;
+/// 内联渲染视口行数（§5.5 #7）：备用屏不可用或显式内联时的回滚形态。
+/// 渲染区锚定终端底部，历史输出留在滚动回滚区；实际高度取
+/// `min(终端行数, 本常量)`，由 ratatui 内联视口自动收敛。
+pub(crate) const INLINE_VIEWPORT_ROWS: u16 = 24;
 
 // ── 投影窗口 ────────────────────────────────────────────────────────────
 
@@ -193,6 +197,11 @@ const _: () = {
     assert!(SHELL_MAIN_MIN_ROWS >= SHELL_INPUT_IME_ROWS);
     assert!(SHELL_BANNER_ROWS > 0 && SHELL_APPROVAL_ROWS > 0);
     assert!(SHELL_LEADER_ROWS > 0 && SHELL_SHORTCUT_ROWS > 0);
+    // 内联视口须至少容纳一屏完整外壳（状态条 + 主内容 + IME 输入栏 + 键位行）。
+    assert!(
+        INLINE_VIEWPORT_ROWS
+            >= SHELL_STATUS_ROWS + SHELL_MAIN_MIN_ROWS + SHELL_INPUT_IME_ROWS + SHELL_SHORTCUT_ROWS
+    );
 
     // 帧界：最小成帧间隔不得长于发布节拍，单帧预算须落在间隔之内。
     assert!(MIN_RENDER_INTERVAL_MS <= DEFAULT_LIVE_PUBLISH_INTERVAL_MS);
