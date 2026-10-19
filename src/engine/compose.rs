@@ -47,6 +47,7 @@ use ratatui::backend::Backend;
 use ratatui::Frame;
 use ratatui::Terminal;
 
+use super::guard::{self, Dead};
 use super::term;
 
 /// 帧度量日志节拍：每 N 帧（成帧 + 零绘制）输出一条 info 日志。与 L4 帧度量
@@ -74,6 +75,8 @@ pub(crate) enum FrameOutcome {
     Skipped,
     /// 渲染故障：会话继续、渲染暂停（上一帧保留，冷却中）。
     Degraded,
+    /// 终端已消失（§5.5 #6）：不再重试，调用方应结束主循环。
+    Dead(Dead),
 }
 
 /// 重连退避：连续第 n 次故障后暂停 `2^(n-1)` 轮成帧重试，封顶 `RETRY_CAP`。
@@ -121,6 +124,8 @@ pub(crate) struct Compositor {
     faults: u32,
     /// 重连冷却剩余轮次：> 0 时暂停成帧尝试（不触碰后端），避免故障自旋。
     cooldown: u32,
+    /// 终端死亡结论（§5.5 #6）：一旦判定即终局，不再触碰后端。
+    dead: Option<Dead>,
 }
 
 impl Compositor {
@@ -132,6 +137,7 @@ impl Compositor {
             skipped: 0,
             faults: 0,
             cooldown: 0,
+            dead: None,
         }
     }
 
@@ -155,6 +161,9 @@ impl Compositor {
         B: Backend,
         F: FnOnce(&mut Frame),
     {
+        if let Some(dead) = self.dead {
+            return FrameOutcome::Dead(dead);
+        }
         if !self.dirty {
             self.skipped = self.skipped.wrapping_add(1);
             self.note();
@@ -176,6 +185,15 @@ impl Compositor {
                 FrameOutcome::Drawn
             }
             Err(fault) => {
+                // §5.5 #6：终端消失不是可重试故障。判定后进入终局，
+                // 避免在已断开的终端上反复写失败自旋。
+                if let Fault::Backend(e) = &fault {
+                    if let Some(dead) = guard::probe(e) {
+                        self.dead = Some(dead);
+                        log::warn!("engine/guard: 终端已消失（{}），停止成帧", dead.code());
+                        return FrameOutcome::Dead(dead);
+                    }
+                }
                 self.degrade(&fault);
                 FrameOutcome::Degraded
             }
@@ -216,7 +234,7 @@ impl Compositor {
 
 #[cfg(test)]
 mod tests {
-    use super::{backoff, Compositor, FrameOutcome, RETRY_CAP};
+    use super::{backoff, Compositor, Dead, FrameOutcome, RETRY_CAP};
     use ratatui::backend::{Backend, TestBackend, WindowSize};
     use ratatui::buffer::{Buffer, Cell as TermCell};
     use ratatui::layout::{Position, Size};
@@ -354,11 +372,11 @@ mod tests {
         assert_eq!(compose.drawn, 2, "自愈帧计入成帧");
     }
 
-    /// 写失败注入后端：`failing` 置位后所有写操作返回 `BrokenPipe`，其余委托
+    /// 写失败注入后端：`failing` 置位后所有写操作按指定错误种类失败，其余委托
     /// `TestBackend`；`writes` 计数后端被触碰的次数（用于断言冷却期零触碰）。
     struct FlakyBackend {
         inner: TestBackend,
-        failing: Cell<bool>,
+        failing: Cell<Option<io::ErrorKind>>,
         writes: Cell<u64>,
     }
 
@@ -366,16 +384,16 @@ mod tests {
         fn new(width: u16, height: u16) -> Self {
             Self {
                 inner: TestBackend::new(width, height),
-                failing: Cell::new(false),
+                failing: Cell::new(None),
                 writes: Cell::new(0),
             }
         }
 
-        /// 记一次写尝试；处于故障态则失败（模拟终端断开/管道关闭）。
+        /// 记一次写尝试；处于故障态则失败（模拟终端抖动或断开）。
         fn write(&self) -> io::Result<()> {
             self.writes.set(self.writes.get() + 1);
-            if self.failing.get() {
-                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "注入写失败"));
+            if let Some(kind) = self.failing.get() {
+                return Err(io::Error::new(kind, "注入写失败"));
             }
             Ok(())
         }
@@ -441,8 +459,11 @@ mod tests {
         );
         assert!(!compose.degraded());
 
-        // 终端断开：写失败必须降级，且不得冒泡为致命错误
-        terminal.backend_mut().failing.set(true);
+        // 终端抖动（超时）：可重试故障必须降级，且不得冒泡为致命错误
+        terminal
+            .backend_mut()
+            .failing
+            .set(Some(io::ErrorKind::TimedOut));
         compose.invalidate();
         assert_eq!(
             compose.frame(&mut terminal, |f| paint(f, "不应出现")),
@@ -464,12 +485,49 @@ mod tests {
         );
 
         // 终端恢复：重连成功即自愈，画面继续推进
-        terminal.backend_mut().failing.set(false);
+        terminal.backend_mut().failing.set(None);
         assert_eq!(
             compose.frame(&mut terminal, |f| paint(f, "重连")),
             FrameOutcome::Drawn
         );
         assert!(!compose.degraded(), "重连成功即自愈");
         assert_eq!(compose.drawn, 2);
+    }
+
+    /// §5.5 #6：终端消失（EPIPE）是终局——判定一次后不再触碰后端。
+    #[test]
+    fn dead_terminal_stops_rendering_for_good() {
+        let backend = FlakyBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("测试后端构造");
+        let mut compose = Compositor::new();
+        assert_eq!(
+            compose.frame(&mut terminal, |f| paint(f, "在线")),
+            FrameOutcome::Drawn
+        );
+
+        terminal
+            .backend_mut()
+            .failing
+            .set(Some(io::ErrorKind::BrokenPipe));
+        compose.invalidate();
+        assert_eq!(
+            compose.frame(&mut terminal, |f| paint(f, "不应出现")),
+            FrameOutcome::Dead(Dead::Pipe)
+        );
+        let after = terminal.backend().writes.get();
+
+        // 终局：后续任何帧请求都不得再触碰后端（死终端零自旋）
+        for _ in 0..100 {
+            compose.invalidate();
+            assert_eq!(
+                compose.frame(&mut terminal, |f| paint(f, "不应出现")),
+                FrameOutcome::Dead(Dead::Pipe)
+            );
+        }
+        assert_eq!(
+            terminal.backend().writes.get(),
+            after,
+            "死亡判定后不得再写后端"
+        );
     }
 }
