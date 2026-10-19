@@ -229,6 +229,9 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient, boot: &Boot) -> Result<()> {
     // Setup terminal —— RAII 守卫：acquire 失败/任何后续路径（run_app Err、
     // panic、exec）退出作用域时 Drop 完整还原，终端状态永不滞留。
     let mut guard = engine::term::TerminalGuard::acquire()?;
+    // §5.5 #1：能力探测与首帧并发；结论在首帧后回收（晚到热修正）。
+    // 声明在 guard 之后，Drop 逆序保证探测线程先于终端还原退出。
+    let mut probe = engine::term::Probe::spawn();
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).map_err(|e| {
@@ -263,7 +266,7 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient, boot: &Boot) -> Result<()> {
     info!("App state initialized. boot probe dispatched");
 
     // Main event loop
-    let result = run_app(&mut terminal, &mut app, boot).await;
+    let result = run_app(&mut terminal, &mut app, boot, probe.as_mut()).await;
 
     // Restore terminal —— T-03（P0-8）：每步独立容错，绝不 `?` 短路
     // （原还原链首步 disable_raw_mode 失败即跳过后续全部步骤，终端
@@ -318,7 +321,12 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient, boot: &Boot) -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &Boot) -> Result<()> {
+async fn run_app<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    boot: &Boot,
+    mut probe: Option<&mut engine::term::Probe>,
+) -> Result<()> {
     // 0.1.18 A 轨 §5A.3 W4：L4 调度层持有者，唯一节拍权威。时刻一律由本基准
     // 的单调毫秒注入（调度层禁止自取时钟），故节拍判定可被虚拟时钟直接驱动。
     let base = Instant::now();
@@ -444,6 +452,23 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
             sched.note_frame(layout_us, total_us.saturating_sub(layout_us));
         }
         app.render_degraded = compose.degraded();
+
+        // 终端能力探测结论消费（§5.5 #1、§6.8 #3）：首帧后一次性回收并
+        // join 探测线程，之后才允许进入事件轮询（stdin 单一读者）。结论
+        // 与启动期 COLORFGBG 推断不同则热修正主题并补一帧，不重建终端。
+        if let Some(probe) = probe.take() {
+            match probe.collect().scheme {
+                Some((scheme, src)) => {
+                    let light = matches!(scheme, engine::probe::Scheme::Light);
+                    if style::apply_scheme(light) {
+                        info!("engine/probe: 明暗 {scheme:?}（来源 {src:?}），主题已热修正");
+                        sched.push(Lane::Panel);
+                        compose.invalidate();
+                    }
+                }
+                None => debug!("engine/probe: 窗口内无明暗应答，沿用环境推断"),
+            }
+        }
 
         // 插入对话推进：请求完成后取一条排队输入提交（单 pending 槽，逐条消费）。
         // 计入输入档——用户消息即时成帧回显，不受合帧窗口约束。
