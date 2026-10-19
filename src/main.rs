@@ -321,6 +321,17 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient, boot: &Boot) -> Result<()> {
     Ok(())
 }
 
+/// 终端 IO 失败的统一出口（§5.5 #6）：死亡即静默正常退出，其余照常冒泡。
+fn leave_on_dead(err: io::Error) -> Result<()> {
+    match engine::guard::probe(&err) {
+        Some(dead) => {
+            warn!("engine/guard: 终端已消失（{}），结束主循环", dead.code());
+            Ok(())
+        }
+        None => Err(err.into()),
+    }
+}
+
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -371,6 +382,9 @@ async fn run_app<B: Backend>(
                 execute!(io::stdout(), DisableMouseCapture)
             };
             if let Err(e) = res {
+                if engine::guard::probe(&e).is_some() {
+                    return leave_on_dead(e);
+                }
                 warn!("mouse capture switch failed: {}", e);
             }
             mouse_on = app.mouse_capture;
@@ -452,6 +466,12 @@ async fn run_app<B: Backend>(
             present::render(f, app);
             layout_us = laid.elapsed().as_micros() as u64;
         });
+        // §5.5 #6：终端已消失（SSH 断开/窗口关闭）时立即退出，不在死终端
+        // 上重试或补帧；终端已不可写，故走静默正常退出而非错误上报。
+        if let engine::compose::FrameOutcome::Dead(dead) = outcome {
+            warn!("engine/guard: 终端已消失（{}），结束主循环", dead.code());
+            return Ok(());
+        }
         if outcome == engine::compose::FrameOutcome::Drawn {
             if !first_drawn {
                 first_drawn = true;
@@ -502,11 +522,22 @@ async fn run_app<B: Backend>(
         if let Some(left) = app.leader_wait(Instant::now()) {
             wait = wait.min(left);
         }
-        if !event::poll(wait)? {
+        // §5.5 #6：输入通道死亡（EOF/EIO/连接断开）与成帧失败同一判据，
+        // 一律按终局静默退出——终端消失后 poll 会持续失败，冒泡成 Err
+        // 只会在死终端上打印错误，且进程无法被 shell 及时回收。
+        let ready = match event::poll(wait) {
+            Ok(ready) => ready,
+            Err(e) => return leave_on_dead(e),
+        };
+        if !ready {
             continue;
         }
 
-        match event::read()? {
+        let ev = match event::read() {
+            Ok(ev) => ev,
+            Err(e) => return leave_on_dead(e),
+        };
+        match ev {
             Event::Paste(text) => {
                 // 输入档立即成帧：回显延迟不劣化（不受合帧窗口约束）
                 sched.push(Lane::Input);

@@ -29,6 +29,7 @@ pub(crate) mod cache;
 pub(crate) mod compose;
 pub(crate) mod fold;
 pub(crate) mod grid;
+pub(crate) mod guard;
 pub(crate) mod health;
 pub(crate) mod layout;
 pub(crate) mod leader;
