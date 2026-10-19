@@ -37,7 +37,8 @@ pub fn category_label(cat: &str) -> &'static str {
 /// 事件流单屏物化行数上限：渲染只取最新 MAX_EVENT_ROWS 条，选中行与
 /// Enter 详情也必须收敛到该窗口内，否则光标越界后高亮消失、Enter 打开
 /// 屏外条目（与 app/panel.rs 光标移动共用同一上限）。
-pub(crate) const MAX_EVENT_ROWS: usize = 256;
+/// 0.1.19 L7：界值收敛到 budget.rs 单一来源，此处仅保留调用路径。
+pub(crate) use crate::budget::MAX_EVENT_ROWS;
 
 fn category_color(cat: &str) -> Color {
     match cat {

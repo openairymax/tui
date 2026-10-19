@@ -20,6 +20,7 @@
 //     AGENTRT_TUI_LOG=/tmp/tui.log agentrt-tui  # 自定义日志路径
 
 mod app;
+mod budget;
 mod client;
 mod engine;
 mod gccp;

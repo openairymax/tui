@@ -32,14 +32,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use rustc_hash::{FxHashMap, FxHasher};
 
+use crate::budget::{COMPOSE_CACHE_BYTES, COMPOSE_CACHE_ENTRIES};
 use crate::theme::{ColorDepth, ThemeMode};
 
 use super::view::Key;
 
-/// 条目数上限：超限按最近使用次序淘汰最久未用条目。
-const MAX_ENTRIES: usize = 256;
-/// 字节上限（估算口径：行/片段结构开销 + 片段文本长度）。
-const MAX_BYTES: usize = 8 * 1024 * 1024;
 /// 命中率日志节拍：每 N 次查询输出一条 debug 日志（按次数而非时间，确定性）。
 const LOG_EVERY: u64 = 4096;
 
@@ -173,7 +170,7 @@ impl ParseCache {
             self.bytes = self.bytes.saturating_sub(old.bytes);
         }
         self.bytes += bytes;
-        self.evict(MAX_ENTRIES, MAX_BYTES);
+        self.evict(COMPOSE_CACHE_ENTRIES, COMPOSE_CACHE_BYTES);
     }
 
     /// 淘汰最久未用条目至双界之内。单条即超字节预算时连同自身淘汰——
@@ -204,9 +201,9 @@ impl ParseCache {
             self.misses,
             self.parses,
             self.entries.len(),
-            MAX_ENTRIES,
+            COMPOSE_CACHE_ENTRIES,
             self.bytes,
-            MAX_BYTES
+            COMPOSE_CACHE_BYTES
         );
     }
 }
@@ -396,17 +393,17 @@ mod tests {
     fn lru_evicts_oldest_beyond_entry_cap() {
         reset();
         let base = Style::default();
-        let total = MAX_ENTRIES as u64 + 32;
+        let total = COMPOSE_CACHE_ENTRIES as u64 + 32;
         for id in 0..total {
             render_md(Some(Key::msg(id)), "同内容", 0, 20, base);
         }
         assert!(
-            stats().entries <= MAX_ENTRIES,
+            stats().entries <= COMPOSE_CACHE_ENTRIES,
             "条目数应受限于上限: {}",
             stats().entries
         );
         assert!(
-            stats().bytes <= MAX_BYTES,
+            stats().bytes <= COMPOSE_CACHE_BYTES,
             "字节数应受限于上限: {}",
             stats().bytes
         );
@@ -427,7 +424,7 @@ mod tests {
         }
         let before = cache.entries.len();
         assert!(cache.bytes > 1024, "前置条件：应超出测试预算");
-        cache.evict(MAX_ENTRIES, 1024);
+        cache.evict(COMPOSE_CACHE_ENTRIES, 1024);
         assert!(cache.entries.len() < before, "超预算应淘汰条目");
         assert!(cache.bytes <= 1024, "淘汰后应回到预算内: {}", cache.bytes);
     }
@@ -438,7 +435,7 @@ mod tests {
         let mut cache = ParseCache::default();
         let lines = vec![Line::raw("y".repeat(4096))];
         cache.store(ck(1, 1, 0, 20, Style::default()), &lines);
-        cache.evict(MAX_ENTRIES, 1024);
+        cache.evict(COMPOSE_CACHE_ENTRIES, 1024);
         assert!(cache.entries.is_empty(), "超预算单条不应驻留");
         assert_eq!(cache.bytes, 0);
     }
