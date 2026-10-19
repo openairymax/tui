@@ -205,6 +205,18 @@ fn emit_seq(seq: &str) -> bool {
     out.write_all(seq.as_bytes()).is_ok() && out.flush().is_ok()
 }
 
+/// 会话完成通知（§5.5 #5、§6.7 #4）：按方法表择一投递，返回实际方法。
+///
+/// 非 TTY 或写入失败返回 None——调用方据此做状态条兜底，绝不假定
+/// 通知已送达。方法表与序列生成在 engine/notify，本函数是唯一写出点。
+pub(crate) fn notify(title: &str, body: &str) -> Option<super::notify::Method> {
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    let method = super::notify::detect();
+    emit_seq(&super::notify::frame(method, title, body)).then_some(method)
+}
+
 /// 经平台命令写入剪贴板：逐个尝试，前一个不可用或失败才试下一个。
 fn platform_copy(text: &str) -> bool {
     #[cfg(target_os = "macos")]
@@ -451,5 +463,11 @@ mod tests {
     #[test]
     fn empty_text_is_not_copied() {
         assert!(!copy_text(""));
+    }
+
+    /// 测试进程的 stdout 被捕获（非 TTY），通知必须显式失败而非假装送达。
+    #[test]
+    fn notify_without_tty_reports_failure() {
+        assert!(notify("Airymax", "回合完成").is_none());
     }
 }

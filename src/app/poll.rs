@@ -462,6 +462,22 @@ impl App {
         self.loading = false;
         self.set_task_control(TaskControl::Running);
         log::info!("poll_pending: 消费后台请求结果（kind={:?}）", kind);
+        // 会话完成通知（§6.7 #4）：只在对话回合落定时生产，内部多步请求
+        // （GRAD/GCCP/蒸馏）不逐段打扰；正文按成功/失败区分。
+        if matches!(
+            &kind,
+            PendingKind::ChatRound { .. } | PendingKind::StreamRound { .. }
+        ) {
+            let secs = self.turn_started.elapsed().as_secs_f64();
+            let body = match &outcome {
+                PendingOutcome::Run(Ok(_)) => format!("回合完成 · {secs:.1}s"),
+                _ => format!("回合失败 · {secs:.1}s"),
+            };
+            self.notice = Some(crate::app::Notice {
+                title: "Airymax".to_string(),
+                body,
+            });
+        }
         // 回合计时结算：回合分隔线展示本回合耗时（Worked for Ns）
         self.last_turn_elapsed = Some(self.turn_started);
         self.apply_result(kind, outcome);

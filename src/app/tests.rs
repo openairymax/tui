@@ -221,6 +221,20 @@ fn begin_busy_marks_request_start() {
     );
 }
 
+/// U14 §6.7 #4：完成通知由 App 生产、主循环消费，取走即清零（不重复弹）。
+#[test]
+fn notice_is_drained_exactly_once() {
+    let _h = crate::test_env::Home::new("u14-notice");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.notice = Some(crate::app::Notice {
+        title: "Airymax".to_string(),
+        body: "回合完成".to_string(),
+    });
+    assert!(app.take_notice().is_some(), "首次取走应得到通知");
+    assert!(app.take_notice().is_none(), "取走后不得重复投递");
+}
+
 /// B2（0.1.18）§5A.3 W4：本地打字机已移除——流式增量到达当拍即整块上屏
 /// （`poll_pending` 单拍内直接追加），上屏与落定之间不存在动画门控；同时
 /// 落地按来源记入 Stream 档位，供 L4 调度器成帧。

@@ -112,6 +112,8 @@ pub(crate) const DOUBLE_ESCAPE_WINDOW_MS: u64 = 500;
 pub(crate) const DEFAULT_LIVE_PUBLISH_INTERVAL_MS: u64 = 250;
 /// 大粘贴折叠阈值（字节，§6.4 #3）：超过即折叠为占位。
 pub(crate) const MAX_PASTE_FOLD_BYTES: usize = 16 * 1024;
+/// 通知正文/标题字符上限（§5.5 #5）：超长截断，防超长 OSC 序列。
+pub(crate) const NOTIFY_TEXT_MAX: usize = 120;
 
 // ── 降级态与可观测性 ─────────────────────────────────────────────────────
 
@@ -170,6 +172,7 @@ const _: () = {
     assert!(DOUBLE_ESCAPE_WINDOW_MS > 0);
     assert!(DEFAULT_LIVE_PUBLISH_INTERVAL_MS > 0);
     assert!(MAX_PASTE_FOLD_BYTES > 0);
+    assert!(NOTIFY_TEXT_MAX > 0 && NOTIFY_TEXT_MAX <= MAX_OUTPUT_CHARACTERS);
     assert!(MAX_HEALTH_PANEL_ITEMS > 0);
     assert!(MAX_ERROR_AGG_ENTRIES > 0);
     assert!(DEGRADED_BANNER_COOLDOWN_MS > 0);
