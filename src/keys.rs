@@ -195,8 +195,7 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             }
             // 拼音态：先提交拼音原文（随后提交整行）
             app.ime_commit_enter();
-            let input = std::mem::take(&mut app.input);
-            app.cursor = 0;
+            let input = app.take_input();
             debug!(
                 "User submitted input: '{}' ({} chars)",
                 truncate_str(&input, 80),
@@ -604,8 +603,7 @@ async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Enter => {
             // 拼音态：先提交拼音原文（随后提交整行）
             app.ime_commit_enter();
-            let input = std::mem::take(&mut app.input);
-            app.cursor = 0;
+            let input = app.take_input();
             if !input.trim().is_empty() {
                 app.queue_insert_chat(&input);
             }

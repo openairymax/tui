@@ -6,6 +6,7 @@
 // 输入编辑：光标移动与增删改、历史回溯、Tab 补全、IME 拼音候选联动。
 
 use super::*;
+use crate::budget::MAX_PASTE_FOLD_BYTES;
 
 impl App {
     /// 记录一条输入历史（去重：与最近一条相同则跳过；容量 50）。
@@ -36,6 +37,7 @@ impl App {
         };
         self.history_pos = Some(next);
         self.input = self.input_history[next].clone();
+        self.paste_folds.clear();
         // 历史回填后光标置于末尾（readline 惯例）
         self.cursor = self.input.len();
     }
@@ -53,6 +55,7 @@ impl App {
             self.history_pos = None;
             self.input.clear();
         }
+        self.paste_folds.clear();
         // 历史回填后光标置于末尾（readline 惯例）
         self.cursor = self.input.len();
     }
@@ -274,6 +277,64 @@ impl App {
         self.cursor = pos + text.len();
     }
 
+    /// 粘贴落点（0.1.19 L7 U3，TUI 方案 §6.4 #2/#3）。
+    ///
+    /// 阈值内直接插入（多行即多行编辑）；超阈值只插入占位并把原文收进
+    /// 折叠台账——输入缓冲不被大块文本撑爆，逐帧渲染成本恒定。
+    pub fn input_paste(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if text.len() <= MAX_PASTE_FOLD_BYTES {
+            self.input_insert_text(text);
+            return;
+        }
+        let slot = paste_slot(text);
+        self.input_insert_text(&slot);
+        self.add_log(
+            "INFO",
+            format!("大粘贴已折叠：{}（{} 字节）", slot, text.len()),
+        );
+        self.paste_folds.push(PasteFold {
+            slot,
+            body: text.to_string(),
+        });
+    }
+
+    /// 取走输入并展开折叠占位（提交路径唯一入口）。
+    ///
+    /// 单遍扫描输入：命中占位即替换为原文，已展开的原文不再参与匹配，
+    /// 因此正文里出现同样的占位字样也不会被二次展开。占位被用户删改的
+    /// 折叠条目随之丢弃——输入框所见即所发。
+    pub fn take_input(&mut self) -> String {
+        let input = std::mem::take(&mut self.input);
+        self.cursor = 0;
+        if self.paste_folds.is_empty() {
+            return input;
+        }
+        let mut folds = std::mem::take(&mut self.paste_folds);
+        let mut out = String::with_capacity(input.len());
+        let mut rest = input.as_str();
+        while !rest.is_empty() {
+            // 命中即消费：同形占位按出现顺序各展开一次，多出的字样保持原样。
+            match folds.iter().position(|f| rest.starts_with(&f.slot)) {
+                Some(i) => {
+                    let fold = folds.remove(i);
+                    out.push_str(&fold.body);
+                    rest = &rest[fold.slot.len()..];
+                }
+                None => {
+                    let Some(c) = rest.chars().next() else {
+                        break;
+                    };
+                    out.push(c);
+                    rest = &rest[c.len_utf8()..];
+                }
+            }
+        }
+        out
+    }
+
     /// Backspace：删除光标前一个字符。
     pub fn input_backspace(&mut self) {
         if self.cursor == 0 || self.input.is_empty() {
@@ -439,4 +500,13 @@ impl App {
         self.input.replace_range(word_start..pos, &next);
         self.cursor = word_start + next.len();
     }
+}
+
+/// 折叠占位文案（§6.4 #3 固定格式：`[已粘贴 N KB · M 行]`）。
+///
+/// 只对字节数取整（向上）与行数计数，不做任何切片，多字节文本天然安全。
+fn paste_slot(text: &str) -> String {
+    let kb = text.len().div_ceil(1024);
+    let lines = text.lines().count().max(1);
+    format!("[已粘贴 {} KB · {} 行]", kb, lines)
 }

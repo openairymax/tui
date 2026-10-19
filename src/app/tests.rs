@@ -733,3 +733,74 @@ async fn ctrl_c_key_needs_two_presses() {
         "窗口内二次按下应退出"
     );
 }
+
+/// U3（0.1.19 L7）：阈值边界——恰好 16KiB 直插，超 1 字节折叠；
+/// 折叠后提交取回原文。
+#[test]
+fn paste_fold_threshold_boundary() {
+    let _h = crate::test_env::Home::new("paste-fold-boundary");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    let limit = crate::budget::MAX_PASTE_FOLD_BYTES;
+
+    let exact = "a".repeat(limit);
+    app.input_paste(&exact);
+    assert_eq!(app.input, exact, "阈值内直插");
+    assert!(app.paste_folds.is_empty(), "阈值内不建折叠条目");
+    assert_eq!(app.take_input(), exact);
+
+    let over = "b".repeat(limit + 1);
+    app.input_paste(&over);
+    assert!(
+        app.input.starts_with("[已粘贴 17 KB · 1 行]"),
+        "超阈值须折叠为占位: input={}",
+        app.input
+    );
+    assert_eq!(app.take_input(), over, "提交须取回原文");
+    assert!(app.paste_folds.is_empty(), "提交后折叠台账清空");
+}
+
+/// U3（0.1.19 L7）：多字节文本按字节判阈、按字符推导（不切片），
+/// 折叠与展开全程 UTF-8 安全。
+#[test]
+fn paste_fold_utf8_safe() {
+    let _h = crate::test_env::Home::new("paste-fold-utf8");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    let body = "中文".repeat(crate::budget::MAX_PASTE_FOLD_BYTES / 6 + 1);
+
+    app.input_paste(&body);
+    assert!(app.input.contains("已粘贴"), "input={}", app.input);
+    assert_eq!(app.take_input(), body, "多字节原文完整取回");
+}
+
+/// U3（0.1.19 L7）：多次折叠按出现顺序展开；占位被删改的条目丢弃，
+/// 原文中恰好包含占位字样也不会被二次展开。
+#[test]
+fn paste_fold_multi_and_stale() {
+    let _h = crate::test_env::Home::new("paste-fold-multi");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    let limit = crate::budget::MAX_PASTE_FOLD_BYTES;
+
+    let first = "x\n".repeat(limit + 1);
+    let second = "y\n".repeat(limit + 1);
+    app.input_paste(&first);
+    app.input_insert_text(" 中间 ");
+    app.input_paste(&second);
+    assert_eq!(
+        app.take_input(),
+        format!("{} 中间 {}", first, second),
+        "同形占位按出现顺序各展开一次"
+    );
+
+    let mut inner = String::from("[已粘贴 17 KB · 1 行]");
+    inner.push_str(&"z".repeat(limit));
+    app.input_paste(&inner);
+    assert_eq!(app.take_input(), inner, "原文内的占位字样不得二次展开");
+
+    app.input_paste(&first);
+    app.input.clear();
+    assert_eq!(app.take_input(), "", "占位被删则原文随之丢弃");
+    assert!(app.paste_folds.is_empty());
+}
