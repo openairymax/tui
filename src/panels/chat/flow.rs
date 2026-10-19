@@ -13,6 +13,8 @@ use ratatui::{
 };
 
 use crate::app::{App, ChatMessage, MessageRole};
+use crate::budget::THINKING_PREVIEW_MAX_CHARS;
+use crate::engine::grid;
 use crate::gccp::FlowPhase;
 use crate::theme;
 
@@ -289,6 +291,7 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
         // 计数——首字与整轮耗时在用户面同源可读（V2.1 的分段证据之一）。
         let frame = (app.session_start.elapsed().as_millis() / 100) as usize % THINKING.len();
         let secs = app.busy_started.elapsed().as_secs_f64();
+        let thinking = app.streaming_text.is_empty() && !app.stream_reasoning.is_empty();
         let mut spans = vec![
             Span::styled("  ", Style::default()),
             Span::styled(
@@ -298,32 +301,80 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
         ];
         if !app.streaming_text.is_empty() {
             spans.push(Span::styled("生成中", Style::default().fg(theme::faint())));
-        } else if app.stream_reasoning.is_empty() {
+            spans.push(Span::styled(
+                format!(" · {:.1}s", secs),
+                Style::default().fg(theme::faint()),
+            ));
+        } else if !thinking {
             spans.push(Span::styled("已受理", Style::default().fg(theme::faint())));
+            spans.push(Span::styled(
+                format!(" · {:.1}s", secs),
+                Style::default().fg(theme::faint()),
+            ));
         } else {
-            // 思考链实时可见：模型轨标签区分快/慢/专业思考，正文在其后到达
+            // 思考链实时可见：模型轨标签区分快/慢/专业思考，计时与预览
+            // 由下方折叠块承载（§6.2 #3），状态行只留字数。
             spans.push(Span::styled(
                 dual_think_label(&app.stream_reasoning_model),
                 Style::default().fg(theme::primary()),
             ));
             spans.push(Span::styled(
-                format!(" 思考中 {} 字", app.stream_reasoning.chars().count()),
-                Style::default().fg(theme::faint()),
-            ));
-        }
-        spans.push(Span::styled(
-            format!(" · {:.1}s", secs),
-            Style::default().fg(theme::faint()),
-        ));
-        // 思考链默认不上屏（B4 隐私收口），仅有存量时提示独立视图入口
-        if !app.stream_reasoning.is_empty() && width >= 64 {
-            spans.push(Span::styled(
-                "（Alt+E 查看思考链）",
+                format!(" · {} 字", app.stream_reasoning.chars().count()),
                 Style::default().fg(theme::faint()),
             ));
         }
         out.push(Line::from(spans));
+        if thinking {
+            render_think_preview(out, app, width);
+        }
     }
+}
+
+/// thinking 折叠预览（§6.2 #3）：流式期间显示前
+/// `THINKING_PREVIEW_MAX_CHARS` 字符与「思考中 · N s」计时，超出部分折起；
+/// 回合落定（`loading` 结束）即自动收起，原文仍经 Alt+E 按需取用。
+///
+/// 按字符（非字节）钳位，UTF-8 边界天然安全；逐行按显示宽度裁剪，
+/// 全角内容不会右溢。
+fn render_think_preview(out: &mut Vec<Line<'static>>, app: &App, width: usize) {
+    let secs = app
+        .stream_reasoning_start
+        .map(|t| t.elapsed().as_secs())
+        .unwrap_or(0);
+    out.push(Line::from(vec![
+        Span::styled("  ╭ ", Style::default().fg(theme::faint())),
+        Span::styled(
+            format!("思考中 · {secs}s"),
+            Style::default()
+                .fg(theme::warning())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let preview: String = app
+        .stream_reasoning
+        .chars()
+        .take(THINKING_PREVIEW_MAX_CHARS)
+        .collect();
+    let budget = width.saturating_sub(4).max(8);
+    for line in preview.lines() {
+        out.push(Line::from(vec![
+            Span::styled("  │ ", Style::default().fg(theme::faint())),
+            Span::styled(grid::clip(line, budget), Style::default().fg(theme::dim())),
+        ]));
+    }
+
+    let total = app.stream_reasoning.chars().count();
+    let folded = total.saturating_sub(THINKING_PREVIEW_MAX_CHARS);
+    let tail = if folded > 0 {
+        format!("  ╰ … 已折叠 {folded} 字（Alt+E 查看全文）")
+    } else {
+        "  ╰ Alt+E 查看全文".to_string()
+    };
+    out.push(Line::from(Span::styled(
+        tail,
+        Style::default().fg(theme::faint()),
+    )));
 }
 
 /// 甘特式总体进度条：▰ 完成 / ▱ 未完成（按完成比例填充，2026-08-21）。

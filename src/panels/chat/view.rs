@@ -385,13 +385,10 @@ mod tests {
         );
     }
 
-    /// B4（0.1.18）V4.1：思考链默认不上屏——无论流式态还是落定后，chat 区
-    /// 正文都不得出现推理原文；短链（≤6 行，旧折叠阈值 FOLD_MAX_LINES 以下）
-    /// 同样不例外，折叠不再是隔离手段。对话区只留字数状态与独立视图入口
-    /// （Alt+E），按需取用能力不丢失（V4.3 见 panels::think 用例）。
+    /// §6.2 #3：thinking 块折叠态显示前 2,000 字符与「思考中 · N s」计时，
+    /// 超出部分折起；回合落定后自动收起，原文仅经 Alt+E 按需取用。
     #[test]
-    fn reasoning_never_surfaces_in_chat() {
-        const CHAIN: &str = "SECRET_COT_MARKER 先看火焰图\n再看锁竞争";
+    fn thinking_preview_is_folded_and_bounded() {
         let (mut app, _h) = make_app();
         let mut view = ChatView::new();
         let text = |view: &mut ChatView, app: &App| {
@@ -403,26 +400,58 @@ mod tests {
                 .join("\n")
         };
 
-        // 流式态：思考链增量已在手，但只暴露字数与入口提示
+        // 短链：预览原文 + 计时 + 全文入口，不出现折叠尾
         app.loading = true;
         app.busy_started = std::time::Instant::now();
-        app.stream_reasoning = CHAIN.to_string();
+        app.stream_reasoning = "先看火焰图".into();
+        app.stream_reasoning_start =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
         let t = text(&mut view, &app);
-        assert!(
-            !t.contains("SECRET_COT_MARKER") && !t.contains("先看火焰图"),
-            "流式态泄漏思考链原文: {t}"
-        );
-        assert!(t.contains("思考中"), "应有思考中状态: {t}");
-        assert!(t.contains("Alt+E"), "应留独立视图入口: {t}");
+        assert!(t.contains("思考中 · 2s"), "应有思考计时: {t}");
+        assert!(t.contains("先看火焰图"), "折叠态应显示预览原文: {t}");
+        assert!(t.contains("Alt+E 查看全文"), "应留全文入口: {t}");
+        assert!(!t.contains("已折叠"), "短链不应折叠: {t}");
 
-        // 落定后：原文转入 last_reasoning（Alt+E 数据源），chat 区仍不显示
+        // 超长链：只显示前 2,000 字符，余量记入折叠尾
+        app.stream_reasoning = format!("{}{}", "甲".repeat(2_000), "乙".repeat(500));
+        let t = text(&mut view, &app);
+        assert!(t.contains('甲'), "应显示预览首段: {t}");
+        assert!(!t.contains('乙'), "超出预算的字符不得上屏: {t}");
+        assert!(t.contains("已折叠 500 字"), "折叠余量应记账: {t}");
+
+        // 落定：预览块自动收起（原文转入 last_reasoning 供 Alt+E）
         app.loading = false;
         app.stream_reasoning.clear();
-        app.last_reasoning = Some(CHAIN.to_string());
+        app.last_reasoning = Some("甲".repeat(2_000));
         let t = text(&mut view, &app);
-        assert!(
-            !t.contains("SECRET_COT_MARKER") && !t.contains("先看火焰图"),
-            "落定后泄漏思考链原文: {t}"
-        );
+        assert!(!t.contains('甲'), "落定后预览应收起: {t}");
+        assert!(!t.contains("思考中"), "落定后不应残留思考状态: {t}");
+    }
+
+    /// 钳位按字符而非字节：四字节 emoji 恰在边界时不误判折叠，超一字才折叠。
+    #[test]
+    fn thinking_preview_clamps_by_chars() {
+        let (mut app, _h) = make_app();
+        let mut view = ChatView::new();
+        let text = |view: &mut ChatView, app: &App| {
+            view.layout(app, 80, 30, true)
+                .lines
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.loading = true;
+        app.busy_started = std::time::Instant::now();
+        app.stream_reasoning_start = Some(std::time::Instant::now());
+        app.stream_reasoning = "🙂".repeat(crate::budget::THINKING_PREVIEW_MAX_CHARS);
+        let t = text(&mut view, &app);
+        assert!(!t.contains("已折叠"), "恰在预算上不得折叠: {t}");
+        assert!(!t.contains('\u{fffd}'), "字符边界不得切坏 UTF-8: {t}");
+
+        app.stream_reasoning.push('中');
+        let t = text(&mut view, &app);
+        assert!(t.contains("已折叠 1 字"), "超一字即折叠: {t}");
     }
 }
