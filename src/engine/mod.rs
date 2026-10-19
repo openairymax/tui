@@ -36,6 +36,7 @@ pub(crate) mod leader;
 pub(crate) mod notify;
 pub(crate) mod probe;
 pub(crate) mod sched;
+pub(crate) mod screen;
 pub(crate) mod term;
 pub(crate) mod toast;
 pub(crate) mod view;

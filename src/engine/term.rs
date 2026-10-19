@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use crossterm::{
-    cursor::{Hide, MoveTo, Show},
+    cursor::{Hide, MoveTo, MoveToColumn, Show},
     event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste},
     execute,
     terminal::{
@@ -19,7 +19,7 @@ use crossterm::{
         LeaveAlternateScreen,
     },
 };
-use log::error;
+use log::{error, warn};
 use std::cell::Cell;
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::probe::{self, Caps, Src};
+use super::screen::Mode;
 use crate::budget::CAP_PROBE_TIMEOUT_MS;
 
 thread_local! {
@@ -105,37 +106,56 @@ pub(crate) fn install_panic_hook() {
     }));
 }
 
-/// T-03（P0-8）：RAII 终端守卫。构造即进入 TUI 终端态（raw mode、备用屏、
+/// T-03（P0-8）：RAII 终端守卫。构造即进入 TUI 终端态（raw mode、渲染器、
 /// 括号粘贴、隐藏光标）；`restore`/Drop 完整还原且每步独立容错——
 /// 修复原 `run_tui` 还原链 `?` 短路（首步失败即跳过后续全部步骤）与
-/// `Terminal::new` 失败时 raw mode 泄漏两条缺陷路径。
+/// Terminal 构造失败时 raw mode 泄漏两条缺陷路径。
+///
+/// §5.5 #7：备用屏进入失败时自动回滚内联渲染（同一守卫、同一还原链），
+/// 调用方按返回的实际形态构造视口；内联还原绝不清屏，保住滚动历史。
 ///
 /// WS-1 出口 DoD：panic/Err/exec/正常退出四条路径终端状态均还原。
 pub(crate) struct TerminalGuard {
     active: bool,
+    mode: Mode,
 }
 
 impl TerminalGuard {
-    pub(crate) fn acquire() -> Result<Self> {
+    /// 按请求形态进入终端态，返回守卫与实际生效形态（可能因回滚而不同）。
+    pub(crate) fn acquire(requested: Mode) -> Result<(Self, Mode)> {
         enable_raw_mode().map_err(|e| {
             error!("Failed to enable raw mode: {}", e);
             error!("  → This usually means you're not in a real terminal.");
             error!("  → Try running in a terminal emulator, not an IDE panel.");
             e
         })?;
-        let res = execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            Hide
-        );
-        if let Err(e) = res {
-            error!("Failed to enter alternate screen: {}", e);
+        if requested == Mode::Alt {
+            match enter_alt() {
+                Ok(()) => {
+                    return Ok((
+                        Self {
+                            active: true,
+                            mode: Mode::Alt,
+                        },
+                        Mode::Alt,
+                    ));
+                }
+                Err(e) => warn!("term: 备用屏不可用（{e}），回滚内联渲染"),
+            }
+        }
+        if let Err(e) = execute!(io::stdout(), EnableBracketedPaste, Hide) {
+            error!("Failed to start inline renderer: {}", e);
             // 已进入 raw mode：必须先退出再返回错误（acquire 自身不泄漏）
             let _ = disable_raw_mode();
             return Err(e.into());
         }
-        Ok(Self { active: true })
+        Ok((
+            Self {
+                active: true,
+                mode: Mode::Inline,
+            },
+            Mode::Inline,
+        ))
     }
 
     /// 完整还原。幂等：重复调用安全（守卫 restore + Drop 兜底协作）。
@@ -149,12 +169,34 @@ impl TerminalGuard {
         // 0.1.18 B11：鼠标捕获兜底关闭（Ctrl+M 开启后异常退出也还原终端
         // 原生文本选择；未开启时幂等无害）。
         let _ = execute!(io::stdout(), DisableMouseCapture);
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste);
-        let _ = execute!(io::stdout(), Show);
-        /* 2.2.1.2 修复沿用：F8 切 CLI / 正常退出前清空主屏，CLI 从干净
-         * 画布开始（panic 路径不走此处，见 restore_on_panic）。 */
-        let _ = execute!(io::stdout(), Clear(ClearType::All), MoveTo(0, 0));
+        match self.mode {
+            Mode::Alt => {
+                let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste);
+                let _ = execute!(io::stdout(), Show);
+                /* 2.2.1.2 修复沿用：F8 切 CLI / 正常退出前清空主屏，CLI 从
+                 * 干净画布开始（panic 路径不走此处，见 restore_on_panic）。 */
+                let _ = execute!(io::stdout(), Clear(ClearType::All), MoveTo(0, 0));
+            }
+            Mode::Inline => {
+                // 内联形态主屏即画布：只收尾装饰序列，绝不清屏——
+                // 清屏会连同滚动历史一起抹掉，回滚形态的意义即在于保留它。
+                let _ = execute!(io::stdout(), DisableBracketedPaste);
+                let _ = execute!(io::stdout(), Show);
+                let _ = execute!(io::stdout(), MoveToColumn(0));
+                let _ = writeln!(io::stdout());
+            }
+        }
     }
+}
+
+/// 进入备用屏并开启粘贴与光标控制；失败由调用方回滚内联。
+fn enter_alt() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        Hide
+    )
 }
 
 impl Drop for TerminalGuard {

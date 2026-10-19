@@ -89,6 +89,7 @@ use crossterm::{
 };
 use log::{debug, error, info, warn};
 use ratatui::prelude::*;
+use ratatui::TerminalOptions;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -201,7 +202,7 @@ async fn main() {
     };
 
     // ── Phase 3: Start TUI ──
-    info!("Setting up terminal (raw mode + alternate screen)...");
+    info!("Setting up terminal (raw mode + renderer)...");
 
     let tui_result = run_tui(&cli, gateway, &boot).await;
 
@@ -228,17 +229,31 @@ async fn run_tui(cli: &Cli, gateway: GatewayClient, boot: &Boot) -> Result<()> {
 
     // Setup terminal —— RAII 守卫：acquire 失败/任何后续路径（run_app Err、
     // panic、exec）退出作用域时 Drop 完整还原，终端状态永不滞留。
-    let mut guard = engine::term::TerminalGuard::acquire()?;
+    // §5.5 #7：请求形态来自 AIRY_TUI_SCREEN；备用屏不可用时守卫内部已
+    // 回滚内联，mode 为实际生效形态，视口据此构造。
+    let requested = engine::screen::Mode::from_env();
+    let (mut guard, mode) = engine::term::TerminalGuard::acquire(requested)?;
     // §5.5 #1：能力探测与首帧并发；结论在首帧后回收（晚到热修正）。
     // 声明在 guard 之后，Drop 逆序保证探测线程先于终端还原退出。
     let mut probe = engine::term::Probe::spawn();
 
     let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend).map_err(|e| {
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: mode.viewport(),
+        },
+    )
+    .map_err(|e| {
         error!("Failed to create terminal backend: {}", e);
         e
     })?;
-    // 此处起 guard 已在作用域：Terminal::new 失败经 `?` 返回时 Drop 还原
+    info!(
+        "engine/screen: 渲染器 {}（请求 {}）",
+        mode.label(),
+        requested.label()
+    );
+    // 此处起 guard 已在作用域：Terminal 构造失败经 `?` 返回时 Drop 还原
     // （修复原代码 raw mode 已开但还原链不可达的泄漏路径）。
 
     info!("Terminal initialized. Starting event loop.");
