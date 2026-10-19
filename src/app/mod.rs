@@ -330,6 +330,9 @@ pub struct App {
     pub hall_board: Option<HallBoard>,
     /// 事件流缓存（hall.stream 最近一次拉取，最新在前）
     pub hall_events: Vec<HallEvent>,
+    /// 事件去重键 LRU（§6.10 #5）：file_id 有界缓存，挡 RPC 全量重放，
+    /// 容量 MAX_DEDUPE_KEYS，长会话不随事件总量爬坡。
+    hall_seen: VecDeque<String>,
     /// hall 面板显式刷新请求（面板切换 / SSE 推送触发）。置位后由主循环取走并
     /// 把 Hall 节拍提前到下一帧——拉取的**时刻判定仍归 L4 调度器**，此处只记
     /// 「有刷新需求」，不另存一份时钟（0.1.18 §5A.3 W4 节拍权威）。
@@ -567,6 +570,7 @@ impl App {
             switch_to_cli: false,
             hall_board: None,
             hall_events: Vec::new(),
+            hall_seen: VecDeque::new(),
             hall_force: false,
             hall_poll_rx: None,
             hall_watch_rx: None,
