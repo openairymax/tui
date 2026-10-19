@@ -408,6 +408,22 @@ async fn run_app<B: Backend>(
         // 在途请求结果消费（流式增量 / 结果落定 / 审批待决议）。空闲期内部早退
         // 无开销；busy 期它是唯一的流式与落定入口——等待期不再有独立内层循环。
         app.poll_pending(beats.has(Beat::Approvals));
+        // 会话完成通知（§5.5 #5、§6.7 #4）：App 只生产语义，写出归终端层。
+        // 仅支持 BEL 或写入失败（非 TTY）时用状态条兜底，保证完成反馈
+        // 始终可见——通知是增强，不是唯一通道。
+        if let Some(n) = app.take_notice() {
+            match engine::term::notify(&n.title, &n.body) {
+                Some(engine::notify::Method::Bell) => {
+                    app.toast(n.body);
+                    sched.push(Lane::Panel);
+                }
+                Some(method) => info!("engine/notify: 回合通知经 {} 投递", method.label()),
+                None => {
+                    app.toast(n.body);
+                    sched.push(Lane::Panel);
+                }
+            }
+        }
         // 消费到新内容（流式增量/工具事件/结果落定/面板数据）才排队：档位即优先级，
         // 非输入档搭最近一帧，窗口内的多次落地合并为一帧最终态。
         if let Some(lane) = app.take_landed() {

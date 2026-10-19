@@ -32,6 +32,7 @@ pub(crate) mod grid;
 pub(crate) mod health;
 pub(crate) mod layout;
 pub(crate) mod leader;
+pub(crate) mod notify;
 pub(crate) mod probe;
 pub(crate) mod sched;
 pub(crate) mod term;

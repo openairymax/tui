@@ -193,6 +193,11 @@ impl App {
         self.pending.is_some()
     }
 
+    /// 取走待投递的会话完成通知（§6.7 #4）：唯一消费点，取走即清零。
+    pub fn take_notice(&mut self) -> Option<crate::app::Notice> {
+        self.notice.take()
+    }
+
     /// 启动期连接探测（§6.1 #1）：与首帧并发，结果异步落地，不阻塞首绘。
     pub fn probe_connection(&mut self) {
         if self.boot_rx.is_some() {

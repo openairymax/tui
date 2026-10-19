@@ -167,6 +167,16 @@ impl ExitGuard {
     }
 }
 
+/// 会话完成通知（0.1.19 TUI 建设方案 §6.7 #4）。
+///
+/// App 只生产通知语义（标题/正文），终端写出与降级兜底归主循环 +
+/// engine/term——避免状态层直接做 IO，也避免通知丢失于渲染路径。
+#[derive(Debug, Clone)]
+pub struct Notice {
+    pub title: String,
+    pub body: String,
+}
+
 /// Application state.
 pub struct App {
     /// Agent file being used
@@ -272,6 +282,8 @@ pub struct App {
     /// 即时展示「已受理 · N.Ns」，使请求发出后立刻有可见反馈并给出
     /// 分段时间证据（V2.3；与上一回合结算的 `last_turn_elapsed` 分开）。
     pub busy_started: Instant,
+    /// 会话完成待投递通知（§6.7 #4）：回合落定瞬间置位，主循环取走后清零。
+    pub notice: Option<Notice>,
     /// Status message
     pub status_message: String,
     /// LLM 判定的当前模式：true = 任务集（多步任务编排），false = 普通对话
@@ -564,6 +576,7 @@ impl App {
             config_file: format!("{}/config/model.yaml", airy_home()),
             loading: false,
             busy_started: Instant::now(),
+            notice: None,
             status_message: "Press Enter to start".to_string(),
             task_mode: false,
             memory: memory_backend,
