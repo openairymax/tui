@@ -11,7 +11,7 @@ use ratatui::{
 use crate::app::App;
 use crate::engine::grid;
 use crate::panels::config::host_info;
-use crate::theme;
+use crate::style;
 
 /// 空态欢迎（无消息时，2.0 分层品牌卡重设计）。
 ///
@@ -41,12 +41,12 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
             Span::styled(
                 "◈ AirymaxRT",
                 Style::default()
-                    .fg(theme::primary())
+                    .fg(style::primary())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  极境智能体运行平台 · 输入消息开始对话",
-                Style::default().fg(theme::dim()),
+                Style::default().fg(style::dim()),
             ),
         ]));
         return;
@@ -61,10 +61,10 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
         Span::styled(
             "◈ AirymaxRT",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  极境智能体运行平台", Style::default().fg(theme::dim())),
+        Span::styled("  极境智能体运行平台", Style::default().fg(style::dim())),
     ]);
     let pad = content_max
         .saturating_sub(2)
@@ -87,33 +87,33 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
     let tag_pad = content_max.saturating_sub(grid::width(&tag)) / 2;
     hero.push(Line::from(vec![
         Span::raw(" ".repeat(tag_pad)),
-        Span::styled(tag, Style::default().fg(theme::separator())),
+        Span::styled(tag, Style::default().fg(style::separator())),
     ]));
     hero.push(Line::raw(""));
 
     // 3. 核心链路能力矩阵（胶囊 chips，语义色）
     let chain = [
-        ("llm", theme::accent()),
-        ("think", theme::warning()),
-        ("agent", theme::success()),
-        ("tool", theme::magenta()),
-        ("board", theme::primary()),
+        ("llm", style::accent()),
+        ("think", style::warning()),
+        ("agent", style::success()),
+        ("tool", style::magenta()),
+        ("board", style::primary()),
     ];
     let mut caps_line = Line::from(vec![Span::styled(
         "核心链路  ",
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     )]);
     for (i, (name, c)) in chain.iter().enumerate() {
         if i > 0 {
             caps_line
                 .spans
-                .push(Span::styled(" ", Style::default().fg(theme::faint())));
+                .push(Span::styled(" ", Style::default().fg(style::faint())));
         }
         caps_line.spans.push(Span::styled(
             format!(" {} ", name),
             Style::default()
                 .fg(*c)
-                .bg(theme::surface_2())
+                .bg(style::surface_2())
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -129,8 +129,8 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
     // 4. 硬件摘要行（复用配置面板宿主机探测，静态展示独占欢迎墙）
     let hw = host_info().summary_line();
     let mut hw_line = Line::from(vec![
-        Span::styled("硬件  ", Style::default().fg(theme::faint())),
-        Span::styled(hw, Style::default().fg(theme::dim())),
+        Span::styled("硬件  ", Style::default().fg(style::faint())),
+        Span::styled(hw, Style::default().fg(style::dim())),
     ]);
     if grid::line_w(&hw_line.spans) + 2 < content_max {
         let hw_pad = content_max.saturating_sub(grid::line_w(&hw_line.spans)) / 2;
@@ -142,13 +142,13 @@ pub(super) fn append(out: &mut Vec<Line<'static>>, width: usize, height: usize, 
     // 5. 引导行 + 项目上下文行
     hero.push(Line::from(vec![Span::styled(
         "输入消息开始对话 · F1 帮助 · F2 配置 · Ctrl+1 输入法",
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     )]));
     let proj_disp = grid::clip(&proj, content_max.saturating_sub(4));
     if !proj_disp.is_empty() {
         hero.push(Line::from(vec![
-            Span::styled("项目  ", Style::default().fg(theme::faint())),
-            Span::styled(proj_disp, Style::default().fg(theme::dim())),
+            Span::styled("项目  ", Style::default().fg(style::faint())),
+            Span::styled(proj_disp, Style::default().fg(style::dim())),
         ]));
     }
 

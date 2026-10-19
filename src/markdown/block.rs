@@ -17,7 +17,7 @@ use crate::markdown::code::render_code;
 use crate::markdown::inline::Inline;
 use crate::markdown::plot::render_plot;
 use crate::markdown::table::{render_table, Cell};
-use crate::theme;
+use crate::style;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -175,7 +175,7 @@ impl State {
                 self.flush();
                 self.prefix = vec![Span::styled(
                     format!("[{name}] "),
-                    self.base.fg(theme::accent()),
+                    self.base.fg(style::accent()),
                 )];
             }
             _ => {}
@@ -300,7 +300,7 @@ impl State {
         let n = self.width.saturating_sub(self.indent).clamp(6, 40);
         self.out.push(Line::from(vec![
             Span::styled(" ".repeat(self.indent), Style::default()),
-            Span::styled("─".repeat(n), self.base.fg(theme::separator())),
+            Span::styled("─".repeat(n), self.base.fg(style::separator())),
         ]));
     }
 
@@ -308,7 +308,7 @@ impl State {
         self.mark = Mark::Task(done);
         self.inline.set_base(if done {
             self.base
-                .fg(theme::faint())
+                .fg(style::faint())
                 .add_modifier(Modifier::CROSSED_OUT)
         } else {
             self.base
@@ -363,7 +363,7 @@ impl State {
     fn quote_prefix(&self) -> Vec<Span<'static>> {
         let mut v: Vec<Span<'static>> = Vec::new();
         for _ in 0..self.quote {
-            v.push(Span::styled("▏ ".to_string(), self.base.fg(theme::dim())));
+            v.push(Span::styled("▏ ".to_string(), self.base.fg(style::dim())));
         }
         v
     }
@@ -374,14 +374,14 @@ impl State {
         if depth > 1 {
             v.push(Span::raw("  ".repeat(depth - 1)));
         }
-        let dim = self.base.fg(theme::dim());
+        let dim = self.base.fg(style::dim());
         match self.mark {
             Mark::None => {}
             Mark::Bullet => v.push(Span::styled("• ".to_string(), dim)),
             Mark::Ordered(n) => v.push(Span::styled(format!("{n}. "), dim)),
             Mark::Task(true) => v.push(Span::styled(
                 "● ".to_string(),
-                self.base.fg(theme::accent()),
+                self.base.fg(style::accent()),
             )),
             Mark::Task(false) => v.push(Span::styled("○ ".to_string(), dim)),
         }
@@ -391,9 +391,9 @@ impl State {
 
 fn head_color(level: HeadingLevel) -> Color {
     match level {
-        HeadingLevel::H1 => theme::primary(),
-        HeadingLevel::H2 => theme::accent(),
-        _ => theme::text(),
+        HeadingLevel::H1 => style::primary(),
+        HeadingLevel::H2 => style::accent(),
+        _ => style::text(),
     }
 }
 
@@ -460,7 +460,7 @@ mod tests {
         let lines = render_md("# 大标题", 40);
         let span = lines[0].spans.iter().find(|s| s.content.contains("大标题"));
         assert!(span.is_some_and(|s| s.style.add_modifier.contains(Modifier::BOLD)));
-        assert!(span.is_some_and(|s| s.style.fg == Some(theme::primary())));
+        assert!(span.is_some_and(|s| s.style.fg == Some(style::primary())));
     }
 
     #[test]

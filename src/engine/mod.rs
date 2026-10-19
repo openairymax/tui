@@ -3,7 +3,11 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 渲染引擎（0.1.18 A 轨，§5A.1）：L1 视图模型层、L4 调度层与 L5 合成层的落点。
+// 渲染引擎（0.1.18 A 轨，§5A.1；0.1.19 U13 引擎化）：L1 视图模型、L2 排版
+// 与外壳布局计划、L4 调度、L5 合成，以及终端生命周期（term）的落点。
+//
+// 布局计划（layout）与块索引（block）是纯数据：业务只声明「哪些浮层在场」
+// 与给出块行高，槽位下标与可视区间由引擎裁决，组件不再手算行号。
 //
 // 分层铁律（§3）：依赖方向 L6 → L5 → L4 → L3 → L2 → L1 → L0 严格单向。
 // 本模块只承载自研层，各子模块以自身层的约束为准：L1（身份键/解析缓存）
@@ -19,14 +23,17 @@
 // 轮询。空壳类型（无消费者的 Node/ViewTree）会同时构成桩实现与
 // dead_code 门禁风险，一律不做。
 
+pub(crate) mod block;
 pub(crate) mod boot;
 pub(crate) mod cache;
 pub(crate) mod compose;
 pub(crate) mod fold;
 pub(crate) mod grid;
 pub(crate) mod health;
+pub(crate) mod layout;
 pub(crate) mod leader;
 pub(crate) mod sched;
+pub(crate) mod term;
 pub(crate) mod toast;
 pub(crate) mod view;
 pub(crate) mod window;

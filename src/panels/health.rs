@@ -21,14 +21,14 @@ use ratatui::{
 
 use crate::app::{dep_cn, App};
 use crate::engine::health::{dur_cn, Dep, ErrEntry};
-use crate::theme;
+use crate::style;
 
 /// 状态行：依赖总数、降级数与累计错误次数（一眼判断系统是否健康）。
 fn stat_line(deps: usize, down: usize, total: u32, degraded: bool) -> Line<'static> {
     let (mark, color, word) = if degraded {
-        ("▲", theme::warning(), "存在降级")
+        ("▲", style::warning(), "存在降级")
     } else {
-        ("●", theme::success(), "全部正常")
+        ("●", style::success(), "全部正常")
     };
     Line::from(vec![
         Span::styled(
@@ -37,7 +37,7 @@ fn stat_line(deps: usize, down: usize, total: u32, degraded: bool) -> Line<'stat
         ),
         Span::styled(
             format!("{deps} 项依赖 · {down} 项降级 · {total} 次错误"),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         ),
     ])
 }
@@ -50,25 +50,25 @@ fn dep_line(dep: &Dep, now_ms: u64) -> Line<'static> {
             Some(age) => format!("{} · {} 前", dep.state(), dur_cn(age)),
             None => dep.state().to_string(),
         };
-        ("✓", theme::success(), span)
+        ("✓", style::success(), span)
     } else {
         let span = match dep.down_age(now_ms) {
             Some(age) => format!("{} · {} 前起", dep.state(), dur_cn(age)),
             None => dep.state().to_string(),
         };
-        ("✗", theme::danger(), span)
+        ("✗", style::danger(), span)
     };
     let mut spans = vec![
         Span::styled(
             format!("  {mark} {label}  "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(span, Style::default().fg(theme::dim())),
+        Span::styled(span, Style::default().fg(style::dim())),
     ];
     if dep.fails > 0 || dep.flaps > 0 {
         spans.push(Span::styled(
             format!(" · 失败 {} 次 / 抖动 {} 次", dep.fails, dep.flaps),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         ));
     }
     Line::from(spans)
@@ -81,21 +81,21 @@ fn err_line(e: &ErrEntry, now_ms: u64) -> Line<'static> {
         Span::styled(
             format!("  ×{} ", e.count),
             Style::default()
-                .fg(theme::warning())
+                .fg(style::warning())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(e.label.to_string(), Style::default().fg(theme::dim())),
+        Span::styled(e.label.to_string(), Style::default().fg(style::dim())),
         Span::styled(
             format!(
                 " · 首次 {} 前 · 最近 {} 前",
                 dur_cn(now_ms.saturating_sub(e.first_ms)),
                 dur_cn(now_ms.saturating_sub(e.last_ms))
             ),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         ),
         Span::styled(
             format!(" · 修复：{}", e.remedy),
-            Style::default().fg(theme::warning()),
+            Style::default().fg(style::warning()),
         ),
     ])
 }
@@ -105,15 +105,15 @@ fn empty_lines() -> Vec<Line<'static>> {
     vec![
         Line::from(Span::styled(
             "  尚无依赖探测结果。",
-            Style::default().fg(theme::dim()),
+            Style::default().fg(style::dim()),
         )),
         Line::from(Span::styled(
             "  健康探测每 5s 自动执行一次（网关 /health 与各服务 health_check）。",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )),
         Line::from(Span::styled(
             "  探测结果到达后本页自动更新，按 Esc 返回对话。",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )),
     ]
 }
@@ -138,13 +138,13 @@ fn body_lines(app: &App) -> Vec<Line<'static>> {
             app.err_agg.total()
         ),
         Style::default()
-            .fg(theme::primary())
+            .fg(style::primary())
             .add_modifier(Modifier::BOLD),
     )));
     if app.err_agg.len() == 0 {
         out.push(Line::from(Span::styled(
             "  本轮未记录错误。",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
     for e in app.err_agg.entries() {
@@ -153,7 +153,7 @@ fn body_lines(app: &App) -> Vec<Line<'static>> {
     if app.err_agg.overflow() > 0 {
         out.push(Line::from(Span::styled(
             format!("  其他合并 {} 次", app.err_agg.overflow()),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
 
@@ -161,13 +161,13 @@ fn body_lines(app: &App) -> Vec<Line<'static>> {
         out.push(Line::raw(""));
         out.push(Line::from(Span::styled(
             format!("  {note}"),
-            Style::default().fg(theme::warning()),
+            Style::default().fg(style::warning()),
         )));
     }
     if app.banner.flaps() > 0 {
         out.push(Line::from(Span::styled(
             format!("  降级横幅冷却期抑制重弹 {} 次", app.banner.flaps()),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
     out
@@ -177,11 +177,11 @@ fn body_lines(app: &App) -> Vec<Line<'static>> {
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 依赖健康 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -206,9 +206,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::raw(""));
     }
     lines.push(Line::from(vec![
-        Span::styled("  ↑↓ 滚动", Style::default().fg(theme::faint())),
-        Span::styled("  PgUp/PgDn 翻页", Style::default().fg(theme::faint())),
-        Span::styled("  Esc 返回对话", Style::default().fg(theme::faint())),
+        Span::styled("  ↑↓ 滚动", Style::default().fg(style::faint())),
+        Span::styled("  PgUp/PgDn 翻页", Style::default().fg(style::faint())),
+        Span::styled("  Esc 返回对话", Style::default().fg(style::faint())),
     ]));
 
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);

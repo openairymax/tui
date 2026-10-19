@@ -15,7 +15,7 @@
 //   - content_hash  内容指纹（FxHash，非加密场景）；
 //   - indent/width  宽度是排版的唯一裁决点，宽度变化必须重排；
 //   - base          基础样式（push_content 内由 msg.role 决定）；
-//   - depth/mode    主题态：markdown 输出内嵌 theme::* 颜色，色深或明暗变化
+//   - depth/mode    主题态：markdown 输出内嵌 style::* 颜色，色深或明暗变化
 //                   后必须重算。此处取调用时快照而非自建世代计数器——主题
 //                   访问器是无锁纯读，且运行期不存在热切换路径。
 //
@@ -33,7 +33,7 @@ use ratatui::text::Line;
 use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::budget::{COMPOSE_CACHE_BYTES, COMPOSE_CACHE_ENTRIES};
-use crate::theme::{ColorDepth, ThemeMode};
+use crate::style::{ColorDepth, ThemeMode};
 
 use super::view::Key;
 
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn repeat_render_parses_once() {
         reset();
-        let base = Style::default().fg(crate::theme::text());
+        let base = Style::default().fg(crate::style::text());
         let key = Some(Key::msg(7));
         let first = render_md(key, "# 标题\n\n正文段落", 2, 48, base);
         assert_eq!(stats().parses, 1, "首帧解析一次");
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn cached_output_equals_direct_parse() {
         reset();
-        let base = Style::default().fg(crate::theme::text());
+        let base = Style::default().fg(crate::style::text());
         let long = "中文全角与半角混排 abc ".repeat(30);
         let samples: [&str; 6] = [
             "",

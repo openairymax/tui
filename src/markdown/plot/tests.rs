@@ -28,7 +28,7 @@ fn shaded(lines: &[Line<'static>]) -> bool {
     lines.iter().any(|l| {
         l.spans
             .iter()
-            .any(|sp| sp.style.bg == Some(theme::surface_2()))
+            .any(|sp| sp.style.bg == Some(style::surface_2()))
     })
 }
 

@@ -26,7 +26,7 @@ use ratatui::{
 use crate::app::App;
 use crate::engine::grid;
 use crate::memory::{ConversationMemory, MemoryRecord};
-use crate::theme;
+use crate::style;
 
 /// 记忆后端说明（TUI 无本地存储，统一经网关 mem.* 访问 mem_d）。
 const MEMORY_BACKEND_HINT: &str = "网关记忆服务（mem.*，与 CLI 共享同一记忆库）";
@@ -101,11 +101,11 @@ fn last_page_start(total: usize) -> usize {
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 记忆库 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -125,18 +125,18 @@ fn rebuild(view: &mut MemoryView, mem: &dyn ConversationMemory, total: usize) {
     let window = &recs[view.skip.min(recs.len())..];
 
     let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
-        Span::styled("  记忆条数  ", Style::default().fg(theme::faint())),
+        Span::styled("  记忆条数  ", Style::default().fg(style::faint())),
         Span::styled(
             format!("{}", total),
             Style::default()
-                .fg(theme::success())
+                .fg(style::success())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  ·  后端  ", Style::default().fg(theme::faint())),
+        Span::styled("  ·  后端  ", Style::default().fg(style::faint())),
         Span::styled(
             backend,
             Style::default()
-                .fg(theme::accent())
+                .fg(style::accent())
                 .add_modifier(Modifier::BOLD),
         ),
         page_hint(total, window.len()),
@@ -156,12 +156,12 @@ fn rebuild(view: &mut MemoryView, mem: &dyn ConversationMemory, total: usize) {
         if earlier > 0 {
             lines.push(Line::from(Span::styled(
                 format!("  … 更早 {} 条未展示 · PgDn 下一页 / PgUp 上一页", earlier),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )));
         }
         lines.push(Line::from(Span::styled(
             "  /mem <关键词> 语义检索 · 任务经验自动沉淀为技能（F5 查看）",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
 
@@ -176,14 +176,14 @@ fn page_hint(total: usize, shown: usize) -> Span<'static> {
     } else {
         format!("  ·  本页 {} 条 · PgDn/PgUp 翻页", shown)
     };
-    Span::styled(text, Style::default().fg(theme::faint()))
+    Span::styled(text, Style::default().fg(style::faint()))
 }
 
 /// 窗口非首页时，说明被折叠的更新记录数。
 fn hidden_hint(skip: usize) -> Line<'static> {
     Line::from(Span::styled(
         format!("  ↑ 较新 {} 条已隐藏 · PgUp 返回", skip),
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     ))
 }
 
@@ -208,7 +208,7 @@ fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryRecor
         Span::styled(
             format!("── 来源：{}（{} 条） ──", src, entries.len()),
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -230,27 +230,27 @@ fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryRecor
             .map(|r| !r.trim().is_empty())
             .unwrap_or(false);
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", stem), Style::default().fg(theme::border())),
+            Span::styled(format!("  {} ", stem), Style::default().fg(style::border())),
             Span::styled(
                 format!("[{}]", speaker),
-                Style::default().fg(theme::accent()),
+                Style::default().fg(style::accent()),
             ),
-            Span::styled(format!(" {} ", hhmm), Style::default().fg(theme::faint())),
-            Span::styled(content, Style::default().fg(theme::text())),
+            Span::styled(format!(" {} ", hhmm), Style::default().fg(style::faint())),
+            Span::styled(content, Style::default().fg(style::text())),
             Span::styled(
                 if has_reasoning {
                     " · 含思考链"
                 } else {
                     ""
                 },
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ),
         ]));
         // 下一条目在前一节点下方缩进对齐，形成纵向记忆链
         if i + 1 < n {
             lines.push(Line::from(Span::styled(
                 format!("  {}  ↳", conn),
-                Style::default().fg(theme::border()),
+                Style::default().fg(style::border()),
             )));
         }
     }
@@ -262,15 +262,15 @@ fn render_empty(lines: &mut Vec<Line<'static>>) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  暂无记忆记录",
-        Style::default().fg(theme::dim()),
+        Style::default().fg(style::dim()),
     )));
     lines.push(Line::from(Span::styled(
         format!("  对话记忆由 {} 持久化。", MEMORY_BACKEND_HINT),
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     )));
     lines.push(Line::from(Span::styled(
         "  开始对话后，这里会按来源（标签）展示记忆链；/mem <关键词> 可语义检索。",
-        Style::default().fg(theme::faint()),
+        Style::default().fg(style::faint()),
     )));
     if std::env::var("AIRY_HOME").is_err() {
         lines.push(Line::from(Span::styled(
@@ -278,7 +278,7 @@ fn render_empty(lines: &mut Vec<Line<'static>>) {
                 "  提示：未设置 AIRY_HOME，网关将使用 ~{}/ 下的记忆库。",
                 crate::paths::DEFAULT_DIR_NAME
             ),
-            Style::default().fg(theme::warning()),
+            Style::default().fg(style::warning()),
         )));
     }
 }

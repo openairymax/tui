@@ -31,11 +31,10 @@ mod memory;
 mod models_cfg;
 mod panels;
 mod paths;
+mod present;
 mod secrets;
 mod skills;
-mod term;
-mod theme;
-mod ui;
+mod style;
 mod wizard;
 
 /// `AIRY_HOME` 是进程级环境变量：所有改写它的测试（app / wizard）共享此锁
@@ -145,7 +144,7 @@ async fn main() {
     let boot = Boot::mark();
 
     // ── Phase 0: Initialize logging（写入文件，避免污染 TUI 画面）──
-    if let Err(e) = term::init_file_logger() {
+    if let Err(e) = engine::term::init_file_logger() {
         // 日志文件不可用时退回 stderr（仅启动期，进入 TUI 前）
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
             .format_timestamp_millis()
@@ -155,7 +154,7 @@ async fn main() {
     }
 
     // 主题初始化（AIRY_TUI_THEME / COLORFGBG 自动适配浅色终端）
-    theme::init_from_env();
+    style::init_from_env();
 
     info!("══════════════════════════════════════════");
     info!("  AgentRT TUI v{} starting", env!("AIRY_RT_VERSION"));
@@ -225,11 +224,11 @@ async fn main() {
 
 async fn run_tui(cli: &Cli, gateway: GatewayClient, boot: &Boot) -> Result<()> {
     // T-03（P0-8）：崩溃瞬间先还原终端再打印 panic 报文，用户保住 shell。
-    term::install_panic_hook();
+    engine::term::install_panic_hook();
 
     // Setup terminal —— RAII 守卫：acquire 失败/任何后续路径（run_app Err、
     // panic、exec）退出作用域时 Drop 完整还原，终端状态永不滞留。
-    let mut guard = term::TerminalGuard::acquire()?;
+    let mut guard = engine::term::TerminalGuard::acquire()?;
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).map_err(|e| {
@@ -426,7 +425,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, boot: &B
         let mut layout_us = 0_u64;
         let outcome = compose.frame(terminal, |f| {
             let laid = Instant::now();
-            ui::render(f, app);
+            present::render(f, app);
             layout_us = laid.elapsed().as_micros() as u64;
         });
         if outcome == engine::compose::FrameOutcome::Drawn {

@@ -22,7 +22,7 @@ mod axis;
 mod eval;
 
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 use eval::{compile, eval, Tok};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -463,7 +463,7 @@ fn paint(chart: &Chart, indent: usize, base: Style) -> Vec<Line<'static>> {
             Span::styled(lead.clone(), Style::default()),
             Span::styled(
                 grid::clip(&chart.title, chart.avail),
-                base.fg(theme::accent()).add_modifier(Modifier::BOLD),
+                base.fg(style::accent()).add_modifier(Modifier::BOLD),
             ),
         ]));
     }
@@ -472,7 +472,7 @@ fn paint(chart: &Chart, indent: usize, base: Style) -> Vec<Line<'static>> {
             Span::styled(lead.clone(), Style::default()),
             Span::styled(
                 grid::clip(&chart.ylabel, chart.avail),
-                base.fg(theme::dim()).add_modifier(Modifier::ITALIC),
+                base.fg(style::dim()).add_modifier(Modifier::ITALIC),
             ),
         ]));
     }
@@ -483,7 +483,7 @@ fn paint(chart: &Chart, indent: usize, base: Style) -> Vec<Line<'static>> {
                 content.push(Span::styled("  ".to_string(), Style::default()));
             }
             content.push(Span::styled("── ".to_string(), base.fg(*color)));
-            content.push(Span::styled(name.clone(), base.fg(theme::dim())));
+            content.push(Span::styled(name.clone(), base.fg(style::dim())));
         }
         let mut spans = vec![Span::styled(lead.clone(), Style::default())];
         spans.extend(grid::clip_spans(&content, chart.avail));
@@ -495,7 +495,7 @@ fn paint(chart: &Chart, indent: usize, base: Style) -> Vec<Line<'static>> {
             Span::styled(lead.clone(), Style::default()),
             Span::styled(
                 format!("{:>w$} ", chart.ylab[r], w = chart.gutter),
-                base.fg(theme::dim()),
+                base.fg(style::dim()),
             ),
         ];
         let mut run = String::new();
@@ -504,7 +504,7 @@ fn paint(chart: &Chart, indent: usize, base: Style) -> Vec<Line<'static>> {
             let i = r * chart.cols + c;
             let (glyph, fg) = glyph_at(chart, i);
             let bg = if chart.neg[i] {
-                Some(theme::surface_2())
+                Some(style::surface_2())
             } else {
                 None
             };
@@ -530,7 +530,7 @@ fn paint(chart: &Chart, indent: usize, base: Style) -> Vec<Line<'static>> {
     out.push(Line::from(vec![
         Span::styled(lead.clone(), Style::default()),
         Span::styled(format!("{:>w$} ", "", w = chart.gutter), Style::default()),
-        Span::styled(x_row(chart), base.fg(theme::dim())),
+        Span::styled(x_row(chart), base.fg(style::dim())),
     ]));
 
     if !chart.xlabel.is_empty() {
@@ -538,7 +538,7 @@ fn paint(chart: &Chart, indent: usize, base: Style) -> Vec<Line<'static>> {
             Span::styled(lead, Style::default()),
             Span::styled(
                 grid::clip(&chart.xlabel, chart.avail),
-                base.fg(theme::dim()).add_modifier(Modifier::ITALIC),
+                base.fg(style::dim()).add_modifier(Modifier::ITALIC),
             ),
         ]));
     }
@@ -573,9 +573,9 @@ fn glyph_at(chart: &Chart, i: usize) -> (char, Color) {
         return (glyph, palette(o));
     }
     match chart.mark[i] {
-        '─' | '│' => (chart.mark[i], theme::dim()),
-        '·' => ('·', theme::faint()),
-        _ => (' ', theme::text()),
+        '─' | '│' => (chart.mark[i], style::dim()),
+        '·' => ('·', style::faint()),
+        _ => (' ', style::text()),
     }
 }
 
@@ -590,12 +590,12 @@ fn run_span(s: &str, fg: Color, bg: Option<Color>, base: Style) -> Span<'static>
 /// 序列调色板（与图例一一对应；颜色取自本仓设计令牌，无第二套调色板）。
 fn palette(i: usize) -> Color {
     match i % 6 {
-        0 => theme::primary(),
-        1 => theme::accent(),
-        2 => theme::success(),
-        3 => theme::magenta(),
-        4 => theme::cyan(),
-        _ => theme::warning(),
+        0 => style::primary(),
+        1 => style::accent(),
+        2 => style::success(),
+        3 => style::magenta(),
+        4 => style::cyan(),
+        _ => style::warning(),
     }
 }
 
@@ -616,7 +616,7 @@ fn degrade(rows: &[String], indent: usize, width: usize, base: Style) -> Vec<Lin
         for piece in pieces {
             out.push(Line::from(vec![
                 Span::styled(lead.clone(), Style::default()),
-                Span::styled(piece, base.bg(theme::surface())),
+                Span::styled(piece, base.bg(style::surface())),
             ]));
         }
     }

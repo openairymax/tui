@@ -73,7 +73,7 @@ fn copy_code(app: &mut App) {
         app.toast("没有可复制的代码块");
         return;
     };
-    if crate::term::copy_text(&code) {
+    if crate::engine::term::copy_text(&code) {
         app.toast("已复制代码块");
     } else {
         app.toast("复制失败：剪贴板不可用");

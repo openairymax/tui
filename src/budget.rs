@@ -40,6 +40,29 @@ pub(crate) const FIRST_FRAME_BUDGET_MS: u64 = 100;
 /// leader 键提示浮层延迟（ms，§6.4 #7）。
 pub(crate) const LEADER_HINT_DELAY_MS: u64 = 500;
 
+// ── 外壳行高（TUI 方案 §4.2 布局计划）────────────────────────────────────
+
+/// 顶部系统状态条总高：状态文字 1 行 + 主色细分隔线 1 行。
+pub(crate) const SHELL_STATUS_ROWS: u16 = 2;
+/// 状态文字行数（品牌/连接/时钟）。
+pub(crate) const SHELL_STATUS_TEXT_ROWS: u16 = 1;
+/// 状态条下细分隔线行数。
+pub(crate) const SHELL_STATUS_RULE_ROWS: u16 = 1;
+/// 依赖降级横幅行数（单行常显）。
+pub(crate) const SHELL_BANNER_ROWS: u16 = 1;
+/// 主内容区最小高度：低于该值面板无法表达任何结构。
+pub(crate) const SHELL_MAIN_MIN_ROWS: u16 = 3;
+/// 工具审批条行数。
+pub(crate) const SHELL_APPROVAL_ROWS: u16 = 2;
+/// leader 提示浮层行数。
+pub(crate) const SHELL_LEADER_ROWS: u16 = 1;
+/// 输入栏常规高度（输入行 + 底部分隔线）。
+pub(crate) const SHELL_INPUT_ROWS: u16 = 2;
+/// 输入栏 IME 拼音态高度（输入行 + 候选区 + 分隔线）。
+pub(crate) const SHELL_INPUT_IME_ROWS: u16 = 3;
+/// 快捷键行高度。
+pub(crate) const SHELL_SHORTCUT_ROWS: u16 = 1;
+
 // ── 投影窗口 ────────────────────────────────────────────────────────────
 
 /// 首屏投影回合数上限（§5.1 拉模型）。
@@ -156,6 +179,14 @@ const _: () = {
     assert!(MAX_EVENT_ROWS > 0);
     assert!(MAX_BOARD_ROWS > 0);
     assert!(MAX_CHAT_MESSAGES > 0);
+
+    // 外壳行高：状态条由文字行与分隔线组成，IME 态输入栏须高于常规态，
+    // 主内容最小高度不得低于输入栏——否则小终端下面板先于输入栏被压扁。
+    assert!(SHELL_STATUS_TEXT_ROWS + SHELL_STATUS_RULE_ROWS == SHELL_STATUS_ROWS);
+    assert!(SHELL_INPUT_IME_ROWS > SHELL_INPUT_ROWS);
+    assert!(SHELL_MAIN_MIN_ROWS >= SHELL_INPUT_IME_ROWS);
+    assert!(SHELL_BANNER_ROWS > 0 && SHELL_APPROVAL_ROWS > 0);
+    assert!(SHELL_LEADER_ROWS > 0 && SHELL_SHORTCUT_ROWS > 0);
 
     // 帧界：最小成帧间隔不得长于发布节拍，单帧预算须落在间隔之内。
     assert!(MIN_RENDER_INTERVAL_MS <= DEFAULT_LIVE_PUBLISH_INTERVAL_MS);

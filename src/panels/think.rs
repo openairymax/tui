@@ -23,7 +23,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::theme;
+use crate::style;
 
 /// 思考链数据源：流式中的实时链路优先（本视图是思考链的唯一查看入口），
 /// 流式落定后回落到本轮的内存副本。返回 (原文, 是否实时)。
@@ -42,19 +42,19 @@ fn body_lines(content: &str, width: usize) -> Vec<Line<'static>> {
         return vec![
             Line::from(Span::styled(
                 "  本轮暂无思考链。",
-                Style::default().fg(theme::dim()),
+                Style::default().fg(style::dim()),
             )),
             Line::from(Span::styled(
                 "  思考链是模型的内部推理原文：默认不上屏、不写长期记忆，",
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )),
             Line::from(Span::styled(
                 "  仅在用户显式请求（Alt+E）时于本视图按需展示。",
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )),
         ];
     }
-    crate::markdown::render(content, 2, width, Style::default().fg(theme::dim()))
+    crate::markdown::render(content, 2, width, Style::default().fg(style::dim()))
 }
 
 /// 状态行：区分「思考中（实时）」与「最近一轮（落定副本）」。
@@ -65,12 +65,12 @@ fn status_line(content: &str, live: bool, secs: f64) -> Line<'static> {
             Span::styled(
                 "  ◐ 思考中… ",
                 Style::default()
-                    .fg(theme::warning())
+                    .fg(style::warning())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{chars} 字 · {secs:.1}s（实时，仍在生成）"),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ),
         ])
     } else if chars > 0 {
@@ -78,18 +78,18 @@ fn status_line(content: &str, live: bool, secs: f64) -> Line<'static> {
             Span::styled(
                 "  ● 最近一轮思考链  ",
                 Style::default()
-                    .fg(theme::accent())
+                    .fg(style::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{chars} 字 · 仅存内存（未上屏 · 未落长期记忆）"),
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             ),
         ])
     } else {
         Line::from(Span::styled(
             "  ○ 无思考链",
-            Style::default().fg(theme::dim()),
+            Style::default().fg(style::dim()),
         ))
     }
 }
@@ -98,11 +98,11 @@ fn status_line(content: &str, live: bool, secs: f64) -> Line<'static> {
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 思考链 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -128,9 +128,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::raw(""));
     }
     lines.push(Line::from(vec![
-        Span::styled("  ↑↓ 滚动", Style::default().fg(theme::faint())),
-        Span::styled("  PgUp/PgDn 翻页", Style::default().fg(theme::faint())),
-        Span::styled("  Esc 返回对话", Style::default().fg(theme::faint())),
+        Span::styled("  ↑↓ 滚动", Style::default().fg(style::faint())),
+        Span::styled("  PgUp/PgDn 翻页", Style::default().fg(style::faint())),
+        Span::styled("  Esc 返回对话", Style::default().fg(style::faint())),
     ]));
 
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);

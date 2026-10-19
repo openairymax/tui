@@ -18,7 +18,7 @@ use ratatui::{
 use crate::app::App;
 use crate::client::HallBoardEntry;
 use crate::engine::grid;
-use crate::theme;
+use crate::style;
 
 /// 看板单屏物化行数上限：渲染只取前 MAX_BOARD_ROWS 条，选中行与 Enter
 /// 详情也必须收敛到该窗口内，否则光标越界后高亮消失、Enter 打开屏外
@@ -42,10 +42,10 @@ fn state_icon(state: &str) -> &'static str {
 /// 状态语义色（与 C 版 cli_panel_state_color 对齐）
 fn state_color(state: &str) -> Color {
     match state {
-        "completed" => theme::success(),
-        "failed" | "canceled" => theme::danger(),
-        "running" | "pending" | "scheduled" => theme::warning(),
-        _ => theme::dim(),
+        "completed" => style::success(),
+        "failed" | "canceled" => style::danger(),
+        "running" | "pending" | "scheduled" => style::warning(),
+        _ => style::dim(),
     }
 }
 
@@ -86,7 +86,7 @@ fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
         &e.state
     };
     let base = if selected {
-        Style::default().bg(theme::surface_active())
+        Style::default().bg(style::surface_active())
     } else {
         Style::default()
     };
@@ -96,20 +96,20 @@ fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
             format!(" {} {}  ", marker, state_icon(state)),
             base.fg(state_color(state)).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(name, base.fg(theme::text())),
+        Span::styled(name, base.fg(style::text())),
         Span::styled(
             grid::pad(&grid::clip(state, 12), 12),
             base.fg(state_color(state)),
         ),
         Span::styled(
             format!(" {} ", mini_bar(e.progress)),
-            base.fg(theme::accent()),
+            base.fg(style::accent()),
         ),
         Span::styled(
             format!("{:>3}%", (e.progress * 100.0).round() as u64),
-            base.fg(theme::dim()),
+            base.fg(style::dim()),
         ),
-        Span::styled(format!("  #{}", e.task_id), base.fg(theme::faint())),
+        Span::styled(format!("  #{}", e.task_id), base.fg(style::faint())),
     ])
 }
 
@@ -130,11 +130,11 @@ fn state_cn(state: &str) -> &'static str {
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(style::border()))
         .title(Span::styled(
             " 任务看板 ",
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -157,13 +157,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled(
             format!("  执行实例 {} · 在线 Agent {}  ", entry_count, agent_count),
-            Style::default().fg(theme::dim()),
+            Style::default().fg(style::dim()),
         ),
-        Span::styled("过滤: ", Style::default().fg(theme::faint())),
+        Span::styled("过滤: ", Style::default().fg(style::faint())),
         Span::styled(
             filter_tip,
             Style::default()
-                .fg(theme::primary())
+                .fg(style::primary())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -174,9 +174,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             },
             Style::default()
                 .fg(if app.connected {
-                    theme::success()
+                    style::success()
                 } else {
-                    theme::danger()
+                    style::danger()
                 })
                 .add_modifier(Modifier::BOLD),
         ),
@@ -202,25 +202,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             }
         }
         lines.push(Line::from(vec![
-            Span::styled("  概览 ", Style::default().fg(theme::faint())),
+            Span::styled("  概览 ", Style::default().fg(style::faint())),
             Span::styled(
                 format!("▶ 执行中 {}", n_run),
-                Style::default().fg(theme::warning()),
+                Style::default().fg(style::warning()),
             ),
-            Span::styled("   ", Style::default().fg(theme::faint())),
+            Span::styled("   ", Style::default().fg(style::faint())),
             Span::styled(
                 format!("○ 待处理 {}", n_wait),
-                Style::default().fg(theme::cyan()),
+                Style::default().fg(style::cyan()),
             ),
-            Span::styled("   ", Style::default().fg(theme::faint())),
+            Span::styled("   ", Style::default().fg(style::faint())),
             Span::styled(
                 format!("✓ 完成 {}", n_done),
-                Style::default().fg(theme::success()),
+                Style::default().fg(style::success()),
             ),
-            Span::styled("   ", Style::default().fg(theme::faint())),
+            Span::styled("   ", Style::default().fg(style::faint())),
             Span::styled(
                 format!("✗ 失败/取消 {}", n_bad),
-                Style::default().fg(theme::danger()),
+                Style::default().fg(style::danger()),
             ),
         ]));
     }
@@ -244,7 +244,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         if entries.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  暂无执行实例：运行任务后 work_hall 状态在此展示（$AIRY_HOME/state/work_hall_state.json）。",
-                Style::default().fg(theme::faint()),
+                Style::default().fg(style::faint()),
             )));
         } else {
             // 只物化前 MAX_BOARD_ROWS 条；sel 在该窗口内取模，光标由
@@ -261,7 +261,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                         entries.len(),
                         MAX_BOARD_ROWS
                     ),
-                    Style::default().fg(theme::faint()),
+                    Style::default().fg(style::faint()),
                 )));
             }
         }
@@ -269,12 +269,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::raw(""));
             lines.push(Line::from(Span::styled(
                 "  在线 Agent：",
-                Style::default().fg(theme::dim()),
+                Style::default().fg(style::dim()),
             )));
             for a in board.agents.iter().take(8) {
                 lines.push(Line::from(vec![
-                    Span::styled("   ● ", Style::default().fg(theme::success())),
-                    Span::styled(a.clone(), Style::default().fg(theme::text())),
+                    Span::styled("   ● ", Style::default().fg(style::success())),
+                    Span::styled(a.clone(), Style::default().fg(style::text())),
                 ]));
             }
         }
@@ -287,29 +287,29 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 "  ✗ 看板拉取失败 ",
                 Style::default()
-                    .fg(theme::danger())
+                    .fg(style::danger())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(msg, Style::default().fg(theme::text())),
+            Span::styled(msg, Style::default().fg(style::text())),
         ]));
         lines.push(Line::from(Span::styled(
             "  gateway 离线或未启动？启动后自动重试 · Esc 返回对话",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     } else {
         lines.push(Line::from(Span::styled(
             "  正在加载看板（gateway hall.board）…",
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
 
     // 操作提示条（简约：↑↓ 选择 · 数字过滤 · Enter 查看 · Esc 返回）
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("  ↑↓ 选择", Style::default().fg(theme::faint())),
-        Span::styled("  0-6 过滤", Style::default().fg(theme::faint())),
-        Span::styled("  Enter 决策链", Style::default().fg(theme::faint())),
-        Span::styled("  Esc 返回", Style::default().fg(theme::faint())),
+        Span::styled("  ↑↓ 选择", Style::default().fg(style::faint())),
+        Span::styled("  0-6 过滤", Style::default().fg(style::faint())),
+        Span::styled("  Enter 决策链", Style::default().fg(style::faint())),
+        Span::styled("  Esc 返回", Style::default().fg(style::faint())),
     ]));
 
     f.render_widget(Paragraph::new(lines).block(block), area);

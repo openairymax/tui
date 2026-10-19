@@ -26,9 +26,10 @@ use ratatui::{
 
 use crate::app::{App, MessageRole};
 use crate::budget::{MAX_CELLS_PER_TURN, RETAINED_TURNS_LIMIT};
+use crate::engine::block::{slice_out, Index};
 use crate::engine::window::{self, Span as Win};
 use crate::gccp::FlowPhase;
-use crate::theme;
+use crate::style;
 
 use super::{block, flow, welcome};
 
@@ -97,22 +98,16 @@ impl ChatView {
             welcome::append(&mut welcome_seg, width, viewport, app);
         }
 
-        // 块起始偏移与行数：命中缓存即零内容渲染，未命中才物化测量
-        let mut offsets: Vec<usize> = Vec::with_capacity(app.messages.len());
-        let mut spans: Vec<u32> = Vec::with_capacity(app.messages.len());
-        let mut cursor = head.len() + welcome_seg.len();
-        for idx in 0..app.messages.len() {
-            let h = self.block_height(app, idx, width);
-            offsets.push(cursor);
-            spans.push(h);
-            cursor += h as usize;
-        }
-        let body_end = cursor;
+        // 块索引：命中缓存即零内容渲染，未命中才物化测量
+        let idx = Index::build(
+            (0..app.messages.len()).map(|i| self.block_height(app, i, width)),
+            head.len() + welcome_seg.len(),
+        );
 
         let mut tail: Vec<Line<'static>> = Vec::new();
         flow::render_tail(&mut tail, app, width);
 
-        let total = body_end + tail.len();
+        let total = idx.end() + tail.len();
         // 行级滚动语义：scroll_offset 为「距底部向上滚的行数」，反转为距顶偏移
         let max_offset = total.saturating_sub(viewport);
         let from_top = max_offset.saturating_sub((app.scroll_offset as usize).min(max_offset));
@@ -123,31 +118,31 @@ impl ChatView {
         };
 
         // 只物化与窗口 [w0, w1) 相交的行块；窗口再经投影预算裁定
-        let (m0, m1) = visible_msgs(&offsets, &spans, w0, w1);
+        let (m0, m1) = idx.visible(w0, w1);
         let win = if all {
             Win {
                 start: 0,
-                end: offsets.len(),
+                end: idx.len(),
             }
         } else if m0 >= m1 {
             Win { start: 0, end: 0 }
         } else {
             // 冷启动且视口贴底：首帧只投影最近 30 条，第二帧补满
             let initial = !self.primed && from_top + viewport >= total;
-            window::project(offsets.len(), m0, m1 - 1, &spans, initial)
+            window::project(idx.len(), m0, m1 - 1, idx.spans(), initial)
         };
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(w1.saturating_sub(w0));
-        push_slice_window(&mut lines, &head, 0, w0, w1);
+        slice_out(&mut lines, &head, 0, w0, w1);
         if !welcome_seg.is_empty() {
-            push_slice_window(&mut lines, &welcome_seg, head.len(), w0, w1);
+            slice_out(&mut lines, &welcome_seg, head.len(), w0, w1);
         }
         let mut seg: Vec<Line<'static>> = Vec::new();
-        for (idx, &start) in offsets.iter().enumerate().take(win.end).skip(win.start) {
+        for at in win.start..win.end {
             seg.clear();
-            self.push_block(app, idx, width, &mut seg, !all);
-            push_slice_window(&mut lines, &seg, start, w0, w1);
+            self.push_block(app, at, width, &mut seg, !all);
+            slice_out(&mut lines, &seg, idx.start(at), w0, w1);
         }
-        push_slice_window(&mut lines, &tail, body_end, w0, w1);
+        slice_out(&mut lines, &tail, idx.end(), w0, w1);
 
         self.trim(app, m0, m1);
         self.primed = true;
@@ -297,7 +292,7 @@ impl ChatView {
         out.truncate(base + MAX_CELLS_PER_TURN - 1);
         out.push(Line::from(Span::styled(
             window::clip_marker(clipped),
-            Style::default().fg(theme::faint()),
+            Style::default().fg(style::faint()),
         )));
     }
 
@@ -324,41 +319,6 @@ impl ChatView {
             }
             None => self.heights.clear(),
         }
-    }
-}
-
-/// 与行窗口 `[w0, w1)` 相交的消息下标区间 `[first, end)`；无相交时返回空区间。
-fn visible_msgs(offsets: &[usize], spans: &[u32], w0: usize, w1: usize) -> (usize, usize) {
-    let mut first = offsets.len();
-    let mut end = offsets.len();
-    for idx in 0..offsets.len() {
-        let start = offsets[idx];
-        if start >= w1 {
-            break;
-        }
-        if start + spans[idx] as usize <= w0 {
-            continue;
-        }
-        if first == offsets.len() {
-            first = idx;
-        }
-        end = idx + 1;
-    }
-    (first, end)
-}
-
-/// 截取片段 `seg`（全局起始行 = seg_start）与窗口 [w0, w1) 相交部分追加。
-fn push_slice_window(
-    out: &mut Vec<Line<'static>>,
-    seg: &[Line<'static>],
-    seg_start: usize,
-    w0: usize,
-    w1: usize,
-) {
-    let s = w0.saturating_sub(seg_start);
-    let e = w1.saturating_sub(seg_start).min(seg.len());
-    if s < e {
-        out.extend(seg[s..e].iter().cloned());
     }
 }
 
