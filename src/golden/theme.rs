@@ -108,7 +108,9 @@ fn brand_badge_contrast() {
     assert!(found, "品牌徽记 ◈ 未渲染");
 }
 
-/// §6.12 #2：网关降级徽章以 ▲ 符号与文字双重编码（色弱冗余，§6.8 #5）。
+/// §6.8 #5：风险/状态不得只靠颜色区分——网关降级徽章同时给出 ▲ 符号
+/// 与「网关不可达 · 正在重连」文字，色弱用户仅凭文字亦可达意。
+/// §6.12 #2：该双编码在状态条按严重度只报降级态，面板看全量。
 #[test]
 fn gateway_degrade_redundant_encoding() {
     let mut fx = Fixture::new("theme-degrade");
