@@ -3,15 +3,15 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 降级与自愈能力矩阵（TUI 建设方案 §6.11 / §6.12）：依赖降级横幅全生命周期、
-// 恢复撤横幅与提示、多依赖混合面板、空态组合、错误限流聚合、抖动冷却抑制与
-// 冷却后重弹。断言以真实时钟注入驱动，不使用测试旁路改写渲染结果。
+// 降级与自愈能力矩阵（TUI 建设方案 §6.12 / §6.13）：依赖降级横幅全生命周期、
+// 恢复撤横幅与提示、状态条降级徽章、多依赖混合面板、空态组合、错误去重聚合、
+// 抖动冷却抑制与冷却后重弹。断言以真实时钟注入驱动，不使用测试旁路改写渲染结果。
 
 use super::*;
 use crate::app::ActivePanel;
 use crate::budget::DEGRADED_BANNER_COOLDOWN_MS;
 
-/// §6.11 #1：后端降级先出横幅，持续超过 10s 才追加时长标注。
+/// §6.12 #1：后端降级先出横幅，持续超过 10s 才追加时长标注。
 #[test]
 fn banner_lifecycle_and_age() {
     let mut fx = Fixture::new("degrade-banner");
@@ -30,7 +30,7 @@ fn banner_lifecycle_and_age() {
     assert_has(&s, "已持续 11s");
 }
 
-/// §6.11 #2：降级解除后横幅撤下，并以提示告知恢复。
+/// §6.12 #1：降级解除后横幅撤下，并以提示告知恢复。
 #[test]
 fn banner_restore_clears_and_notifies() {
     let mut fx = Fixture::new("degrade-restore");
@@ -48,7 +48,7 @@ fn banner_restore_clears_and_notifies() {
     assert_has(&s, "LLM 后端已恢复");
 }
 
-/// §6.12 #1：多依赖混合时面板按依赖维度汇总，状态条只报存在降级。
+/// §6.12 #2：多依赖混合时状态条按严重度只报降级，面板看全量（§6.12 #3）。
 #[test]
 fn health_panel_mixed_deps() {
     let mut fx = Fixture::new("degrade-mixed");
@@ -63,7 +63,7 @@ fn health_panel_mixed_deps() {
     assert_has(&s, "LLM 后端");
 }
 
-/// §6.12 #2：从未探测时面板给出空态指引，状态条仍报全部正常。
+/// §6.12 #3：从未探测时面板给出空态指引，状态条仍报全部正常。
 #[test]
 fn health_panel_empty_state() {
     let mut fx = Fixture::new("degrade-empty");
@@ -75,7 +75,7 @@ fn health_panel_empty_state() {
     assert_has(&s, "健康探测每 5s 自动执行一次");
 }
 
-/// §6.11 #3：限流错误在卡片与面板两处冗余编码，聚合计数一致。
+/// §6.13 #2：限流错误聚合为 ×N 计数徽章，卡片与面板两处一致。
 #[test]
 fn quota_error_aggregates_both_surfaces() {
     let mut fx = Fixture::new("degrade-quota");
@@ -97,7 +97,7 @@ fn quota_error_aggregates_both_surfaces() {
     assert_has(&s, "修复：airymaxrt doctor");
 }
 
-/// §6.11 #4：冷却期内抖动不重弹横幅，只累计抑制计数。
+/// §6.12 #6：冷却期内抖动不重弹横幅，只累计抑制计数。
 #[test]
 fn banner_cooldown_suppresses_flap() {
     let mut fx = Fixture::new("degrade-flap");
@@ -116,7 +116,7 @@ fn banner_cooldown_suppresses_flap() {
     assert_has(&s, "降级横幅冷却期抑制重弹 1 次");
 }
 
-/// §6.11 #5：冷却期满后再次降级应正常重弹横幅。
+/// §6.12 #6：冷却期满后再次降级应正常重弹横幅。
 #[test]
 fn banner_reappears_after_cooldown() {
     let mut fx = Fixture::new("degrade-relapse");
