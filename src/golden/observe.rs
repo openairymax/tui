@@ -25,7 +25,7 @@ fn timeline_rollback_is_annotated() {
     assert_has(&s, "时钟已校准（回拨 ≈6s）");
 }
 
-/// §6.13 #2：未发生回拨时不得出现校准标注。
+/// §6.13 #1：未发生回拨时不得出现校准标注。
 #[test]
 fn timeline_normal_stays_silent() {
     let mut fx = Fixture::new("observe-normal");
@@ -49,7 +49,7 @@ fn panel_stat_line_aggregates_deps() {
     assert_has(&s, "LLM 后端");
 }
 
-/// §6.13 #3：诊断快照头部只含采集时刻、单调序与时间线状态。
+/// §6.13 #5：诊断导出头部只含采集时刻、单调序与时间线状态（脱敏快照）。
 #[test]
 fn diag_report_header_segment() {
     let stamp = Stamp {
@@ -66,7 +66,7 @@ fn diag_report_header_segment() {
     assert!(text.contains("时间线：正常"));
 }
 
-/// §6.13 #4：诊断快照错误段按类聚合，同类限流错误合并计数。
+/// §6.13 #2：诊断导出错误段按类聚合，同类限流错误合并计数（×N）。
 #[test]
 fn diag_report_error_segment() {
     let stamp = Stamp::default();
@@ -81,7 +81,7 @@ fn diag_report_error_segment() {
     assert!(text.contains("后端限流"));
 }
 
-/// §6.13 #5：诊断快照依赖段逐项标注可达性与失败/抖动计数。
+/// §6.13 #5：诊断导出依赖段（依赖健康快照）逐项标注可达性与失败/抖动计数。
 #[test]
 fn diag_report_dependency_segment() {
     let stamp = Stamp::default();
@@ -97,7 +97,7 @@ fn diag_report_dependency_segment() {
     assert!(text.contains("（失败 1 次 / 抖动 0 次）"));
 }
 
-/// §6.13 #6：错误条目有界，超限最旧条目并入溢出桶，计数不失真。
+/// §6.13 #4：错误聚合表有界，超限最旧条目并入溢出桶，计数不失真。
 #[test]
 fn diag_report_overflow_bucket() {
     let mut fx = Fixture::new("observe-overflow");

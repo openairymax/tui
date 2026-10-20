@@ -3,15 +3,15 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 进程呈现能力矩阵（TUI 建设方案 §6.2 / §6.5 / §6.6 / §6.9）：品牌头生命
-// 周期、阶段徽章、工具事件卡、任务集 DAG 进度、输入引导、通知时序与底部跟随
-// 浮标的数值生命期。断言只读真实渲染结果与状态量，不引入测试旁路。
+// 进程呈现能力矩阵（TUI 建设方案 §6.7 / §6.4 / §6.2）：chrome 状态条生命
+// 周期与阶段徽章、工具运行卡、任务集 DAG 进度面板、输入引导、完成通知方法
+// 表与底部跟随浮标的数值生命期。断言只读真实渲染结果与状态量，不引入测试旁路。
 
 use super::*;
 use crate::engine::notify::{frame, Method};
 use crate::gccp::{FlowPhase, NodeState, TaskControl};
 
-/// §6.2 #1：品牌头空会话默认形态，以及模型/用量填充后的数值形态。
+/// §6.7 #1：chrome 状态条空会话默认形态，以及模型/用量填充后的数值形态。
 #[test]
 fn hero_lifecycle() {
     let mut fx = Fixture::new("progress-hero");
@@ -32,7 +32,7 @@ fn hero_lifecycle() {
     assert_has(&s, "12345 tok · $0.0080");
 }
 
-/// §6.2 #2：阶段徽章随任务生命周期切换，暂停与恢复提示同步。
+/// §6.7 #1：状态条阶段徽章随任务生命周期切换，暂停与恢复提示同步。
 #[test]
 fn phase_badge_lifecycle() {
     let mut fx = Fixture::new("progress-phase");
@@ -56,7 +56,7 @@ fn phase_badge_lifecycle() {
     assert_has(&s, "▶ 已恢复，继续等待回复。");
 }
 
-/// §6.5 #1：工具事件卡头部取自首 token 与已知工具表，图标区分成败与回传。
+/// §6.7 #2：工具运行卡头部取自首 token 与已知工具表，图标区分成败与回传。
 #[test]
 fn tool_event_cards() {
     let mut fx = Fixture::new("progress-tool");
@@ -69,7 +69,7 @@ fn tool_event_cards() {
     assert_has(&s, "[Sub exec Agent] ▸");
 }
 
-/// §6.6 #1：任务集 DAG 的执行态标题、步骤计数与节点标记，进度随状态推进。
+/// §6.7 #3：任务集 DAG 进度面板的执行态标题、步骤计数与节点标记，进度随状态推进。
 #[test]
 fn dag_progress_lifecycle() {
     let mut fx = Fixture::new("progress-dag");
@@ -101,7 +101,7 @@ fn dag_progress_lifecycle() {
     assert_has(&s, "●");
 }
 
-/// §6.2 #3：输入引导随 GCCP 轮次切到「回答第 N 问」。
+/// §6.4 #8：输入区引导随 GCCP 轮次切到「回答第 N 问」，模式状态常显。
 #[test]
 fn input_hint_tracks_round() {
     let mut fx = Fixture::new("progress-hint");
@@ -110,7 +110,7 @@ fn input_hint_tracks_round() {
     assert_has(&s, "回答第 3 问：");
 }
 
-/// §6.9 #1：通知序列化对空标题/空正文与首尾空白的三态折叠。
+/// §6.7 #4：完成通知方法表对空标题/空正文与首尾空白的三态折叠。
 #[test]
 fn notify_frame_boundaries() {
     assert_eq!(frame(Method::Osc9, "", "编译完成"), "\x1b]9;编译完成\x07");
@@ -121,7 +121,7 @@ fn notify_frame_boundaries() {
     );
 }
 
-/// §6.9 #2：底部跟随浮标按「出路 + 节流」计数的数值生命期。
+/// §6.2 #5：底部跟随浮标按「出路 + 节流」计数的数值生命期。
 #[test]
 fn follow_badge_numeric_lifecycle() {
     let mut fx = Fixture::new("progress-follow");

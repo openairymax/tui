@@ -3,7 +3,7 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 主题与形态能力矩阵（TUI 建设方案 §6.7 / §6.10）：深/浅主题整屏配色差分、
+// 主题与形态能力矩阵（TUI 建设方案 §6.8 / §6.12 / §6.6）：深/浅主题整屏配色差分、
 // 环境自动探测链、显式覆盖优先级、品牌徽记对比度、网关降级双通道冗余编码、
 // 色深与取色形态一致、链路指示三态。断言用自建 TestBackend 收集真实前景/
 // 背景指纹，避免只看符号文本而漏掉配色差异。
@@ -29,7 +29,7 @@ fn color_fingerprint(app: &mut App) -> Vec<String> {
     out
 }
 
-/// §6.7 #1：深/浅主题切换必须改变整屏配色，且回到深色逐格还原。
+/// §6.8 #1：深/浅主题切换必须改变整屏配色，且回到深色逐格还原。
 #[test]
 fn theme_switch_differs_then_restores() {
     let mut fx = Fixture::new("theme-diff");
@@ -43,7 +43,7 @@ fn theme_switch_differs_then_restores() {
     assert_eq!(dark1, dark2, "回到深色应逐格还原");
 }
 
-/// §6.7 #2：显式环境变量优先，探测链按「显式 → COLORFGBG → 默认深色」收敛。
+/// §6.8 #3：显式环境变量优先，探测链按「显式 → COLORFGBG → 默认深色」收敛。
 #[test]
 fn theme_env_probe_chain() {
     let _fx = Fixture::new("theme-env");
@@ -68,7 +68,7 @@ fn theme_env_probe_chain() {
     ThemeMode::Dark.set();
 }
 
-/// §6.7 #3：无显式覆盖时，探测结果真实生效且同值重设被识别为无变化。
+/// §6.8 #3：无显式覆盖时，探测结果真实生效且同值重设被识别为无变化。
 #[test]
 fn theme_probe_applies_without_override() {
     let _fx = Fixture::new("theme-probe");
@@ -82,7 +82,7 @@ fn theme_probe_applies_without_override() {
     assert!(!apply_scheme(false), "同值重设不应触发重绘");
 }
 
-/// §6.10 #1：品牌徽记以对比色块呈现，前景与背景必须可区分。
+/// §6.8 #4：品牌徽记经语义色令牌着色，前景与背景必须可区分。
 #[test]
 fn brand_badge_contrast() {
     let mut fx = Fixture::new("theme-brand");
@@ -108,7 +108,7 @@ fn brand_badge_contrast() {
     assert!(found, "品牌徽记 ◈ 未渲染");
 }
 
-/// §6.10 #2：网关降级在横幅与状态条两处冗余编码，语义一致。
+/// §6.12 #2：网关降级徽章以 ▲ 符号与文字双重编码（色弱冗余，§6.8 #5）。
 #[test]
 fn gateway_degrade_redundant_encoding() {
     let mut fx = Fixture::new("theme-degrade");
@@ -121,7 +121,7 @@ fn gateway_degrade_redundant_encoding() {
     assert_has(&s, "▲ degraded: 网关");
 }
 
-/// §6.7 #4：色深与取色形态必须一致（真彩深下全局取色即为 RGB）。
+/// §6.8 #2：色深决策链与取色形态必须一致（真彩深下全局取色即为 RGB）。
 #[test]
 fn depth_and_palette_agree() {
     assert_eq!(
@@ -131,7 +131,7 @@ fn depth_and_palette_agree() {
     );
 }
 
-/// §6.10 #3：链路指示灯三态对应「在线/重连中/已续传」文案。
+/// §6.6 #2：链路指示灯三态对应「在线/重连中/已续传」文案。
 #[test]
 fn link_indicator_three_states() {
     let mut fx = Fixture::new("theme-link");
