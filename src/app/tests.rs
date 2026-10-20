@@ -952,3 +952,98 @@ fn leader_hint_waits_delay_and_cancels() {
     assert!(!app.leader_pending());
     assert!(!app.leader_hint());
 }
+
+// ─────────── U15（0.1.19 L7）：故障呈递语义（pub(super) 真实路径直调）───
+
+fn approval_req(id: &str, tool: &str) -> crate::client::PendingApproval {
+    crate::client::PendingApproval {
+        request_id: id.to_string(),
+        tool: tool.to_string(),
+        agent_id: String::new(),
+        params: "{}".to_string(),
+        created_at: None,
+    }
+}
+
+/// §6.5 #4：审批渠道故障 fail-closed——队列逐条按「unavailable」拒绝呈递，
+/// 与用户主动拒绝（rejected）分属不同标注，绝不放行；空队列再入静默 no-op。
+#[tokio::test]
+async fn approval_unavailable_fails_closed() {
+    let _h = crate::test_env::Home::new("approval-unavailable");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.approvals.push(approval_req("r1", "shell_exec"));
+    app.approvals.push(approval_req("r2", "file_write"));
+
+    app.reject_unavailable("channel closed");
+
+    assert!(app.approvals.is_empty(), "渠道故障须清空待审队列");
+    let text: String = app
+        .messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("审批不可用，已拒绝工具「shell_exec」"),
+        "text={}",
+        text
+    );
+    assert!(
+        text.contains("（unavailable：channel closed）"),
+        "text={}",
+        text
+    );
+    assert!(
+        !text.contains("（rejected"),
+        "渠道故障不得与用户拒绝混同: text={}",
+        text
+    );
+
+    let before = app.messages.len();
+    app.reject_unavailable("again");
+    assert_eq!(app.messages.len(), before, "空队列再入为 no-op");
+}
+
+/// §6.12 #5：降级完成的回复带「· via fallback」角标且标记只消费一次；
+/// 角标是瞬时呈现态——长期记忆只存正文，不随记录落盘。
+#[test]
+fn fallback_badge_is_transient_and_once() {
+    let _h = crate::test_env::Home::new("fallback-badge");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.memory = Box::new(GatewayMemory::volatile());
+    app.fallback = true;
+
+    let run = |body: &str| RunResponse {
+        session_id: "s".to_string(),
+        response: body.to_string(),
+        tokens_used: None,
+        cost_usd: None,
+        thinking: None,
+        tool_trace: None,
+        gccp_need_interaction: false,
+        gccp_questions: Vec::new(),
+    };
+
+    app.apply_chat_result("问题".to_string(), Ok(run("降级回复正文")));
+    let last = app.messages.back().expect("回复已入库");
+    assert!(last.content.contains("降级回复正文"), "c={}", last.content);
+    assert!(
+        last.content.contains("· via fallback"),
+        "降级回复须带角标: c={}",
+        last.content
+    );
+
+    let recent = app.memory.recent(4);
+    assert_eq!(recent.len(), 1, "仅一条助手记忆: {:?}", recent);
+    assert_eq!(recent[0].content, "降级回复正文", "记忆只存正文");
+
+    app.apply_chat_result("追问".to_string(), Ok(run("正常回复")));
+    let last = app.messages.back().expect("第二条回复已入库");
+    assert!(
+        !last.content.contains("via fallback"),
+        "标记不得跨轮残留: c={}",
+        last.content
+    );
+}
