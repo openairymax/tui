@@ -1047,3 +1047,40 @@ fn fallback_badge_is_transient_and_once() {
         last.content
     );
 }
+
+// ─────────── U15（0.1.19 L7）：实时统计节流（§6.7 #5）───────────
+
+/// §6.7 #5：busy 耗时统计按 DEFAULT_LIVE_PUBLISH_INTERVAL_MS 节拍发布——
+/// 节拍内多帧推进（16ms 帧节拍）快照冻结不随帧重算，跨节拍才取真实
+/// 耗时；busy 重启即归零，不残留上一轮耗时（状态行不逐 delta 刷屏）。
+#[test]
+fn busy_secs_snapshot_publishes_on_interval() {
+    let _h = crate::test_env::Home::new("busy-secs-throttle");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+
+    app.begin_busy();
+    assert_eq!(app.busy_shown_secs, 0.0, "busy 启动即归零");
+
+    // 首帧（<250ms）：保持受理初值，不逐帧重算
+    app.set_clock(0);
+    assert_eq!(app.busy_shown_secs, 0.0);
+    // 同一节拍内连续多帧：快照冻结，不随帧跳变
+    app.set_clock(16);
+    app.set_clock(200);
+    app.set_clock(249);
+    assert_eq!(app.busy_shown_secs, 0.0, "节拍内快照不得跳变");
+    // 跨节拍：发布真实耗时（时钟单调，快照必已离开零值）
+    app.set_clock(250);
+    assert!(app.busy_shown_secs > 0.0, "跨节拍须刷新: {}", app.busy_shown_secs);
+    // 新节拍内再推进：继续冻结
+    let shown = app.busy_shown_secs;
+    app.set_clock(400);
+    assert_eq!(app.busy_shown_secs, shown, "新节拍内不得刷新");
+    // 再跨节拍：继续按节拍发布
+    app.set_clock(500);
+    assert!(app.busy_shown_secs > shown, "再跨节拍须继续刷新");
+    // busy 重启：归零，上一轮耗时不得残留
+    app.begin_busy();
+    assert_eq!(app.busy_shown_secs, 0.0);
+}

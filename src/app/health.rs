@@ -36,9 +36,17 @@ const HEALTH_PAGE: usize = 10;
 
 impl App {
     /// 注入主循环单调时刻并刷新时间线（墙钟/单调钟配对，回拨按单调序修正）。
+    /// 统计快照（§6.7 #5）在同一挂点按 DEFAULT_LIVE_PUBLISH_INTERVAL_MS 节拍
+    /// 发布：帧节拍内不逐帧重算，跨节拍才取真实耗时（不逐 delta 刷屏）。
     pub fn set_clock(&mut self, now_ms: u64) {
         self.clock_ms = now_ms;
         self.stamp = self.timeline.observe(wall_ms(), now_ms);
+        if now_ms.saturating_sub(self.stats_at_ms)
+            >= crate::budget::DEFAULT_LIVE_PUBLISH_INTERVAL_MS
+        {
+            self.stats_at_ms = now_ms;
+            self.busy_shown_secs = self.busy_started.elapsed().as_secs_f64();
+        }
     }
 
     /// 启动一轮健康探测。`full` 为真时覆盖全部业务 daemon（/health 面板），
