@@ -324,7 +324,7 @@ mod tests {
     use super::*;
     use crate::test_env::lock_env;
 
-    /// H7 防复发：三档色深映射快照（TrueColor 保真 / 256 立方索引 / 16 色亮度加权）。
+    /// H7 防复发（§6.8 #2）：三档色深映射快照（TrueColor 保真 / 256 立方索引 / 16 色语义反查）。
     #[test]
     fn color_depth_mapping_snapshots() {
         let _g = lock_env();
