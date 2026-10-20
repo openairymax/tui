@@ -864,8 +864,8 @@ fn boot_probe_applies_late_result() {
     assert_eq!(app.take_landed(), Some(crate::engine::sched::Lane::Poll));
 }
 
-/// U6（0.1.19 L7）：大 cell 入库即裁剪——头尾保留、标记含原始字节数、
-/// originalBytes 照实记账，渲染树不随单条内容无界增长。
+/// U6（0.1.19 L7，§6.10 #6）：大 cell 入库即裁剪——头尾保留、标记含
+/// 原始字节数、originalBytes 照实记账，渲染树不随单条内容无界增长。
 #[test]
 fn add_message_caps_oversized_cell() {
     let _h = crate::test_env::Home::new("cell-cap");
