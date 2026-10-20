@@ -5,8 +5,10 @@
 //
 // 审批与确认流（TUI 建设方案 §6.5）。审批卡由 `present::render` 真实投影
 // 到输入栏上方；队列、信息完备、三态直达、决议回显均走产品公开入口。
-// 渠道故障（fail-closed）的呈递语义在 `app::tests` 内以真实网关返回路径
-// 覆盖——golden 不复制产品文案，也不为测试放宽可见性。
+// 渠道故障（fail-closed，§6.5 #4）与降级角标（§6.12 #5）的呈递语义涉及
+// `pub(super)` 入口，按「不为测试放宽可见性」纪律在 `app::tests` 内以
+// 真实路径覆盖（approval_unavailable_fails_closed /
+// fallback_badge_is_transient_and_once）——golden 不复制产品文案。
 
 use super::*;
 use crate::client::PendingApproval;
