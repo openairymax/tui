@@ -56,8 +56,8 @@ pub(super) fn detect_depth() -> ColorDepth {
     )
 }
 
-/// 色深决策链（§5.5 #2）的纯函数形态：环境取值的语义裁决只在此实现，
-/// 单测直接注入取值，不再改写进程环境。
+/// 色深决策链（§6.8 #2，基建见 §5.5 #2）的纯函数形态：环境取值的语义
+/// 裁决只在此实现，单测直接注入取值，不再改写进程环境。
 fn decide(colorterm: Option<&str>, term: Option<&str>) -> ColorDepth {
     if let Some(ct) = colorterm {
         let ct = ct.to_ascii_lowercase();
@@ -191,8 +191,8 @@ mod tests {
         assert_eq!(decide(None, None), ColorDepth::Basic);
     }
 
-    /// §5.5 #3：16 色反查须保住语义区分（danger≠warning、primary 蓝、
-    /// 中性灰阶不染色）。
+    /// §6.8 #6（反查保真）：16 色反查须保住语义区分（danger≠warning、
+    /// primary 蓝、中性灰阶不染色）。
     #[test]
     fn ansi16_reverse_map_keeps_semantics() {
         assert_eq!(to_basic(118, 152, 208), 12); // primary dark
@@ -213,5 +213,15 @@ mod tests {
         assert_eq!(to_basic(72, 70, 64), 8); // border dark
         assert_eq!(to_basic(166, 162, 152), 7); // dim dark
         assert_eq!(to_basic(255, 255, 255), 15);
+    }
+
+    /// §6.8 #2：256 立方近似须与规格数值锚一致——品牌蓝 (118,152,208)
+    /// →104、浅色米白 (250,249,245)→188，立方边界收于 16..=231。
+    #[test]
+    fn cube_256_spec_anchors() {
+        assert_eq!(to_256(118, 152, 208), 104); // primary dark
+        assert_eq!(to_256(250, 249, 245), 188); // bg light
+        assert_eq!(to_256(0, 0, 0), 16);
+        assert_eq!(to_256(255, 255, 255), 231);
     }
 }
