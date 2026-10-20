@@ -208,15 +208,18 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
     }
 }
 
-/// 块内折叠：`[start, out.len())` 为一个 System 块，超阈值截断为
-/// FOLD_KEEP_LINES 行 + 折叠尾（展开态/短块原样保留）。
+/// 块内折叠：`[start, out.len())` 为一个 System 块。首行是角色头部，折叠
+/// 只作用于内容行——保留头部 + 前 FOLD_KEEP_LINES 行内容 + 折叠尾（展开态/
+/// 短块原样保留）。错误卡片据此保证「成因/修复/展开入口」三行行动项在折叠
+/// 后仍可见（§6.6 #1：诊断附注不得顶替原始错误）。
 fn fold_block(out: &mut Vec<Line<'static>>, start: usize, expanded: bool) {
-    let len = out.len() - start;
-    if expanded || len <= FOLD_MAX_LINES {
+    if expanded || out.len() - start <= FOLD_MAX_LINES {
         return;
     }
-    let more = len - FOLD_KEEP_LINES;
-    out.truncate(start + FOLD_KEEP_LINES);
+    // 头部行不计入折叠额度，故内容保留额度从 start + 1 起算。
+    let keep = start + 1 + FOLD_KEEP_LINES;
+    let more = out.len() - keep;
+    out.truncate(keep);
     out.push(Line::from(Span::styled(
         format!("  └ … {more} more lines · Alt+O 展开"),
         Style::default().fg(style::faint()),
@@ -373,8 +376,8 @@ mod tests {
         );
         assert_eq!(
             folded.len(),
-            FOLD_KEEP_LINES + 1,
-            "折叠后 = KEEP 行 + 折叠尾"
+            FOLD_KEEP_LINES + 2,
+            "折叠后 = 头部 + KEEP 内容行 + 折叠尾"
         );
         let tail = folded.last().unwrap().to_string();
         assert!(
@@ -444,7 +447,7 @@ mod tests {
         );
         assert_eq!(
             lines.len(),
-            user_len + FOLD_KEEP_LINES + 1,
+            user_len + FOLD_KEEP_LINES + 2,
             "System 块折叠后总行数"
         );
         // 折叠尾之后继续追加块不受影响

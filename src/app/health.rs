@@ -131,7 +131,7 @@ impl App {
     ///
     /// 只在「由可达转为不可达」时记错误与原始日志——持续不可达由同一份
     /// 状态持续呈现，5s 重复刷屏没有信息增量。
-    pub(super) fn note_dep(&mut self, name: &str, ok: bool, now_ms: u64, err: Option<&str>) {
+    pub(crate) fn note_dep(&mut self, name: &str, ok: bool, now_ms: u64, err: Option<&str>) {
         if self.health.observe(name, ok, now_ms) != Change::Down {
             return;
         }
@@ -146,7 +146,7 @@ impl App {
     }
 
     /// 按健康表最重依赖同步降级横幅（§6.12 #1/#6）。
-    pub(super) fn sync_banner(&mut self, now_ms: u64) {
+    pub(crate) fn sync_banner(&mut self, now_ms: u64) {
         let prev = self.banner.dep().map(str::to_string);
         match self.banner.sync(self.health.worst(), now_ms) {
             BannerAct::Show => {
@@ -178,7 +178,7 @@ impl App {
     ///
     /// 前 3 行固定为 cause / remedy / 原始错误头——折叠只保留前 3 行，
     /// 关键行动项必须在折叠后仍可见。
-    pub(super) fn fail_card(&mut self, e: &anyhow::Error) {
+    pub(crate) fn fail_card(&mut self, e: &anyhow::Error) {
         let raw = e.to_string();
         self.add_log("ERROR", format!("LLM 调用失败：{raw}"));
         let cause = self.err_agg.record(&raw, self.clock_ms);
@@ -189,14 +189,19 @@ impl App {
             .find(|x| x.code == cause.code)
             .map(|x| x.count)
             .unwrap_or(1);
-        let mut card = format!(
-            "请求失败：{}\n修复：{}\n原始错误（Alt+O 展开）：",
-            cause.label, cause.remedy
-        );
+        // 卡片须逐行成块（§6.6 #1）：markdown 会把仅以单 \n 相邻的行软换行
+        // 合并为同一段——摘要与「原始错误」正文因此糊成一段，块行数不足以
+        // 触发折叠，原始错误泄漏进折叠前的预览。这里用行尾双空格的**硬换行**
+        // 让每行独立成行（不引入空段，否则空行会白占折叠保留额度）。
+        let mut card = String::new();
+        card.push_str(&format!("请求失败：{}  \n", cause.label));
+        card.push_str(&format!("修复：{}  \n", cause.remedy));
+        card.push_str("原始错误（Alt+O 展开）：");
         for line in raw.lines().take(6) {
-            card.push_str("\n  ");
+            card.push_str("  \n  ");
             card.push_str(&crate::engine::grid::clip(line, 120));
         }
+        // 计数行随末段并入（软换行），避免自身占用折叠保留额度。
         if count > 1 {
             card.push_str(&format!(
                 "\n· 同类错误已出现 {count} 次（/health 查看聚合）"

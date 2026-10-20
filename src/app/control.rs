@@ -7,6 +7,8 @@
 
 use super::*;
 
+use crate::engine::grid;
+
 impl App {
     /// 决议一个审批请求（Claude Code 风格权限确认）。
     ///
@@ -28,11 +30,19 @@ impl App {
         approvals.remove(0);
         self.approvals = approvals;
         let label = match decision.as_str() {
-            "always" => "始终允许",
-            "allow" => "允许本次",
+            "always" => "本会话总是允许",
+            "allow" => "允许本次执行",
             _ => "拒绝",
         };
-        self.add_message(MessageRole::System, format!("已{label}工具「{}」", tool));
+        let tail = if decision == "deny" {
+            "（rejected：用户拒绝）"
+        } else {
+            ""
+        };
+        self.add_message(
+            MessageRole::System,
+            format!("已{label}工具「{}」{tail}", tool),
+        );
         self.add_log(
             "INFO",
             format!("权限决议: {} → {} ({})", request_id, label, tool),
@@ -42,6 +52,44 @@ impl App {
                 log::warn!("tool.approve 请求失败 ({}): {}", request_id, e);
             }
         });
+    }
+
+    /// 审批渠道故障（§6.5 #4）：fail-closed。队列中每条请求立即按拒绝
+    /// 呈递并与用户主动拒绝（rejected）区分标注 unavailable；同时尽力
+    /// 通知网关拒绝，避免工具悬空等待。
+    pub(super) fn reject_unavailable(&mut self, reason: &str) {
+        if self.approvals.is_empty() {
+            return;
+        }
+        for a in std::mem::take(&mut self.approvals) {
+            self.add_message(
+                MessageRole::System,
+                format!(
+                    "审批不可用，已拒绝工具「{}」（unavailable：{}）",
+                    a.tool,
+                    grid::clip(reason, 80)
+                ),
+            );
+            self.add_log(
+                "ERROR",
+                format!("权限审批不可用: {} ({})", a.tool, a.request_id),
+            );
+            let gw = self.gateway.clone();
+            let request_id = a.request_id;
+            tokio::spawn(async move {
+                let _ = gw.resolve_approval(&request_id, "deny").await;
+            });
+        }
+    }
+
+    /// 请求中断（§6.2 #6）：Esc 在等待期先呈递「已请求中断…」，再交由
+    /// 中止路径清理本地待办。呈递先于结果，用户不必等后端确认。
+    pub fn interrupt_task(&mut self) {
+        if self.pending.is_none() {
+            return;
+        }
+        self.add_message(MessageRole::System, "已请求中断…".to_string());
+        self.abort_task();
     }
 
     /// 人工中止当前后台请求（Ctrl+X）：取消 tokio 任务并清理待办状态。
@@ -249,6 +297,15 @@ impl App {
             }
         }
         self.note_dep("gateway", ok, self.clock_ms, err.as_deref());
+        let resynced = self
+            .health
+            .deps()
+            .iter()
+            .filter(|d| d.up)
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        self.link.observe(ok, resynced);
         self.sync_banner(self.clock_ms);
         self.mark_landed(Lane::Poll);
     }
@@ -285,6 +342,41 @@ impl App {
     /// 视口滚动到底（Alt+End）：偏移归零（最新消息）。
     pub fn scroll_bottom(&mut self) {
         self.scroll_offset = 0;
+    }
+
+    /// 观测对话总量变化并驱动底部跟随浮标（§6.2 #5）。渲染每帧调用：
+    /// 仅在脱离底部（scroll_offset > 0）时累计净新增行，回到未脱离态即
+    /// 清零；宽度变化视为重排，只重置基线不计数。浮标值按发布节拍
+    /// 节流，避免逐帧抖动导致文案不可读。
+    pub fn follow_observe(&mut self, total: usize, width: u16) {
+        let reflow = width != self.last_width;
+        self.last_width = width;
+        if self.scroll_offset > 0 && !reflow {
+            self.follow_new = self.follow_new.saturating_add(total.saturating_sub(self.last_total));
+        }
+        self.last_total = total;
+        if self.scroll_offset == 0 {
+            self.follow_new = 0;
+            self.follow_shown = 0;
+            self.follow_at_ms = self.clock_ms;
+            return;
+        }
+        if self.clock_ms.saturating_sub(self.follow_at_ms)
+            >= crate::budget::DEFAULT_LIVE_PUBLISH_INTERVAL_MS
+        {
+            self.follow_at_ms = self.clock_ms;
+            self.follow_shown = self.follow_new;
+        }
+    }
+
+    /// 底部跟随浮标（§6.2 #5）：脱离底部时返回节流后的新增行数，
+    /// 未脱离底部返回 None（不呈递浮标）。
+    pub fn follow_badge(&self) -> Option<usize> {
+        if self.scroll_offset > 0 {
+            Some(self.follow_shown)
+        } else {
+            None
+        }
     }
 
     /// 鼠标滚轮捕获会话级切换（Ctrl+M）：返回切换后的状态，调用方据此

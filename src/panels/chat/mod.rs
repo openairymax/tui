@@ -23,6 +23,7 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::style;
@@ -55,6 +56,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     // 步长与钳位立即跟随，无需事件通知（SSoT 单向：渲染 → 控制面）。
     app.page_step = viewport as u16;
     app.chat_scroll_max = frame.total.saturating_sub(viewport) as u16;
+    app.follow_observe(frame.total, body_w);
 
     f.render_widget(Paragraph::new(Text::from(frame.lines)), area);
 
@@ -79,19 +81,36 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_stateful_widget(sb, sb_area, &mut state);
     }
 
-    // 0.1.18 B11（V11.3）滚动位置指示：内容超出视口时给出位置反馈——
-    // 已到顶显式提示；滚动途中显示 `视口末行/总行`；底部是默认阅读位
-    // （最新消息），保持安静不常驻遮挡正文。
-    if frame.total > viewport {
-        let label = if frame.from_top == 0 {
-            Some("已到顶".to_string())
-        } else if frame.from_top + viewport < frame.total {
-            Some(format!("{}/{}", frame.from_top + viewport, frame.total))
+    // 0.1.19 §6.2 #5 底部跟随浮标：脱离底部时优先呈递，`N 行新内容`
+    // 取自节流快照；回到未脱离态即消失。0.1.18 B11（V11.3）位置指示
+    // 保留为兜底——到顶显式提示、滚动途中 `视口末行/总行`、底部安静。
+    // 回放期抑制浮标，避免与主区回放骨架行重叠（§6.1 #2）。
+    if app.replay_left() == 0 {
+        let follow = app.follow_badge();
+        let label = if let Some(n) = follow {
+            Some(if n == 0 {
+                "↓ 回到底部".to_string()
+            } else {
+                format!("↓ 回到底部（{} 行新内容）", n)
+            })
+        } else if frame.total > viewport {
+            if frame.from_top == 0 {
+                Some("已到顶".to_string())
+            } else if frame.from_top + viewport < frame.total {
+                Some(format!("{}/{}", frame.from_top + viewport, frame.total))
+            } else {
+                None
+            }
         } else {
             None
         };
         if let Some(text) = label {
-            let w = 12.min(area.width);
+            let fg = if follow.is_some() {
+                style::primary()
+            } else {
+                style::faint()
+            };
+            let w = (UnicodeWidthStr::width(text.as_str()) as u16 + 2).min(area.width);
             let hint = Rect {
                 x: area.right().saturating_sub(w),
                 y: area.bottom().saturating_sub(1),
@@ -101,7 +120,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             f.render_widget(
                 Paragraph::new(text)
                     .alignment(Alignment::Right)
-                    .style(Style::default().fg(style::faint()).bg(style::surface())),
+                    .style(Style::default().fg(fg).bg(style::surface())),
                 hint,
             );
         }

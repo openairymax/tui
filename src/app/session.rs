@@ -38,7 +38,8 @@ impl App {
         false
     }
 
-    /// 会话恢复（--resume）：把记忆库最近的对话注入消息列表，还原上次会话。
+    /// 会话恢复（--resume）：把记忆库最近的对话入回放队列，由主循环
+    /// 100ms 节流逐条上屏（§6.1 #2），历史时间戳原样复用（§6.6 #5）。
     ///
     /// 对标 Codex sessions / Claude /resume：恢复最近 user/assistant 轮次
     /// （上限 30 条），新会话开篇即可看到上次上下文。
@@ -60,15 +61,43 @@ impl App {
             };
             /* 0.1.18 B4：恢复会话不得回灌思考链原文——历史 assistant 记录
              * 的 reasoning 字段只取 content，推理原文不得借恢复通道上屏。 */
-            self.add_message(role, rec.content.clone());
+            self.replay
+                .push_back((role, rec.content.clone(), rec.timestamp.clone()));
             count += 1;
         }
-        self.add_message(
-            MessageRole::System,
-            format!("已恢复上次会话（{} 条历史）。继续对话或发送新消息。", count),
-        );
-        log::info!("resume_session: restored {} messages", count);
+        self.replay_total = count;
+        self.replay_at_ms = 0;
+        log::info!("resume_session: queued {} messages", count);
         count
+    }
+
+    /// 回放泵（§6.1 #2）：每 `REPLAY_INTERVAL_MS` 上屏一条；排空时落
+    /// 「已补账恢复 N 条」。时钟由主循环注入，模块内不读墙钟。
+    pub fn pump_replay(&mut self, now_ms: u64) {
+        if self.replay.is_empty() {
+            return;
+        }
+        if now_ms.saturating_sub(self.replay_at_ms) < crate::budget::REPLAY_INTERVAL_MS {
+            return;
+        }
+        self.replay_at_ms = now_ms;
+        if let Some((role, text, stamp)) = self.replay.pop_front() {
+            self.add_message_at(role, text, &stamp);
+        }
+        if self.replay.is_empty() {
+            let total = self.replay_total;
+            self.replay_total = 0;
+            self.replay_at_ms = 0;
+            self.add_message(
+                MessageRole::System,
+                format!("已补账恢复 {total} 条历史。继续对话或发送新消息。"),
+            );
+        }
+    }
+
+    /// 回放剩余条数（渲染骨架行「回放中 · N 条」）。
+    pub fn replay_left(&self) -> usize {
+        self.replay.len()
     }
 
     /// 重新打开首次启动向导（/hiairy 命令触发）。
