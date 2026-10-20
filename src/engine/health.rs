@@ -587,6 +587,8 @@ pub(crate) fn diag_report(
 mod tests {
     use super::*;
 
+    /// §6.12 #3/§6.13 #3 状态机侧：last_ok 单调时刻随探测更新，
+    /// ok_age/down_age 按注入时刻投影，不下发墙钟。
     #[test]
     fn table_reports_transitions() {
         let mut t = HealthTable::new();
