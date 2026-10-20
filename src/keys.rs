@@ -18,11 +18,13 @@ use std::time::Instant;
 use crate::app::{ActivePanel, App, MessageRole};
 use crate::gccp::TaskControl;
 
-/// 键位处理出口信号：`Flow::Exit` 表示请求退出 TUI 主循环（Ctrl+C / F8 切 CLI），
+/// 键位处理出口信号：`Flow::Exit` 表示请求退出 TUI 主循环（F8 切 CLI），
+/// `Flow::SigInt` 表示用户以 Ctrl+C 主动中断，二者退出码不同（§8.2），
 /// `Flow::Continue` 表示回到主循环下一帧。
 pub(crate) enum Flow {
     Continue,
     Exit,
+    SigInt,
 }
 
 /// 键位分派总入口（主循环 Event::Key，仅 Press）：按在途请求状态选择分派面。
@@ -93,7 +95,7 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             }
             info!("User pressed Ctrl+C twice, shutting down...");
             app.shutdown().await?;
-            return Ok(Flow::Exit);
+            return Ok(Flow::SigInt);
         }
         // Ctrl+X：人工中止当前后台请求（任务执行/对话等待）
         KeyCode::Char('x') | KeyCode::Char('X')
@@ -163,16 +165,20 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Char('1') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
             app.ime_toggle();
         }
+        // IME 拼音态：Esc 取消拼音（微信语义：清空缓冲，放弃组合）
+        KeyCode::Esc if app.ime_visible() => {
+            app.ime_cancel();
+        }
+        // §6.5 #3：有待审批时 Esc 等同拒绝（fail-closed 语义）
+        KeyCode::Esc if !app.approvals.is_empty() => {
+            app.approve_request("deny");
+        }
         KeyCode::Esc if app.active_panel != ActivePanel::Chat => {
             debug!("Panel: Esc → return to Chat");
             app.active_panel = ActivePanel::Chat;
             // 与 toggle_panel 同源：离开 Board/Events 必须停 SSE，
             // 否则订阅泄漏，后台持续收流（空闲态 Esc 路径）。
             app.stop_hall_watch();
-        }
-        // IME 拼音态：Esc 取消拼音（微信语义：清空缓冲，放弃组合）
-        KeyCode::Esc if app.ime_visible() => {
-            app.ime_cancel();
         }
         KeyCode::F(1) => {
             debug!("Panel: toggle Help");
@@ -212,6 +218,16 @@ async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             debug!("F8: switching to CLI (airy_cli)");
             app.switch_to_cli = true;
             return Ok(Flow::Exit);
+        }
+        // §6.9 #3：空输入时 `?` 呼出键位浮层（Help 面板）。输入非空时
+        // `?` 仍是普通字符，避免打断正在编辑的消息。
+        KeyCode::Char('?')
+            if app.active_panel == ActivePanel::Chat
+                && app.input.is_empty()
+                && !key.modifiers.contains(event::KeyModifiers::CONTROL)
+                && !key.modifiers.contains(event::KeyModifiers::ALT) =>
+        {
+            app.toggle_panel(ActivePanel::Help);
         }
         KeyCode::Enter => {
             // 面板激活（Board/Events）：Enter = 查看选中条目详情
@@ -511,7 +527,7 @@ async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             }
             info!("User pressed Ctrl+C twice while busy, shutting down...");
             app.shutdown().await?;
-            return Ok(Flow::Exit);
+            return Ok(Flow::SigInt);
         }
         KeyCode::Char('x') | KeyCode::Char('X')
             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
@@ -527,17 +543,17 @@ async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.pause_task();
             }
         }
-        // 工具级权限审批（Claude Code 风格 permission prompt）
-        // 0.1.7：仅当存在待审批请求时生效——此前无条件拦截
+        // 工具级权限审批（§6.5 #3：y=允许本次 / a=本会话总是 / n=拒绝，
+        // Esc 亦为拒绝）。仅当存在待审批请求时生效——此前无条件拦截
         // a/y/n/d/A，busy 期间输入含这些字母的文本会被吞字并
         // 向对话区插入"没有待决议的权限请求"污染聊天。
-        KeyCode::Char('a') | KeyCode::Char('y')
+        KeyCode::Char('y')
             if !app.approvals.is_empty()
                 && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
         {
             app.approve_request("allow");
         }
-        KeyCode::Char('A')
+        KeyCode::Char('a') | KeyCode::Char('A')
             if !app.approvals.is_empty()
                 && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
         {
@@ -653,12 +669,18 @@ async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Esc if app.ime_visible() => {
             app.ime_cancel();
         }
+        // §6.5 #3：审批在场时 Esc 等同拒绝，优先于面板返回
+        KeyCode::Esc if !app.approvals.is_empty() => {
+            app.approve_request("deny");
+        }
         // 非拼音态 Esc：与空闲态一致返回对话（busy 期间
-        // 在只读面板/看板上也能 Esc 退出，不困在面板里）
+        // 在只读面板/看板上也能 Esc 退出，不困在面板里）；
+        // §6.2 #6：等待期 Esc 同时请求中断，立即呈递「已请求中断…」。
         KeyCode::Esc => {
             app.active_panel = ActivePanel::Chat;
             // busy 态同样必须停 SSE（订阅泄漏同源修复）
             app.stop_hall_watch();
+            app.interrupt_task();
         }
         // ── 插入对话（2.3.7）：任务执行中输入文本 ──
         // 只读面板（Help/Config/Logs/Memory/Plugins）：

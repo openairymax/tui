@@ -114,10 +114,17 @@ fn resume_session_restores_history() {
     let n = app.resume_session();
     // user + assistant 共 2 条恢复；system 跳过
     assert_eq!(n, 2);
+    // 0.1.19 §6.1 #2：恢复经回放队列节流逐条上屏，泵空后才落进消息列表；
+    // 空队列时补一条「已补账恢复 N 条」记账（§6.6 #5 原样复用历史时间戳）。
+    let mut now = 0;
+    while app.replay_left() > 0 {
+        now += crate::budget::REPLAY_INTERVAL_MS;
+        app.pump_replay(now);
+    }
     let contents: Vec<String> = app.messages.iter().map(|m| m.content.clone()).collect();
     assert!(contents.iter().any(|c| c.contains("上次的问题")));
     assert!(contents.iter().any(|c| c.contains("上次的回答")));
-    assert!(contents.iter().any(|c| c.contains("已恢复上次会话")));
+    assert!(contents.iter().any(|c| c.contains("已补账恢复 2 条历史")));
     assert!(!contents.iter().any(|c| c.contains("不应恢复的系统消息")));
 }
 
@@ -743,7 +750,7 @@ async fn ctrl_c_key_needs_two_presses() {
     );
     let second = crate::keys::handle(&mut app, key).await.expect("handle");
     assert!(
-        matches!(second, crate::keys::Flow::Exit),
+        matches!(second, crate::keys::Flow::SigInt),
         "窗口内二次按下应退出"
     );
 }

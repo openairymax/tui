@@ -17,6 +17,7 @@
 //  F1 帮助  F2 配置  F3 日志  F4 记忆  F5 插件  Ctrl+C 退出
 
 use crate::app::{dep_cn, ActivePanel, App};
+use crate::budget;
 use crate::engine::grid;
 use crate::engine::health::dur_cn;
 use crate::engine::layout;
@@ -31,6 +32,7 @@ use ratatui::{
     widgets::{Block, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// 输入光标字符（黑白两色交替闪动，替代终端方块光标）
 const BREATH_CURSOR: &str = "▍";
@@ -67,6 +69,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // 首次启动向导（或 /hiairy 重开）全屏接管，不渲染聊天/输入/快捷键
     if app.wizard.active {
         wizard::render(f, area, &app.wizard);
+        return;
+    }
+
+    // 最小可用尺寸守卫（0.1.19 §6.9 #1）：窄于最小可用尺寸时整屏渲染友好
+    // 提示，而非让分区在窄屏上崩坏；46 列同时是窄布局断点。
+    if area.width < budget::MIN_TERM_COLS || area.height < budget::MIN_TERM_ROWS {
+        render_too_small(f, area);
         return;
     }
 
@@ -149,6 +158,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
             ActivePanel::Health => panels::health::render(f, main_area, app),
         }
     }
+    // 回放骨架行（0.1.19 §6.1 #2）：会话恢复期间主区不空白，右下角常显
+    // 进度；计数由 100ms 回放泵节流推进。
+    if app.replay_left() > 0 {
+        render_replay(f, main_area, app);
+    }
     if let Some(at) = plan.slots.approval {
         render_approval_banner(f, main_layout[at], app);
     }
@@ -160,6 +174,68 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     render_input_bar(f, main_layout[plan.slots.input], app);
     render_shortcuts(f, main_layout[plan.slots.shortcuts], app);
+}
+
+/// 终端过小提示（TUI 方案 §6.9 #1）：布局不崩坏，给出可执行的恢复路径。
+/// 三行垂直居中：标题、当前尺寸与最小尺寸、恢复动作。
+fn render_too_small(f: &mut Frame, area: Rect) {
+    let rows = [
+        Line::from(Span::styled(
+            "终端尺寸不足",
+            Style::default()
+                .fg(style::warning())
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "当前 {} × {}，至少 {} 列 × {} 行",
+                area.width,
+                area.height,
+                budget::MIN_TERM_COLS,
+                budget::MIN_TERM_ROWS
+            ),
+            Style::default().fg(style::text()),
+        )),
+        Line::from(Span::styled(
+            "请放大窗口后继续 · Ctrl+C 退出",
+            Style::default().fg(style::faint()),
+        )),
+    ];
+    let mid = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    f.render_widget(
+        Paragraph::new(Text::from(rows.to_vec()))
+            .alignment(Alignment::Center)
+            .style(Style::default().bg(style::bg())),
+        mid[1],
+    );
+}
+
+/// 回放进度行（TUI 方案 §6.1 #2）：主区右下角常显剩余条数。
+fn render_replay(f: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+    let text = format!(" 回放中 · {} 条 ", app.replay_left());
+    let w = (UnicodeWidthStr::width(text.as_str()) as u16).min(area.width);
+    let row = Rect {
+        x: area.right().saturating_sub(w),
+        y: area.bottom().saturating_sub(1),
+        width: w,
+        height: 1,
+    };
+    f.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(style::faint()).bg(style::surface())),
+        row,
+    );
 }
 
 /// 依赖降级横幅（0.1.19 U12，TUI 方案 §6.12 #1/#6）：单行常显最重依赖，
@@ -324,6 +400,14 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
+            if app.approvals.len() > 1 {
+                format!("  ·  1 / {}", app.approvals.len())
+            } else {
+                String::new()
+            },
+            Style::default().fg(style::faint()),
+        ),
+        Span::styled(
             format!(
                 "  ·  主体: {}",
                 if a.agent_id.is_empty() {
@@ -356,21 +440,21 @@ fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
         Span::raw(format!("   {params_preview}")),
         Span::raw("  "),
         Span::styled(
-            "[a] 允许本次",
+            "[y] 允许本次",
             Style::default()
                 .fg(style::success())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
-            "[A] 始终允许",
+            "[a] 本会话总是",
             Style::default()
                 .fg(style::accent())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
-            "[n] 拒绝",
+            "[n] 拒绝（Esc）",
             Style::default()
                 .fg(style::danger())
                 .add_modifier(Modifier::BOLD),
@@ -427,13 +511,12 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
 /// 品牌/能力/硬件等静态展示移交 chat 空态欢迎墙独占，职责分离无重叠。
 fn render_hero(f: &mut Frame, area: Rect, app: &App) {
     let bar_bg = style::bar();
-    // 状态灯
-    let (light, label, color) = if app.connected {
-        ("●", "ONLINE", style::success())
-    } else if app.loading {
-        ("◐", "WAITING", style::warning())
-    } else {
-        ("●", "OFFLINE", style::danger())
+    // 状态灯（§6.6 #2 三态：在线 / 重连中·n / 已补账·k）
+    let (light, label, warn) = app.link.label();
+    let color = match (warn, app.link.is_online()) {
+        (true, _) => style::warning(),
+        (false, true) => style::success(),
+        (false, false) => style::danger(),
     };
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
     let ver = app
@@ -583,13 +666,69 @@ fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
         .constraints(parts)
         .split(area);
 
-    render_input_line(f, layout[0], app);
+    // 输入区状态常显（§6.4 #8）：右栏固定宽徽标，左栏保留输入语义；
+    // 宽度不足时徽标整体让位，绝不让输入可用宽度低于 20 列。
+    let mut line_area = layout[0];
+    let mut badge_at = None;
+    if let Some(text) = input_status(app, area.width) {
+        let w = UnicodeWidthStr::width(text.as_str()) as u16;
+        if area.width > w + 20 {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Length(w)])
+                .split(layout[0]);
+            line_area = cols[0];
+            badge_at = Some((cols[1], text));
+        }
+    }
+    render_input_line(f, line_area, app);
+    if let Some((at, text)) = badge_at.as_ref() {
+        render_input_status(f, *at, app, text);
+    }
     let mut idx = 1;
     if ime_bar {
         render_ime_cands(f, layout[idx], app);
         idx += 1;
     }
     render_input_sep(f, layout[idx]);
+}
+
+/// 输入区常显状态文本（TUI 方案 §6.4 #8）：模式徽标 + 上下文占用 +
+/// token 计数，按宽度分档降级——最窄只留模式，过窄整体让位给输入。
+fn input_status(app: &App, width: u16) -> Option<String> {
+    let mode = if app.task_mode { "plan" } else { "normal" };
+    let used = app.messages.len();
+    let text = if width >= 84 {
+        format!(
+            "{} · 上下文 {}/{} · {} tok ",
+            mode,
+            used,
+            budget::MAX_CHAT_MESSAGES,
+            app.tokens
+        )
+    } else if width >= 56 {
+        format!("{} · 上下文 {}/{} ", mode, used, budget::MAX_CHAT_MESSAGES)
+    } else if width >= 40 {
+        format!("{} ", mode)
+    } else {
+        return None;
+    };
+    Some(text)
+}
+
+/// 输入区状态徽标：plan 态用警示色常显，normal 态灰显克制。
+fn render_input_status(f: &mut Frame, area: Rect, app: &App, text: &str) {
+    let fg = if app.task_mode {
+        style::warning()
+    } else {
+        style::faint()
+    };
+    f.render_widget(
+        Paragraph::new(text.to_string())
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(fg).bg(style::surface())),
+        area,
+    );
 }
 
 /// 只读展示面板（无输入语义）在输入栏占位处给出的状态提示：输入栏仍显示，

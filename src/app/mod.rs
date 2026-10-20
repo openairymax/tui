@@ -201,6 +201,18 @@ pub struct App {
     /// 回写。滚动步进据此钳位：内容未超出视口时（=0）滚动为 no-op，
     /// 不再积累脏偏移（V11.3）。
     pub chat_scroll_max: u16,
+    /// 脱离底部后新增行累计（0.1.19 §6.2 #5）：渲染每帧观测对话总行与
+    /// 视口宽度，仅在用户上滚（scroll_offset > 0）时累加净增长；宽度变化
+    /// 引起重排不得误记为新增。计数按发布节拍节流快照。
+    follow_new: usize,
+    /// 浮标显示的节流快照值：避免每帧抖动，同时保证浮标文案稳定可读。
+    follow_shown: usize,
+    /// 上次观测时刻（毫秒），与 follow_shown 同源节流。
+    follow_at_ms: u64,
+    /// 上次观测的对话总行数。
+    last_total: usize,
+    /// 上次观测的对话正文宽度：宽度变化即重排，净差值不可信。
+    last_width: u16,
     /// 鼠标滚轮捕获开关（0.1.18 B11/W14）：默认关（不牺牲终端原生文本
     /// 选择）；Ctrl+M 会话级切换。开启后滚轮滚动对话（Shift 加速 /
     /// Ctrl 细粒度），关闭即还原捕获（V11.1）。
@@ -224,6 +236,8 @@ pub struct App {
     pub gateway: GatewayClient,
     /// Connected status
     pub connected: bool,
+    /// 连接三态（0.1.19 §6.6 #2）：在线 / 重连中·n / 已补账·k。
+    pub link: crate::engine::link::Link,
     /// Gateway version
     pub gateway_version: Option<String>,
     /// Current turn number
@@ -358,7 +372,8 @@ pub struct App {
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
     pub project_context: String,
     /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
-    approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Vec<PendingApproval>>>,
+    approval_poll_rx:
+        Option<tokio::sync::oneshot::Receiver<Result<Vec<PendingApproval>, String>>>,
     /// 启动期连接探测在途结果（§6.1 #1：与首帧并发，晚到热修正连接态）
     boot_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::client::HealthResponse>>>,
     /// 2026-08-17：F8 请求切换到 CLI（airy_cli）——主循环收到标志后
@@ -417,6 +432,13 @@ pub struct App {
     landed: Option<Lane>,
     /// 记忆面板分组视图缓存（0.1.9 W8）：条数不变即复用，翻页仅移动窗口
     pub memory_view: crate::panels::memory::MemoryView,
+    /// 会话恢复回放队列（§6.1 #2 / §6.6 #5）：(角色, 正文, 原时间戳)，
+    /// 由主循环按 100ms 节流逐条上屏，历史不会一次性灌满视口。
+    replay: VecDeque<(MessageRole, String, String)>,
+    /// 本次恢复总条数；回放结束后用于「已补账恢复 N 条」。
+    replay_total: usize,
+    /// 上次回放上屏时刻（毫秒，由主循环注入，模块内不读时钟）。
+    replay_at_ms: u64,
 }
 
 /// hall 面板轮询结果（看板/事件流二选一）。
@@ -542,6 +564,11 @@ impl App {
             scroll_offset: 0,
             page_step: 10,
             chat_scroll_max: 0,
+            follow_new: 0,
+            follow_shown: 0,
+            follow_at_ms: 0,
+            last_total: 0,
+            last_width: 0,
             mouse_capture: false,
             focus_msg: None,
             focus_scroll: 0,
@@ -550,6 +577,7 @@ impl App {
             browse_expanded: false,
             gateway,
             connected: false,
+            link: crate::engine::link::Link::new(),
             gateway_version: None,
             turn: 0,
             tokens: 0,
@@ -645,6 +673,9 @@ impl App {
             msg_seq: 0,
             landed: None,
             memory_view: crate::panels::memory::MemoryView::default(),
+            replay: VecDeque::new(),
+            replay_total: 0,
+            replay_at_ms: 0,
         }
     }
 
@@ -665,6 +696,25 @@ impl App {
     pub fn add_message(&mut self, role: MessageRole, content: String) {
         // 时间戳：HH:MM:SS（消息气泡头部展示）
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+        self.add_message_at(role, content, &timestamp);
+    }
+
+    /// 按给定时间戳落一条消息（会话恢复复用历史时刻，不伪造当前时间）。
+    /// `stamp` 可为 HH:MM:SS 或 RFC3339；无法解析时原样保留，空则记「—」。
+    fn add_message_at(&mut self, role: MessageRole, content: String, stamp: &str) {
+        let timestamp = if stamp.is_empty() {
+            "—".to_string()
+        } else if stamp.len() == 8 && stamp.as_bytes().get(2) == Some(&b':') {
+            stamp.to_string()
+        } else {
+            chrono::DateTime::parse_from_rfc3339(stamp)
+                .map(|dt| {
+                    dt.with_timezone(&chrono::Local)
+                        .format("%H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_else(|_| stamp.to_string())
+        };
         self.msg_seq += 1;
         // 终端控制序列净化（0.1.19 §5.5 #8）：所有消息最终都经本入口落屏，
         // 在此统一剥离 OSC/CSI 等序列，避免模型输出或粘贴内容注入终端。

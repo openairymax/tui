@@ -500,7 +500,7 @@ impl App {
         // 消费在途轮询结果（上次 spawn 的异步查询）
         if let Some(mut rx) = self.approval_poll_rx.take() {
             match rx.try_recv() {
-                Ok(pending_list) => {
+                Ok(Ok(pending_list)) => {
                     // 新请求：去重后上屏提示
                     for a in pending_list {
                         if !self.approvals.iter().any(|x| x.request_id == a.request_id) {
@@ -509,7 +509,7 @@ impl App {
                             self.add_message(
                                 MessageRole::System,
                                 format!(
-                                    "工具「{}」请求权限执行（agent: {}，参数: {}）\n按 A=始终允许 · a=允许本次 · n=拒绝",
+                                    "工具「{}」请求权限执行（agent: {}，参数: {}）\n按 y=允许本次 · a=本会话总是 · n=拒绝（Esc 拒绝）",
                                     a.tool, a.agent_id, grid::clip(&a.params, 160)
                                 ),
                             );
@@ -520,6 +520,7 @@ impl App {
                         }
                     }
                 }
+                Ok(Err(e)) => self.reject_unavailable(&e),
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                     // 尚未返回：存回，下次继续
                     self.approval_poll_rx = Some(rx);
@@ -536,7 +537,7 @@ impl App {
         let gw = self.gateway.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let list = gw.list_pending_approvals().await.unwrap_or_default();
+            let list = gw.list_pending_approvals().await.map_err(|e| e.to_string());
             let _ = tx.send(list);
         });
         self.approval_poll_rx = Some(rx);

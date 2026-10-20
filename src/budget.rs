@@ -64,6 +64,13 @@ pub(crate) const SHELL_INPUT_ROWS: u16 = 2;
 pub(crate) const SHELL_INPUT_IME_ROWS: u16 = 3;
 /// 快捷键行高度。
 pub(crate) const SHELL_SHORTCUT_ROWS: u16 = 1;
+/// 终端最小可用宽度（列，TUI 方案 §6.9 #1）：低于该值改渲染友好提示，
+/// 不再让布局在窄屏上崩坏；46 列同时是窄布局断点。
+pub(crate) const MIN_TERM_COLS: u16 = 46;
+/// 终端最小可用高度（行）：恰好容纳一屏完整外壳（状态条 + 主内容 +
+/// 输入栏 + 快捷键行）。低于该值任何分区都无法表达。
+pub(crate) const MIN_TERM_ROWS: u16 =
+    SHELL_STATUS_ROWS + SHELL_MAIN_MIN_ROWS + SHELL_INPUT_ROWS + SHELL_SHORTCUT_ROWS;
 /// 内联渲染视口行数（§5.5 #7）：备用屏不可用或显式内联时的回滚形态。
 /// 渲染区锚定终端底部，历史输出留在滚动回滚区；实际高度取
 /// `min(终端行数, 本常量)`，由 ratatui 内联视口自动收敛。
@@ -114,6 +121,8 @@ pub(crate) const MAX_TOOL_TEXT_BYTES: usize = 64 * 1024;
 pub(crate) const DOUBLE_ESCAPE_WINDOW_MS: u64 = 500;
 /// 流式增量发布节拍（ms，§6.6）。
 pub(crate) const DEFAULT_LIVE_PUBLISH_INTERVAL_MS: u64 = 250;
+/// 会话恢复回放节拍（ms，§6.1 #2）：历史逐条上屏，避免一次性灌满视口。
+pub(crate) const REPLAY_INTERVAL_MS: u64 = 100;
 /// 大粘贴折叠阈值（字节，§6.4 #3）：超过即折叠为占位。
 pub(crate) const MAX_PASTE_FOLD_BYTES: usize = 16 * 1024;
 /// 通知正文/标题字符上限（§5.5 #5）：超长截断，防超长 OSC 序列。
@@ -183,6 +192,7 @@ const _: () = {
     assert!(MAX_TOOL_TEXT_BYTES > 0);
     assert!(DOUBLE_ESCAPE_WINDOW_MS > 0);
     assert!(DEFAULT_LIVE_PUBLISH_INTERVAL_MS > 0);
+    assert!(REPLAY_INTERVAL_MS > 0);
     assert!(MAX_PASTE_FOLD_BYTES > 0);
     assert!(NOTIFY_TEXT_MAX > 0 && NOTIFY_TEXT_MAX <= MAX_OUTPUT_CHARACTERS);
     assert!(MAX_CTRL_STR_CHARS > 0);
@@ -207,6 +217,9 @@ const _: () = {
     assert!(SHELL_MAIN_MIN_ROWS >= SHELL_INPUT_IME_ROWS);
     assert!(SHELL_BANNER_ROWS > 0 && SHELL_APPROVAL_ROWS > 0);
     assert!(SHELL_LEADER_ROWS > 0 && SHELL_SHORTCUT_ROWS > 0);
+    // 最小可用尺寸须容纳一屏完整外壳，且窄布局断点不得低于最小宽度。
+    assert!(MIN_TERM_COLS >= 40);
+    assert!(MIN_TERM_ROWS >= SHELL_INPUT_IME_ROWS + SHELL_SHORTCUT_ROWS);
     // 内联视口须至少容纳一屏完整外壳（状态条 + 主内容 + IME 输入栏 + 键位行）。
     assert!(
         INLINE_VIEWPORT_ROWS
