@@ -482,7 +482,8 @@ mod tests {
         assert!(!sched.take_frame(), "同一帧不得重复取走");
     }
 
-    /// §3.5 优先级：输入回显抢占合帧窗口立即成帧。
+    /// §6.10 #1（输入抢占渲染，机制见 §3.5 优先级）：输入回显不被帧率
+    /// 闸拖住，抢占合帧窗口立即成帧。
     #[test]
     fn input_preempts_coalesce_window() {
         let mut sched = fixture();
@@ -558,7 +559,8 @@ mod tests {
         assert_eq!(sched.queue.len(), FRAME_QUEUE_CAP);
     }
 
-    /// §3.5 帧预算：超预算置降级态，新帧起算清零。
+    /// §6.10 #4（卡顿自愈降帧的机制侧，呈递由 golden render_degrade_toggle
+    /// 护航）：超预算置降级态，新帧起算清零即恢复回升。
     #[test]
     fn over_budget_frame_degrades_and_resets() {
         let mut sched = fixture();
