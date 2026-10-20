@@ -229,7 +229,8 @@ mod tests {
         }
     }
 
-    /// 可达依赖：显示「正常」与最后成功时长，用户读到的是人话而非 errno。
+    /// §6.12 #3：可达依赖显示「正常 · 3m12s 前」（规格原文示例），用户
+    /// 读到的是人话而非 errno，且不暴露内部命名空间。
     #[test]
     fn up_dep_shows_ok_age() {
         let text = dep_line(&dep("llm", true, 0, 0), 192_000).to_string();
@@ -239,7 +240,8 @@ mod tests {
         assert!(!text.contains("llm"), "不得暴露内部命名空间: {text}");
     }
 
-    /// 不可达依赖：显示「不可达」与持续时长，并带失败/抖动计数。
+    /// §6.13 #3：坏依赖一眼可辨——「不可达 · N 前起」与 6.12 #3 面板
+    /// 同源投影，附失败/抖动计数。
     #[test]
     fn down_dep_shows_down_age() {
         let text = dep_line(&dep("gateway", false, 3, 1), 65_000).to_string();
