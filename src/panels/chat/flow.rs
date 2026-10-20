@@ -294,8 +294,9 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
         // 节拍）即出现「已受理」，请求与可见反馈之间不再有零反馈窗口
         // （V2.3）；随后按阶段演进为「思考中 / 生成中」，并始终附带已耗时
         // 计数——首字与整轮耗时在用户面同源可读（V2.1 的分段证据之一）。
+        // 耗时读 §6.7 #5 的节流快照：250ms 一刷，不逐帧重算。
         let frame = (app.session_start.elapsed().as_millis() / 100) as usize % THINKING.len();
-        let secs = app.busy_started.elapsed().as_secs_f64();
+        let secs = app.busy_shown_secs;
         let thinking = app.streaming_text.is_empty() && !app.stream_reasoning.is_empty();
         let mut spans = vec![
             Span::styled("  ", Style::default()),

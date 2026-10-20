@@ -188,6 +188,8 @@ impl App {
     pub(super) fn begin_busy(&mut self) {
         self.loading = true;
         self.busy_started = Instant::now();
+        self.busy_shown_secs = 0.0;
+        self.stats_at_ms = 0;
     }
 
     /// 空闲态退出任务集（Ctrl+X 二次按下 / 空闲时 Ctrl+X）。

@@ -119,7 +119,8 @@ pub(crate) const MAX_OUTPUT_CHARACTERS: usize = 64 * 1024;
 pub(crate) const MAX_TOOL_TEXT_BYTES: usize = 64 * 1024;
 /// 双击退出窗口（ms，§6.5 #3）。
 pub(crate) const DOUBLE_ESCAPE_WINDOW_MS: u64 = 500;
-/// 流式增量发布节拍（ms，§6.6）。
+/// 实时发布节拍（ms）：流式增量（§6.6）、follow 浮标（§6.2 #5）、
+/// busy 耗时统计（§6.7 #5）共用同一节拍。
 pub(crate) const DEFAULT_LIVE_PUBLISH_INTERVAL_MS: u64 = 250;
 /// 会话恢复回放节拍（ms，§6.1 #2）：历史逐条上屏，避免一次性灌满视口。
 pub(crate) const REPLAY_INTERVAL_MS: u64 = 100;

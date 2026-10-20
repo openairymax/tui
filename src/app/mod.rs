@@ -296,6 +296,11 @@ pub struct App {
     /// 即时展示「已受理 · N.Ns」，使请求发出后立刻有可见反馈并给出
     /// 分段时间证据（V2.3；与上一回合结算的 `last_turn_elapsed` 分开）。
     pub busy_started: Instant,
+    /// busy 耗时快照（§6.7 #5）：set_clock 按 DEFAULT_LIVE_PUBLISH_INTERVAL_MS
+    /// 节拍发布，busy 状态行只读快照，不逐帧重算刷屏。
+    pub busy_shown_secs: f64,
+    /// 统计快照上次发布时刻（逻辑时钟 ms；begin_busy 归零，busy 首帧即受理态）。
+    stats_at_ms: u64,
     /// 会话完成待投递通知（§6.7 #4）：回合落定瞬间置位，主循环取走后清零。
     pub notice: Option<Notice>,
     /// Status message
@@ -604,6 +609,8 @@ impl App {
             config_file: format!("{}/config/model.yaml", airy_home()),
             loading: false,
             busy_started: Instant::now(),
+            busy_shown_secs: 0.0,
+            stats_at_ms: 0,
             notice: None,
             status_message: "Press Enter to start".to_string(),
             task_mode: false,
