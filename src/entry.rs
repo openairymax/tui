@@ -64,6 +64,11 @@ struct Cli {
     /// 项目根目录（查找 AGENTS.md/CLAUDE.md 项目上下文；默认当前工作目录）
     #[arg(long)]
     project: Option<String>,
+
+    /// 进程存活探针（0.1.20 P2-8）：输出一行自检帧后退出，不进入 TUI。
+    /// 仅承诺可启动、可退出、可被 health probe 观察到；无渲染、无交互。
+    #[arg(long, default_value_t = false)]
+    probe: bool,
 }
 
 /// 0.1.6h：gateway 实际端口兜底。完整启动器在端口漂移后把实际端口
@@ -84,6 +89,15 @@ fn default_gateway_url() -> String {
 pub async fn run() {
     // 首帧预算的计时基准：进程进入 main 的第一时刻（§6.1 #1）。
     let boot = Boot::mark();
+
+    // 参数解析先于一切门禁：探针必须在 TTY 检查之前裁决——它存在的理由
+    // 正是「非 TTY 环境（CI／容器／串口）也要能判定二进制存活」，排在门禁
+    // 之后则永远走不到（0.1.20 P2-8）。
+    let cli = Cli::parse();
+    if cli.probe {
+        let url = cli.gateway_url.clone().unwrap_or_else(default_gateway_url);
+        std::process::exit(crate::probe::run(&url));
+    }
 
     // §6.1 #3：非 TTY 拒进。全屏渲染依赖可读写的交互终端；管道或重定向下
     // 强行进入只会把控制序列写进日志、并在死终端上反复失败。这里在任何
@@ -114,7 +128,6 @@ pub async fn run() {
     info!("  AgentRT TUI v{} starting", env!("AIRY_RT_VERSION"));
     info!("══════════════════════════════════════════");
 
-    let cli = Cli::parse();
     // 0.1.6h 修复：gateway 实际端口从 run/gateway.port 读取（完整启动器在
     // 端口漂移后固化；缺省 8080），并固定 127.0.0.1（localhost 可能解析
     // 到 ::1，而 gateway 只绑 IPv4 → 新安装"网关拉取不到"根因之一）。

@@ -161,6 +161,17 @@ agentrt-tui
 
 `--agent-file` 默认值为 `agents/main.agent.yaml`。
 
+### 存活探针（骨架）
+
+`--probe` 输出一行 `airy.tui.probe/1` JSON 后退出 0：不进入替代屏、不连网关、
+不做任何渲染。它是 0.1.21 演化指标视图的**探针**骨架，只保证「可启动、可退出、
+可被 health probe 观察到」，专供非 TTY 环境（CI、容器、串口日志）判定二进制
+可执行；按设计不携带任何功能。
+
+```bash
+agentrt-tui --probe          # {"schema":"airy.tui.probe/1", ...}
+```
+
 ### 对话流程
 
 1. 启动后在 **Chat** 面板输入消息（首次启动会进入向导辅助初始配置）。
