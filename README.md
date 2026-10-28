@@ -161,6 +161,19 @@ agentrt-tui
 
 `--agent-file` defaults to `agents/main.agent.yaml`.
 
+### Liveness probe (skeleton)
+
+`--probe` prints one JSON line (`airy.tui.probe/1`) and exits 0 without entering
+the alternate screen, contacting the gateway, or rendering anything. It is the
+**probe** skeleton for the 0.1.21 evolution-metrics view: it only guarantees
+"can start / can exit / is observable by a health probe", so non-TTY
+environments (CI, containers, serial logs) can assert the binary runs. By
+design it carries no feature.
+
+```bash
+agentrt-tui --probe          # {"schema":"airy.tui.probe/1", ...}
+```
+
 ### Conversational workflow
 
 1. After launch, type a message in the **Chat** panel (a first-run wizard helps with initial setup).

@@ -21,6 +21,7 @@ mod models_cfg;
 mod panels;
 mod paths;
 mod present;
+mod probe;
 mod secrets;
 mod skills;
 mod style;
