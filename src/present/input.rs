@@ -135,6 +135,9 @@ fn panel_read_hint(p: ActivePanel) -> Option<&'static str> {
         ActivePanel::Plugins => Some("插件只读 · Esc 返回对话"),
         ActivePanel::Think => Some("思考链只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
         ActivePanel::Health => Some("健康只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
+        ActivePanel::Evolution => {
+            Some("演化指标只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话")
+        }
         ActivePanel::Focus => Some("焦点视图只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
         _ => None,
     }

@@ -129,6 +129,12 @@ impl App {
             self.open_health();
             return Ok(());
         }
+        if lower == "/evolution" {
+            // 演化指标面板（0.1.20 W8）：think_d 上报至 monit 的六项演化指标，
+            // 经 gateway 只读转发；打开即拉取一轮。
+            self.open_evo();
+            return Ok(());
+        }
         if lower == "/diag export" {
             // 脱敏诊断快照导出（U12 §6.13 #5）
             self.cmd_diag_export();
