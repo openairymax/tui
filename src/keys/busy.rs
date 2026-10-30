@@ -120,6 +120,12 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Down if app.active_panel == ActivePanel::Health => {
             app.health_scroll_down();
         }
+        KeyCode::Up if app.active_panel == ActivePanel::Evolution => {
+            app.evo_scroll_up();
+        }
+        KeyCode::Down if app.active_panel == ActivePanel::Evolution => {
+            app.evo_scroll_down();
+        }
         KeyCode::Up => app.scroll_up(),
         KeyCode::Down => app.scroll_down(),
         KeyCode::PageUp if app.ime_visible() => {
@@ -145,6 +151,12 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         }
         KeyCode::PageDown if app.active_panel == ActivePanel::Health => {
             app.health_page_down();
+        }
+        KeyCode::PageUp if app.active_panel == ActivePanel::Evolution => {
+            app.evo_page_up();
+        }
+        KeyCode::PageDown if app.active_panel == ActivePanel::Evolution => {
+            app.evo_page_down();
         }
         KeyCode::PageUp => app.scroll_page_up(),
         KeyCode::PageDown => app.scroll_page_down(),

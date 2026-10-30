@@ -467,6 +467,7 @@ impl App {
             "/chain".into(),
             "/daemons".into(),
             "/health".into(),
+            "/evolution".into(),
             "/diag".into(),
             "/agents".into(),
             "/tools".into(),

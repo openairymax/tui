@@ -31,6 +31,7 @@ mod config;
 mod context;
 mod control;
 mod dispatch;
+mod evolution;
 mod gccp_flow;
 mod health;
 mod input;
@@ -148,6 +149,15 @@ pub struct App {
     health_rx: Option<tokio::sync::oneshot::Receiver<Vec<health::Probe>>>,
     /// 健康面板滚动偏移（正文首行下标，0 = 顶部）。
     pub health_scroll: usize,
+    /// 演化指标快照（0.1.20 W8）：think_d 上报至 monit observe 表，经
+    /// gateway 只读转发；None = 尚未取得首轮结果。
+    pub(crate) evo: Option<crate::engine::evolution::Snapshot>,
+    /// 演化指标拉取在途结果（主循环节拍触发，poll_evo 消费）。
+    evo_rx: Option<tokio::sync::oneshot::Receiver<crate::engine::evolution::Snapshot>>,
+    /// 演化面板滚动偏移（正文首行下标，0 = 顶部）。
+    pub evo_scroll: usize,
+    /// 演化指标最近一次落地时刻（主循环注入的单调 ms）。
+    pub evo_at_ms: u64,
     /// 主循环注入的单调时刻（毫秒）——应用层不自行读时钟。
     pub clock_ms: u64,
     /// 本轮对话发起时 LLM 后端是否不可达（§6.12 #5）：落定时据此标注
@@ -383,6 +393,10 @@ impl App {
             stamp: Stamp::default(),
             health_rx: None,
             health_scroll: 0,
+            evo: None,
+            evo_rx: None,
+            evo_scroll: 0,
+            evo_at_ms: 0,
             clock_ms: 0,
             fallback: false,
             leader: Leader::new(),

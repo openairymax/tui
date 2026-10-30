@@ -84,6 +84,8 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  /chain      - 决策链：无参列任务，/chain <task_id> 回放该任务决策链".to_string(),
         "  /daemons    - 14 个 daemon 在线状态（gateway 自身见顶部连接灯）".to_string(),
         "  /health     - 依赖健康面板：端到端可达性 / 最后成功时长 / 错误聚合".to_string(),
+        "  /evolution  - 演化指标面板：think_d 演化回路的六项指标（经 gateway 只读）"
+            .to_string(),
         "  /diag export - 导出脱敏诊断快照（时间线校准 + 依赖健康 + 错误摘要）".to_string(),
         "  /agents     - 已注册智能体（agent.list）".to_string(),
         "  /tools      - 可用工具（tool.list_tools）".to_string(),

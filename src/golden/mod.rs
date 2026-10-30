@@ -12,6 +12,7 @@ mod approval;
 mod boot;
 mod degrade;
 mod error;
+mod evolution;
 mod input;
 mod observe;
 mod perf;

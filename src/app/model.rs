@@ -36,6 +36,9 @@ pub enum ActivePanel {
     /// 健康面板（0.1.19 U12，TUI 方案 §6.12 #3）：逐依赖端到端可达性、
     /// 最后成功时长与错误聚合，/health 打开。
     Health,
+    /// 演化指标面板（0.1.20 W8）：think_d 经 monit observe 表上报的六项
+    /// 演化回路指标，经 gateway 只读转发，/evolution 打开。
+    Evolution,
 }
 
 /// Represents a chat message in the conversation.
