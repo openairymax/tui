@@ -35,6 +35,8 @@ pub(super) fn read_only_panel(p: ActivePanel) -> bool {
             | ActivePanel::Focus
             | ActivePanel::Health
             | ActivePanel::Evolution
+            | ActivePanel::Trace
+            | ActivePanel::BackendLog
     )
 }
 

@@ -9,10 +9,10 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::budget::MAX_TOOL_TEXT_BYTES;
+use crate::budget::{BACKEND_REFRESH_MS, MAX_TOOL_TEXT_BYTES, MEM_HITS_MAX, MEM_HIT_CLIP_CHARS};
 use crate::client::{
     GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, PendingApproval,
-    RunResponse,
+    RunResponse, ToolTrace,
 };
 use crate::engine::health::{Banner, ErrAgg, HealthTable, Stamp, Timeline};
 use crate::engine::leader::Leader;
@@ -26,10 +26,12 @@ use crate::wizard;
 
 // 应用状态按职责域分文件实现（0.1.9 W8c）：同一个 `impl App` 分散在子模块，
 // 子模块以 `use super::*` 继承本模块的类型、常量与私有项，外部路径仍为 crate::app。
+mod backendlog;
 mod command;
 mod config;
 mod context;
 mod control;
+mod daemonlog;
 mod dispatch;
 mod evolution;
 mod gccp_flow;
@@ -45,10 +47,11 @@ mod task;
 mod text;
 
 use config::*;
-pub use model::*;
-use pipeline::*;
+pub(crate) use daemonlog::log_dir;
 pub(crate) use health::dep_cn;
 pub use mode::{sanitize_reply, ModeMarker, StreamSanitizer};
+pub use model::*;
+use pipeline::*;
 use text::*;
 
 /// Maximum number of chat messages to keep in memory.
@@ -158,6 +161,21 @@ pub struct App {
     pub evo_scroll: usize,
     /// 演化指标最近一次落地时刻（主循环注入的单调 ms）。
     pub evo_at_ms: u64,
+    /// 最近一轮工具调用轨迹（0.1.20 批次五）：回合落定时由 apply_chat_result
+    /// 存量，/trace 面板按需展示全量明细；对话区克制策略不变。
+    pub last_tool_trace: Vec<ToolTrace>,
+    /// 工具轨迹面板滚动偏移（正文首行下标，0 = 顶部）。
+    pub trace_scroll: usize,
+    /// 后端日志尾部快照（0.1.20 批次五）：poll_dlogs 按节拍尾读 daemon 日志。
+    pub backend_logs: Vec<LogEntry>,
+    /// 后端日志面板滚动偏移（正文首行下标，0 = 顶部）。
+    pub backend_logs_scroll: usize,
+    /// 后端日志尾读在途结果（start_dlogs 发起，poll_dlogs 消费）。
+    backend_rx: Option<tokio::sync::oneshot::Receiver<Vec<LogEntry>>>,
+    /// 后端日志最近一次落地时刻（主循环注入的单调 ms，BACKEND_REFRESH_MS 节拍用）。
+    pub backend_at_ms: u64,
+    /// /mem 检索在途结果（cmd_mem_search 发起，poll_mem 消费；0.1.20 批次五）。
+    mem_rx: Option<tokio::sync::oneshot::Receiver<command::MemOutcome>>,
     /// 主循环注入的单调时刻（毫秒）——应用层不自行读时钟。
     pub clock_ms: u64,
     /// 本轮对话发起时 LLM 后端是否不可达（§6.12 #5）：落定时据此标注
@@ -267,8 +285,7 @@ pub struct App {
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
     pub project_context: String,
     /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
-    approval_poll_rx:
-        Option<tokio::sync::oneshot::Receiver<Result<Vec<PendingApproval>, String>>>,
+    approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Result<Vec<PendingApproval>, String>>>,
     /// 启动期连接探测在途结果（§6.1 #1：与首帧并发，晚到热修正连接态）
     boot_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::client::HealthResponse>>>,
     /// 2026-08-17：F8 请求切换到 CLI（airy_cli）——主循环收到标志后
@@ -336,7 +353,6 @@ pub struct App {
     replay_at_ms: u64,
 }
 
-
 impl App {
     pub fn new(agent_file: &str, gateway: GatewayClient) -> Self {
         // 记忆后端需在 gateway move 进 Self 之前取一份 clone
@@ -397,6 +413,13 @@ impl App {
             evo_rx: None,
             evo_scroll: 0,
             evo_at_ms: 0,
+            last_tool_trace: Vec::new(),
+            trace_scroll: 0,
+            backend_logs: Vec::new(),
+            backend_logs_scroll: 0,
+            backend_rx: None,
+            backend_at_ms: 0,
+            mem_rx: None,
             clock_ms: 0,
             fallback: false,
             leader: Leader::new(),

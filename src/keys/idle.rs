@@ -153,6 +153,11 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             app.switch_to_cli = true;
             return Ok(Flow::Exit);
         }
+        // F9：后端日志面板（0.1.20 批次五）。daemon 日志尾部 + 等待事件
+        // 高亮，「卡在排队 / 等座 / 执行」由面板直接可见。
+        KeyCode::F(9) => {
+            app.open_dlogs();
+        }
         // §6.9 #3：空输入时 `?` 呼出键位浮层（Help 面板）。输入非空时
         // `?` 仍是普通字符，避免打断正在编辑的消息。
         KeyCode::Char('?')
@@ -379,6 +384,10 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.health_scroll_up();
             } else if app.active_panel == ActivePanel::Evolution {
                 app.evo_scroll_up();
+            } else if app.active_panel == ActivePanel::Trace {
+                app.trace_up();
+            } else if app.active_panel == ActivePanel::BackendLog {
+                app.dlog_up();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                 app.history_prev();
             } else {
@@ -400,6 +409,10 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.health_scroll_down();
             } else if app.active_panel == ActivePanel::Evolution {
                 app.evo_scroll_down();
+            } else if app.active_panel == ActivePanel::Trace {
+                app.trace_down();
+            } else if app.active_panel == ActivePanel::BackendLog {
+                app.dlog_down();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                 app.history_next();
             } else {
@@ -421,6 +434,10 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.health_page_up();
             } else if app.active_panel == ActivePanel::Evolution {
                 app.evo_page_up();
+            } else if app.active_panel == ActivePanel::Trace {
+                app.trace_pgup();
+            } else if app.active_panel == ActivePanel::BackendLog {
+                app.dlog_pgup();
             } else {
                 app.scroll_page_up();
             }
@@ -440,6 +457,10 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.health_page_down();
             } else if app.active_panel == ActivePanel::Evolution {
                 app.evo_page_down();
+            } else if app.active_panel == ActivePanel::Trace {
+                app.trace_pgdn();
+            } else if app.active_panel == ActivePanel::BackendLog {
+                app.dlog_pgdn();
             } else {
                 app.scroll_page_down();
             }
