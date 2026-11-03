@@ -21,7 +21,7 @@ pub(super) fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
     // F8 是"切到 CLI"动作键而非面板：active 恒为 None → 普通文字不高亮，
     // 修复此前与 ActivePanel::Chat 绑定导致的"伪激活"恒亮（当前在对话时
     // F8 也被误高亮成已激活面板）
-    let items: [(&str, &str, Option<ActivePanel>); 8] = [
+    let items: [(&str, &str, Option<ActivePanel>); 9] = [
         ("F1", "帮助", Some(ActivePanel::Help)),
         ("F2", "配置", Some(ActivePanel::Config)),
         ("F3", "日志", Some(ActivePanel::Logs)),
@@ -30,6 +30,7 @@ pub(super) fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         ("F6", "看板", Some(ActivePanel::Board)),
         ("F7", "事件流", Some(ActivePanel::Events)),
         ("F8", "CLI", None),
+        ("F9", "后端日志", Some(ActivePanel::BackendLog)),
     ];
 
     // 窄屏只显示键位，隐藏文字标签，避免溢出

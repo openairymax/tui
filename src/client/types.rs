@@ -59,8 +59,7 @@ pub struct GccpQuestion {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolTrace {
     pub tool: String,
-    /// 工具调用参数（UI 克制设计不展示；保留字段保证反序列化数据完整性）
-    #[allow(dead_code)]
+    /// 工具调用参数（/trace 轨迹面板按需查看，0.1.20 批次五）
     pub arguments: String,
     pub result: String,
     pub ok: Option<i64>,

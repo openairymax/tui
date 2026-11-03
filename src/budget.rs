@@ -145,6 +145,18 @@ pub(crate) const MAX_HEALTH_PANEL_ITEMS: usize = 16;
 pub(crate) const MAX_ERROR_AGG_ENTRIES: usize = 32;
 /// 降级横幅恢复冷却（ms，§6.12 #6）：抖动期不闪烁。
 pub(crate) const DEGRADED_BANNER_COOLDOWN_MS: u64 = 5_000;
+/// 后端日志面板尾部读取行数上限（/dlogs，0.1.20 批次五）。
+pub(crate) const BACKEND_TAIL_LINES: usize = 200;
+/// 后端日志尾部读取字节窗口：只读文件末尾该量级，不整载大日志。
+pub(crate) const BACKEND_TAIL_BYTES: u64 = 64 * 1024;
+/// 后端日志面板刷新节拍（ms）：文件尾读按节拍，防紧密循环。
+pub(crate) const BACKEND_REFRESH_MS: u64 = 3_000;
+/// 工具轨迹面板单值截断长度（/trace，0.1.20 批次五）。
+pub(crate) const TRACE_CLIP_CHARS: usize = 160;
+/// /mem 命令检索命中条数上限（0.1.20 批次五）。
+pub(crate) const MEM_HITS_MAX: usize = 5;
+/// /mem 命中条目正文截断长度（0.1.20 批次五）。
+pub(crate) const MEM_HIT_CLIP_CHARS: usize = 160;
 
 // ── 存量界值（自各实现模块收编，行为零变化）──────────────────────────────
 

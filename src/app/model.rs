@@ -39,6 +39,12 @@ pub enum ActivePanel {
     /// 演化指标面板（0.1.20 W8）：think_d 经 monit observe 表上报的六项
     /// 演化回路指标，经 gateway 只读转发，/evolution 打开。
     Evolution,
+    /// 工具轨迹面板（0.1.20 批次五）：最近一轮工具调用的参数与结果明细，
+    /// /trace 打开；对话区克制策略不变，全量只在此按需查看。
+    Trace,
+    /// 后端日志面板（0.1.20 批次五）：daemon 日志尾部只读视图，
+    /// /dlogs 或 F9 打开；r122 批次四等待事件（排队 / 等座）整行高亮。
+    BackendLog,
 }
 
 /// Represents a chat message in the conversation.

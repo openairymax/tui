@@ -473,6 +473,8 @@ impl App {
             "/tools".into(),
             "/models".into(),
             "/mem".into(),
+            "/trace".into(),
+            "/dlogs".into(),
             "/rpc".into(),
         ];
         cands.extend(self.skills.list().into_iter().map(|s| s.name));

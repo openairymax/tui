@@ -156,12 +156,22 @@ impl App {
             self.cmd_ops_call("llm.list_models", serde_json::json!({}));
             return Ok(());
         }
+        if lower == "/trace" {
+            self.open_trace();
+            return Ok(());
+        }
+        if lower == "/dlogs" {
+            self.open_dlogs();
+            return Ok(());
+        }
         if lower == "/mem" || lower.starts_with("/mem ") {
             let arg = input[4..].trim();
             if arg.is_empty() {
                 self.cmd_ops_call("mem.count", serde_json::json!({}));
             } else {
-                self.cmd_ops_call("mem.search", serde_json::json!({ "query": arg }));
+                // 批次五：检索走专用通道，命中后跟随 mem.get 补正文再格式化
+                // 上屏，不再把 raw JSON 直接塞进对话区。
+                self.cmd_mem_search(arg);
             }
             return Ok(());
         }
@@ -419,6 +429,9 @@ impl App {
                 // 仅展示前 MAX_VISIBLE_TOOL_TRACES 条，其余折叠为一行摘要（全量见 F3 日志）。
                 // 过程化（2026-08-17）：只展示动作名与成败，不暴露参数与结果内容。
                 if let Some(trace) = &response.tool_trace {
+                    // 批次五：全量轨迹存量，/trace 面板按需查看参数与结果
+                    // 明细；对话区仍维持下面的克制展示策略。
+                    self.last_tool_trace = trace.clone();
                     const MAX_VISIBLE_TOOL_TRACES: usize = 4;
                     let total = trace.len();
                     let show = total.min(MAX_VISIBLE_TOOL_TRACES);

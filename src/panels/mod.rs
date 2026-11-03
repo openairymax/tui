@@ -5,6 +5,7 @@
 //
 // Panel modules for the AgentRT TUI.
 
+pub mod backend_logs;
 pub mod board;
 pub mod chat;
 pub mod config;
@@ -16,3 +17,4 @@ pub mod logs;
 pub mod memory;
 pub mod plugins;
 pub mod think;
+pub mod trace;
