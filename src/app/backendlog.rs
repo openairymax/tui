@@ -43,8 +43,12 @@ impl App {
     /// 消费尾读结果；面板激活时按 BACKEND_REFRESH_MS 节拍续拉。
     pub fn poll_dlogs(&mut self, now_ms: u64) {
         let Some(mut rx) = self.backend_rx.take() else {
-            if self.active_panel == ActivePanel::BackendLog
-                && now_ms.saturating_sub(self.backend_at_ms) >= BACKEND_REFRESH_MS
+            // 续拉节拍覆盖两个消费面：F9 后端日志面板与 F3 运行时日志
+            // （合流后 F3 也展示 daemon 尾读，缺口⑦）
+            if matches!(
+                self.active_panel,
+                ActivePanel::BackendLog | ActivePanel::Logs
+            ) && now_ms.saturating_sub(self.backend_at_ms) >= BACKEND_REFRESH_MS
             {
                 self.start_dlogs();
             }
@@ -69,6 +73,17 @@ impl App {
         self.backend_logs_scroll = 0;
         self.stop_hall_watch();
         self.start_dlogs();
+    }
+
+    /// F3 运行时日志合流（0.1.20 TUI 缺口⑦）：进程内日志与 daemon 尾读
+    /// 按时间戳倒序合并（最新在顶）。两源时间戳同为 HH:MM:SS 文本，同日
+    /// 字典序即时序；稳定排序保证同刻条目维持入列次序。
+    /// 排查"功能卡住"时不再需要 F3/F9 两面板来回对照。
+    pub fn merged_logs(&self) -> Vec<&LogEntry> {
+        let mut all: Vec<&LogEntry> =
+            self.logs.iter().chain(self.backend_logs.iter()).collect();
+        all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        all
     }
 
     pub fn dlog_up(&mut self) {

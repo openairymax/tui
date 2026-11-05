@@ -5,6 +5,9 @@
 //
 // Logs panel rendering.
 //
+// 数据合流（0.1.20 缺口⑦）：进程内日志与 daemon 尾读（app.backend_logs，
+// 与 F9 面板共用同一快照）按时间戳倒序合并展示，排查"功能卡住"一个面板看全。
+//
 // 视图语义：最新在顶（与聊天一致），↑/↓ 在"距最新的条目偏移"上滚动
 // （offset 由 app.logs_scroll 维护；0 = 最新）。条目内嵌换行/回车被展平
 // 为空格，消息按面板宽度截断——保证一条日志恒占一行、行数与滚动偏移
@@ -38,7 +41,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
 
-    if app.logs.is_empty() {
+    // 合流视图（缺口⑦）：进程内日志 + daemon 尾读按时间倒序；两源皆空才空态
+    let merged = app.merged_logs();
+    if merged.is_empty() {
         let home = std::env::var("AIRY_HOME")
             .unwrap_or_else(|_| format!("~/{}", crate::paths::DEFAULT_DIR_NAME));
         let text = vec![
@@ -47,7 +52,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(style::dim()),
             )),
             Line::from(Span::styled(
-                "  本 TUI 进程的连接/权限/控制等运行时事件将在此显示。",
+                "  本 TUI 进程与 daemon 的运行时事件将在此合流显示。",
                 Style::default().fg(style::faint()),
             )),
             Line::from(Span::styled(
@@ -62,12 +67,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // 去 block 边框后的可视区
     let inner_w = area.width.saturating_sub(2) as usize;
     let view_rows = (area.height.saturating_sub(2) as usize).max(1);
-    let total = app.logs.len();
+    let total = merged.len();
     // 滚动偏移钳到可视范围（offset 行被顶出视口顶部 → 已向更早滚动）
     let offset = app.logs_scroll.min(total.saturating_sub(view_rows));
 
     let mut lines: Vec<Line> = Vec::with_capacity(view_rows);
-    for entry in app.logs.iter().rev().skip(offset).take(view_rows) {
+    // merged 已最新在前，直接按偏移窗口取
+    for entry in merged.iter().skip(offset).take(view_rows) {
         let level_style = match entry.level.as_str() {
             "ERROR" => Style::default()
                 .fg(style::danger())
