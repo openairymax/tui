@@ -368,6 +368,44 @@ fn fallback_badge_is_transient_and_once() {
     );
 }
 
+/// 缺口③（0.1.20）：工具结果正文必须入对话历史——此前成功结果整体丢弃、
+/// 失败只留 120 字符首行，用户回看对话无法知道工具实际返回了什么。
+#[test]
+fn tool_result_body_lands_in_history() {
+    let _h = crate::test_env::Home::new("hist-trace");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.memory = Box::new(GatewayMemory::volatile());
+
+    let trace = crate::client::ToolTrace {
+        tool: "fs_read".to_string(),
+        arguments: "{}".to_string(),
+        result: "第一行正文\n第二行正文".to_string(),
+        ok: Some(1),
+    };
+    let run = RunResponse {
+        session_id: "s".to_string(),
+        response: "done".to_string(),
+        tokens_used: None,
+        cost_usd: None,
+        thinking: None,
+        tool_trace: Some(vec![trace]),
+        gccp_need_interaction: false,
+        gccp_questions: Vec::new(),
+    };
+    app.apply_chat_result("读文件".to_string(), Ok(run));
+    let hit = app
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::ToolResult)
+        .expect("成功结果应入史");
+    assert!(
+        hit.content.contains("第二行正文"),
+        "正文须完整入史（非仅首行）: c={}",
+        hit.content
+    );
+}
+
 // ─────────── U15（0.1.19 L7）：实时统计节流（§6.7 #5）───────────
 
 /// §6.7 #5：busy 耗时统计按 DEFAULT_LIVE_PUBLISH_INTERVAL_MS 节拍发布——
