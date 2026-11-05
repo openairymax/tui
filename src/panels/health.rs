@@ -209,6 +209,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("  ↑↓ 滚动", Style::default().fg(style::faint())),
         Span::styled("  PgUp/PgDn 翻页", Style::default().fg(style::faint())),
         Span::styled("  Esc 返回对话", Style::default().fg(style::faint())),
+        crate::panels::nav::observe_hint(),
     ]));
 
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);

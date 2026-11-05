@@ -259,7 +259,7 @@ impl App {
 
     /// /trace：打开工具轨迹面板（0.1.20 批次五）。对话区克制展示策略
     /// 不变，全量明细（动作名 / 成败 / 参数 / 结果首行）只在面板按需查看。
-    pub(super) fn open_trace(&mut self) {
+    pub fn open_trace(&mut self) {
         self.active_panel = ActivePanel::Trace;
         self.trace_scroll = 0;
         self.stop_hall_watch();

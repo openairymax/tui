@@ -88,6 +88,7 @@ pub fn render(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
         ]));
         body.extend(trace_lines(&app.last_tool_trace));
     }
+    body.push(Line::from(vec![crate::panels::nav::observe_hint()]));
     // 滚动：trace_scroll 为正文首行下标，上界按可见行数收敛。
     let visible = area.height.saturating_sub(2) as usize;
     let total = body.len().saturating_sub(1);
