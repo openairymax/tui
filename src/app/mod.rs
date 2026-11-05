@@ -47,6 +47,7 @@ mod task;
 mod text;
 
 use config::*;
+pub(crate) use config::cfg_actions;
 pub(crate) use daemonlog::log_dir;
 pub(crate) use health::dep_cn;
 pub use mode::{sanitize_reply, ModeMarker, StreamSanitizer};
@@ -192,6 +193,11 @@ pub struct App {
     pub logs: VecDeque<LogEntry>,
     /// F3 日志面板滚动偏移（距最新的条目数，0 = 最新在顶；↑/↓ 调整）
     pub logs_scroll: usize,
+    /// F2 配置面板的选中动作下标（↑/↓ 移动，Enter 执行；动作清单见
+    /// app::config::cfg_actions，索引在每次按键时按当时行数取模）
+    pub cfg_sel: usize,
+    /// F2 配置面板的正文滚动偏移（PgUp/PgDn 翻阅长内容：模型表与宿主信息）
+    pub cfg_scroll: u16,
     /// Help text cached
     pub help_text: Vec<String>,
     /// 当前对话/任务模型（/model <name> 设置并持久化；空 = 由网关/llm_d 回落默认）
@@ -427,6 +433,8 @@ impl App {
             last_turn_elapsed: None,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             logs_scroll: 0,
+            cfg_sel: 0,
+            cfg_scroll: 0,
             help_text: build_help_text(),
             model: load_saved_model().unwrap_or_default(),
             config_file: format!("{}/config/model.yaml", airy_home()),
