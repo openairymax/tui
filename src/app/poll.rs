@@ -464,10 +464,11 @@ impl App {
         log::info!("poll_pending: 消费后台请求结果（kind={:?}）", kind);
         // 会话完成通知（§6.7 #4）：只在对话回合落定时生产，内部多步请求
         // （GRAD/GCCP/蒸馏）不逐段打扰；正文按成功/失败区分。
-        if matches!(
+        let chat_landed = matches!(
             &kind,
             PendingKind::ChatRound { .. } | PendingKind::StreamRound { .. }
-        ) {
+        );
+        if chat_landed {
             let secs = self.turn_started.elapsed().as_secs_f64();
             let body = match &outcome {
                 PendingOutcome::Run(Ok(_)) => format!("回合完成 · {secs:.1}s"),
@@ -481,6 +482,11 @@ impl App {
         // 回合计时结算：回合分隔线展示本回合耗时（Worked for Ns）
         self.last_turn_elapsed = Some(self.turn_started);
         self.apply_result(kind, outcome);
+        // 会话落盘（0.1.20 TUI 缺口②）：对话回合落定即写 sessions.json——
+        // 变更即存覆盖崩溃/强杀出口，退出路径（shutdown/F8）只是补充。
+        if chat_landed {
+            self.persist_tabs();
+        }
         self.pending.is_some()
     }
 

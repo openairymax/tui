@@ -10,6 +10,7 @@
 mod cfg;
 mod flow;
 mod ime;
+mod sess;
 mod session;
 mod viewport;
 
