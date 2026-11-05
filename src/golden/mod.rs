@@ -15,6 +15,7 @@ mod error;
 mod evolution;
 mod input;
 mod observe;
+mod panels;
 mod perf;
 mod progress;
 mod scroll;
