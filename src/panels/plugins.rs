@@ -61,7 +61,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Line::raw(""),
     ];
 
-    for skill in skills.iter().take(10) {
+    // 整表渲染（缺口④：此前硬编码 take(10)，第 11 条起的技能在 UI 上不可见）。
+    // 超出面板高度由 scroll 偏移翻阅，不再截断数据。
+    for skill in skills.iter() {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {} ", skill.name),
@@ -85,12 +87,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(style::text()),
         )));
     }
-    if skills.len() > 10 {
-        lines.push(Line::from(Span::styled(
-            format!("  … 共 {} 条", skills.len()),
-            Style::default().fg(style::faint()),
-        )));
-    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        format!("  共 {} 条 · PgUp/PgDn 翻阅", skills.len()),
+        Style::default().fg(style::dim()),
+    )));
 
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .scroll((app.plugins_scroll, 0)),
+        area,
+    );
 }

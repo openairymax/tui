@@ -41,6 +41,7 @@ mod mode;
 mod model;
 mod panel;
 mod pipeline;
+mod plugins;
 mod poll;
 mod session;
 mod task;
@@ -198,6 +199,8 @@ pub struct App {
     pub cfg_sel: usize,
     /// F2 配置面板的正文滚动偏移（PgUp/PgDn 翻阅长内容：模型表与宿主信息）
     pub cfg_scroll: u16,
+    /// F5 插件面板的整表滚动偏移（缺口④：去 take(10) 截断后按页翻阅技能库）
+    pub plugins_scroll: u16,
     /// Help text cached
     pub help_text: Vec<String>,
     /// 当前对话/任务模型（/model <name> 设置并持久化；空 = 由网关/llm_d 回落默认）
@@ -435,6 +438,7 @@ impl App {
             logs_scroll: 0,
             cfg_sel: 0,
             cfg_scroll: 0,
+            plugins_scroll: 0,
             help_text: build_help_text(),
             model: load_saved_model().unwrap_or_default(),
             config_file: format!("{}/config/model.yaml", airy_home()),

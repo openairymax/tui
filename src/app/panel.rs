@@ -197,6 +197,8 @@ impl App {
                 // 技能库与记忆同源（mem.* + kind=skill 分区）：打开面板时
                 // 重新水合，反映 CLI 侧或其它会话新沉淀的技能。
                 self.skills.refresh();
+                // 整表滚动随面板重开复位（缺口④：视图态不跨面板驻留）
+                self.plugins_scroll = 0;
             }
         }
     }

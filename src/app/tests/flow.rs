@@ -368,6 +368,20 @@ fn fallback_badge_is_transient_and_once() {
     );
 }
 
+/// 缺口④（0.1.20）：Plugins 面板整表滚动——翻页偏移只增不减到负、封顶不回绕。
+#[test]
+fn plugins_scroll_clamps() {
+    let _h = crate::test_env::Home::new("plugins-scroll");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.plugins_pgup();
+    assert_eq!(app.plugins_scroll, 0, "顶部 PgUp 不得回绕");
+    app.plugins_pgdn();
+    assert!(app.plugins_scroll > 0, "PgDn 应下翻");
+    app.plugins_pgup();
+    assert_eq!(app.plugins_scroll, 0, "翻回顶部归零");
+}
+
 /// 缺口③（0.1.20）：工具结果正文必须入对话历史——此前成功结果整体丢弃、
 /// 失败只留 120 字符首行，用户回看对话无法知道工具实际返回了什么。
 #[test]
