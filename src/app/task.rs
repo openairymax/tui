@@ -466,19 +466,14 @@ impl App {
                             MessageRole::ToolCall,
                             format!("{}…{}", action, if ok { "" } else { "（失败）" }),
                         );
-                        // 成功不回传结果内容（代码/文件全文/URL 等保留在日志）；失败附短错误
-                        if !ok {
-                            let err: String = t
-                                .result
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .chars()
-                                .take(120)
-                                .collect();
-                            if !err.is_empty() {
-                                self.add_message(MessageRole::ToolResult, err);
-                            }
+                        // 结果正文入对话历史（0.1.20 TUI 缺口③）：此前成功结果
+                        // 整体丢弃、失败只留 120 字符——用户回看对话时工具做了
+                        // 什么"看不见"，正是社区反馈"Agent 调用工具总是出错却
+                        // 不知错在哪"的直接来源。克制度由既有机制保证：
+                        // add_message_at 的 64KiB 预算折叠 + 渲染层单行预览，
+                        // 展开走 /trace 面板与折叠尾提示。
+                        if !t.result.trim().is_empty() {
+                            self.add_message(MessageRole::ToolResult, t.result.clone());
                         }
                     }
                     if total > show {
