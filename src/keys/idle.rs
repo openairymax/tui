@@ -453,6 +453,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.dlog_pgup();
             } else if app.active_panel == ActivePanel::Config {
                 app.cfg_scroll_up();
+            } else if app.active_panel == ActivePanel::Plugins {
+                app.plugins_pgup();
             } else {
                 app.scroll_page_up();
             }
@@ -478,6 +480,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.dlog_pgdn();
             } else if app.active_panel == ActivePanel::Config {
                 app.cfg_scroll_down();
+            } else if app.active_panel == ActivePanel::Plugins {
+                app.plugins_pgdn();
             } else {
                 app.scroll_page_down();
             }
