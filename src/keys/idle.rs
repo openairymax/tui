@@ -180,6 +180,14 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.events_view_selected();
                 return Ok(Flow::Continue);
             }
+            // 配置面板：Enter 执行选中动作（写回 model.yaml / 切主题 / 预填 Key）。
+            // 必须在下面的只读面板拦截之前——Config 的字符键入仍被拦截，
+            // 唯独 Enter 是它的唯一执行键。
+            if app.active_panel == ActivePanel::Config {
+                debug!("Config: Enter → run selected action");
+                app.cfg_activate();
+                return Ok(Flow::Continue);
+            }
             // 只读面板（Help/Config/Logs/Memory/Plugins）：Enter 不提交、
             // Alt+Enter 不换行——共享输入只属于对话面板，防止切到面板后
             // 误触 Enter 把输入框内容真的发出去（Board/Events 上面已处理）
@@ -388,6 +396,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_up();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_up();
+            } else if app.active_panel == ActivePanel::Config {
+                app.cfg_sel_up();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                 app.history_prev();
             } else {
@@ -413,6 +423,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_down();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_down();
+            } else if app.active_panel == ActivePanel::Config {
+                app.cfg_sel_down();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                 app.history_next();
             } else {
@@ -438,6 +450,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_pgup();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_pgup();
+            } else if app.active_panel == ActivePanel::Config {
+                app.cfg_scroll_up();
             } else {
                 app.scroll_page_up();
             }
@@ -461,6 +475,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_pgdn();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_pgdn();
+            } else if app.active_panel == ActivePanel::Config {
+                app.cfg_scroll_down();
             } else {
                 app.scroll_page_down();
             }

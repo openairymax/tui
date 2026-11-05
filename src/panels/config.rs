@@ -67,6 +67,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         )),
     ];
 
+    // (0) 可执行动作：与 Enter 分发共用 cfg_actions()，避免「看到的那一行」
+    //     与「按下执行的那一行」各写一份而错位。
+    lines.extend(action_lines(app));
+
     // (a) 模型连接表（v2：最多 3 个，与 secrets.env MODEL_N_API_KEY 对应）
     lines.extend(model_table_lines());
     // (b) 双思考系统
@@ -83,7 +87,59 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     )));
     lines.extend(host_env_lines());
 
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .scroll((app.cfg_scroll, 0)),
+        area,
+    );
+}
+
+/// 可执行动作节：↑↓ 移动选中，Enter 执行（写回 model.yaml / 切主题 / 预填 Key）。
+///
+/// 面板本是只读展示——模型、双思考、Key 的修改原先只能靠记忆输入斜杠命令。
+/// 这里把可执行项显式列出，CLI 与 TUI 两条入口落到同一写回路径。
+fn action_lines(app: &App) -> Vec<Line<'static>> {
+    let acts = crate::app::cfg_actions();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  ── 可执行动作 ──",
+        Style::default()
+            .fg(style::primary())
+            .add_modifier(Modifier::BOLD),
+    )));
+    if acts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  当前没有可执行动作（先配置模型）",
+            Style::default().fg(style::faint()),
+        )));
+        return lines;
+    }
+    let sel = app.cfg_sel.min(acts.len() - 1);
+    for (i, act) in acts.iter().enumerate() {
+        let picked = i == sel;
+        let mut style = Style::default().fg(if picked {
+            style::accent()
+        } else {
+            style::text()
+        });
+        if picked {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(vec![
+            Span::styled(
+                if picked { "  ▸ " } else { "    " },
+                Style::default().fg(style::faint()),
+            ),
+            Span::styled(act.label(), style),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        "  ↑↓ 选择 · Enter 执行 · PgUp/PgDn 翻阅",
+        Style::default().fg(style::dim()),
+    )));
+    lines
 }
 
 /// 模型连接表（读 model.yaml v2 表格，展示每行模型的关键字段与 Key 状态）。
