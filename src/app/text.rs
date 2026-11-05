@@ -68,6 +68,10 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  Ctrl+Z      - 暂停/恢复等待（请求继续在后台执行）".to_string(),
         "  Ctrl+T      - 新建会话 tab（多会话；任务执行中不可用）".to_string(),
         "  Alt+1..9    - 切换会话（Alt+1 = 主会话，Alt+N = 第 N 个 tab）".to_string(),
+        "  /sessions   - 会话列表（序号/标题/消息数；落盘 sessions.json 重启即恢复）".to_string(),
+        "  /new        - 新建会话（Ctrl+T 等价）".to_string(),
+        "  /close      - 关闭当前会话（主会话则清空）".to_string(),
+        "  /rename     - 重命名当前会话：/rename <标题>".to_string(),
         "  /hiairy     - 重新打开首次启动向导".to_string(),
         "  /model      - 查看当前模型；/model <模型名> 切换并持久化".to_string(),
         "  /set-key    - 写入模型 API Key：/set-key <KEY> <VALUE>（写回 secrets.env，chmod 600）"

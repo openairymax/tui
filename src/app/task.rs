@@ -91,6 +91,28 @@ impl App {
             self.cmd_status();
             return Ok(());
         }
+        // ── 会话管理（0.1.20 TUI 缺口②：删除/重命名/落盘，命令与快捷键同源）──
+        if lower == "/sessions" {
+            let list = self.list_tabs();
+            self.add_message(
+                MessageRole::System,
+                format!("会话列表（◂ 为当前）：\n{}\n/new 新建 · Alt+N 切换 · /rename 重命名 · /close 关闭", list),
+            );
+            return Ok(());
+        }
+        if lower == "/new" {
+            self.new_session_tab();
+            return Ok(());
+        }
+        if lower == "/close" {
+            self.close_tab();
+            return Ok(());
+        }
+        if lower == "/rename" || lower.starts_with("/rename ") {
+            // lower 已确认前 7 字节为 /rename（ASCII），原样取参数保留大小写
+            self.rename_tab(input[7..].trim());
+            return Ok(());
+        }
         if lower == "/memory" {
             self.toggle_panel(ActivePanel::Memory);
             return Ok(());

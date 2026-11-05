@@ -242,6 +242,10 @@ async fn run_tui(
     // Create app state
     let mut app = App::new(&cli.agent_file, gateway);
 
+    // 会话落盘恢复（0.1.20 TUI 缺口②）：tab 结构从 sessions.json 还原，
+    // 上次退出前的全部会话（标题+对话）重启即见；文件缺失/损坏保持单 tab。
+    app.restore_tabs();
+
     // ── Phase 3c: 项目上下文文件机制（AGENTS.md / CLAUDE.md 等价物，P1）──
     let project_dir = cli.project.as_ref().map(std::path::PathBuf::from);
     if app.load_project_context(project_dir.as_deref()) {

@@ -151,6 +151,7 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::F(8) => {
             debug!("F8: switching to CLI (airy_cli)");
             app.switch_to_cli = true;
+            app.persist_tabs();
             return Ok(Flow::Exit);
         }
         // F9：后端日志面板（0.1.20 批次五）。daemon 日志尾部 + 等待事件

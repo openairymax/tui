@@ -491,6 +491,7 @@ impl App {
 
     /// Shutdown gracefully.
     pub async fn shutdown(&mut self) -> Result<()> {
+        self.persist_tabs();
         if self.connected {
             self.add_message(MessageRole::System, "Shutting down...".to_string());
         }
