@@ -200,6 +200,11 @@ impl App {
                 // 整表滚动随面板重开复位（缺口④：视图态不跨面板驻留）
                 self.plugins_scroll = 0;
             }
+            if panel == ActivePanel::Logs {
+                // 缺口⑦：运行时日志合流 daemon 尾读——打开即拉一轮，
+                // 之后由 poll_dlogs 的节拍续拉（与 F9 面板共用同一快照）。
+                self.start_dlogs();
+            }
         }
     }
 

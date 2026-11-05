@@ -48,6 +48,24 @@ fn golden_logs_panel_empty_is_honest() {
     assert_has(&s, "暂无日志");
 }
 
+/// 缺口⑦：F3 运行时日志合流 daemon 尾读——两源同屏，daemon 条目带来源标。
+#[test]
+fn golden_logs_panel_merges_daemon_tail() {
+    let mut fx = Fixture::new("g-logs-merge");
+    fx.app.add_log("INFO", "进程内事件".to_string());
+    fx.app.backend_logs.push(crate::app::LogEntry {
+        timestamp: "10:20:30".to_string(),
+        level: "WARN".to_string(),
+        message: "queued waiting for seat".to_string(),
+        daemon: Some("llm_d".to_string()),
+    });
+    fx.app.active_panel = ActivePanel::Logs;
+    let s = fx.draw();
+    assert_has(&s, "进程内事件");
+    assert_has(&s, "[llm_d]");
+    assert_has(&s, "queued waiting for seat");
+}
+
 #[test]
 fn golden_memory_panel_empty_is_honest() {
     let mut fx = Fixture::new("g-mem");
