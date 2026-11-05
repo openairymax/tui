@@ -365,6 +365,46 @@ async fn replay_tool_progress_events_reach_tool_channel() {
 }
 
 #[tokio::test]
+async fn replay_run_end_carries_tool_trace() {
+    // 场景 5b：完整轨迹随终态帧下发——tool_start/tool_end 只有动作名与
+    // 成败，参数与结果正文只能从 run_end 的 tool_trace 取得。
+    let body = [
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({}),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_MESSAGE,
+            1,
+            serde_json::json!({ gen::AIRY_RS_K_CONTENT: "done" }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_END,
+            2,
+            serde_json::json!({
+                gen::AIRY_RS_K_STATUS: "completed",
+                gen::AIRY_RS_K_TOOL_TRACE: [{
+                    "tool": "fs.write",
+                    "arguments": "{\"path\":\"/tmp/a\"}",
+                    "result": "written",
+                    "ok": 1,
+                }],
+            }),
+        )),
+    ]
+    .concat();
+    let url = spawn_sse_server(vec![body]);
+    let (result, _text, _tool) = drive_turn(&url).await;
+    let trace = result.expect("轨迹流应成功").tool_trace.expect("run_end 应带回工具轨迹");
+    assert_eq!(trace.len(), 1);
+    assert_eq!(trace[0].tool, "fs.write");
+    assert!(trace[0].arguments.contains("/tmp/a"), "参数正文可见");
+    assert_eq!(trace[0].result, "written");
+    assert_eq!(trace[0].ok, Some(1));
+}
+
+#[tokio::test]
 async fn replay_bytes_split_across_tcp_chunks_still_parses() {
     // 场景 6：网络分片——同一 SSE 流按任意字节边界切成三块（帧 JSON
     // 中间截断）逐块到达，解析结果必须与单块一致（TCP 不保证按帧

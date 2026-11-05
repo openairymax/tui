@@ -93,6 +93,8 @@ impl GatewayClient {
         // tool_end 只带 tool_id：以本地映射回填工具名（渲染需要动作短语）
         let mut tool_names: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // 完整轨迹只在 run_end 下发一次（stream 路径无 RPC result 可读）
+        let mut tool_trace: Option<Vec<super::ToolTrace>> = None;
 
         run_stream_events(&self.rs, params, |ev| {
             match ev.event_type.as_str() {
@@ -196,6 +198,11 @@ impl GatewayClient {
                     tokens = ev.data_i64(gen::AIRY_RS_K_USE_TICKS).map(|t| t as u64);
                     let status = ev.data_str(gen::AIRY_RS_K_STATUS).unwrap_or("completed");
                     debug!("agent.run_stream: run_end (status={})", status);
+                    // 工具轨迹随终态帧整体下发（tool/arguments/result/ok）：
+                    // tool_start/tool_end 只有动作名与成败，不足以还原调用。
+                    if let Some(tr) = ev.data.get(gen::AIRY_RS_K_TOOL_TRACE) {
+                        tool_trace = serde_json::from_value::<Vec<super::ToolTrace>>(tr.clone()).ok();
+                    }
                     // B2（0.1.18）V2.1：引擎三段耗时（think/llm/tool，毫秒）
                     // 随 run_end 透传。首字延迟不达标时，这三项即归因证据
                     // （区分模型长思考 / 网关串行 / 工具阻塞）；旧引擎无此
@@ -240,7 +247,7 @@ impl GatewayClient {
             tokens_used: tokens,
             cost_usd: None,
             thinking: None,
-            tool_trace: None,
+            tool_trace,
             gccp_need_interaction: false,
             gccp_questions: Vec::new(),
         })
