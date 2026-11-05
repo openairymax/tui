@@ -159,6 +159,20 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::F(9) => {
             app.open_dlogs();
         }
+        // F10/F11/F12：健康 / 演化 / 轨迹面板（缺口⑤：这三个面板此前只有
+        // 斜杠命令入口，键位不可发现；与 F1–F9 同列 Help 键位表与页脚提示）。
+        KeyCode::F(10) => {
+            debug!("Panel: open Health");
+            app.open_health();
+        }
+        KeyCode::F(11) => {
+            debug!("Panel: open Evolution");
+            app.open_evo();
+        }
+        KeyCode::F(12) => {
+            debug!("Panel: open Trace");
+            app.open_trace();
+        }
         // §6.9 #3：空输入时 `?` 呼出键位浮层（Help 面板）。输入非空时
         // `?` 仍是普通字符，避免打断正在编辑的消息。
         KeyCode::Char('?')

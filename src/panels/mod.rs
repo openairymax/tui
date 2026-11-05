@@ -15,6 +15,7 @@ pub mod health;
 pub mod help;
 pub mod logs;
 pub mod memory;
+pub mod nav;
 pub mod plugins;
 pub mod think;
 pub mod trace;
