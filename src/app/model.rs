@@ -45,6 +45,10 @@ pub enum ActivePanel {
     /// 后端日志面板（0.1.20 批次五）：daemon 日志尾部只读视图，
     /// /dlogs 或 F9 打开；r122 批次四等待事件（排队 / 等座）整行高亮。
     BackendLog,
+    /// 自托管专页（0.1.21 D-1）：llm_d 端点事实——模型 / 后端 / 显存 /
+    /// 并发 / 队列 / 失败率 / 最近错误，与 doctor、日志同源；
+    /// /selfhost 或 Alt+S 打开。
+    SelfHost,
 }
 
 /// Represents a chat message in the conversation.

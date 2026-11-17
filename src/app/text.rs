@@ -55,6 +55,8 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  F12         - 工具轨迹（/trace 等价：本回合工具调用参数与结果明细）".to_string(),
         "  Alt+E       - 查看思考链（独立视图；思考链默认不上屏、不落长期记忆）".to_string(),
         "  Alt+F       - 焦点视图（全屏只读查看最近一条回复，Esc 返回）".to_string(),
+        "  Alt+S       - 自托管专页（/selfhost 等价：模型/后端/显存/并发/队列/失败率）"
+            .to_string(),
         "  Alt+O       - 展开/折叠长系统消息".to_string(),
         "  Ctrl+M      - 鼠标滚轮捕获开关（默认关保终端文本选择；开：滚轮滚动对话，".to_string(),
         "                Shift 翻页 / Ctrl 单行）".to_string(),
@@ -93,6 +95,7 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  /daemons    - 14 个 daemon 在线状态（gateway 自身见顶部连接灯）".to_string(),
         "  /health     - 依赖健康面板：端到端可达性 / 最后成功时长 / 错误聚合".to_string(),
         "  /evolution  - 演化指标面板：think_d 演化回路的六项指标（经 gateway 只读）".to_string(),
+        "  /selfhost   - 自托管专页：llm_d 端点事实（与 doctor / 日志同源）".to_string(),
         "  /trace      - 工具轨迹：最近一轮工具调用的参数与结果明细".to_string(),
         "  /dlogs      - 后端日志：daemon 日志尾部（排队 / 等座事件高亮）".to_string(),
         "  /diag export - 导出脱敏诊断快照（时间线校准 + 依赖健康 + 错误摘要）".to_string(),

@@ -314,6 +314,12 @@ impl App {
             self.open_evo();
             return Ok(());
         }
+        if lower == "/selfhost" {
+            // 自托管专页（0.1.21 D-1）：llm.get_stats 的端点事实与显存，
+            // 打开即拉取一轮；后端断开时面板降级而不回显旧值。
+            self.open_selfhost();
+            return Ok(());
+        }
         if lower == "/diag export" {
             // 脱敏诊断快照导出（U12 §6.13 #5）
             self.cmd_diag_export();

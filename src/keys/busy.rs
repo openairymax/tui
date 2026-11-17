@@ -126,6 +126,12 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Down if app.active_panel == ActivePanel::Evolution => {
             app.evo_scroll_down();
         }
+        KeyCode::Up if app.active_panel == ActivePanel::SelfHost => {
+            app.sh_scroll_up();
+        }
+        KeyCode::Down if app.active_panel == ActivePanel::SelfHost => {
+            app.sh_scroll_down();
+        }
         KeyCode::Up => app.scroll_up(),
         KeyCode::Down => app.scroll_down(),
         KeyCode::PageUp if app.ime_visible() => {
@@ -158,6 +164,12 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::PageDown if app.active_panel == ActivePanel::Evolution => {
             app.evo_page_down();
         }
+        KeyCode::PageUp if app.active_panel == ActivePanel::SelfHost => {
+            app.sh_page_up();
+        }
+        KeyCode::PageDown if app.active_panel == ActivePanel::SelfHost => {
+            app.sh_page_down();
+        }
         KeyCode::PageUp => app.scroll_page_up(),
         KeyCode::PageDown => app.scroll_page_down(),
         // Alt+E：打开思考链独立视图（0.1.18 B4：思考链
@@ -172,6 +184,12 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             if key.modifiers.contains(event::KeyModifiers::ALT) =>
         {
             app.focus_open();
+        }
+        // Alt+S：自托管专页（0.1.21 D-1，等待期间同样可查看端点事实）
+        KeyCode::Char('s') | KeyCode::Char('S')
+            if key.modifiers.contains(event::KeyModifiers::ALT) =>
+        {
+            app.open_selfhost();
         }
         // Ctrl+M：鼠标滚轮捕获开关（终端序列由主循环头执行点发送）
         KeyCode::Char('m') | KeyCode::Char('M')

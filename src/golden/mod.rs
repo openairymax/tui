@@ -19,6 +19,7 @@ mod panels;
 mod perf;
 mod progress;
 mod scroll;
+mod selfhost;
 mod size;
 mod stream;
 mod theme;

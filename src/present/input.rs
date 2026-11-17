@@ -139,6 +139,9 @@ fn panel_read_hint(p: ActivePanel) -> Option<&'static str> {
             Some("演化指标只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话")
         }
         ActivePanel::Focus => Some("焦点视图只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话"),
+        ActivePanel::SelfHost => {
+            Some("自托管只读 · ↑↓ 滚动 · PgUp/PgDn 翻页 · Esc 返回对话")
+        }
         _ => None,
     }
 }

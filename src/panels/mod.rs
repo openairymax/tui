@@ -17,5 +17,6 @@ pub mod logs;
 pub mod memory;
 pub mod nav;
 pub mod plugins;
+pub mod selfhost;
 pub mod think;
 pub mod trace;

@@ -43,6 +43,7 @@ mod panel;
 mod pipeline;
 mod plugins;
 mod poll;
+mod selfhost;
 mod session;
 mod task;
 mod text;
@@ -163,6 +164,15 @@ pub struct App {
     pub evo_scroll: usize,
     /// 演化指标最近一次落地时刻（主循环注入的单调 ms）。
     pub evo_at_ms: u64,
+    /// 自托管快照（0.1.21 D-1）：llm.get_stats 的端点/请求/错误面 +
+    /// 本机显存；None = 尚未取得首轮结果。不可用时 live=false 且清空旧值。
+    pub(crate) selfhost: Option<crate::engine::selfhost::Snapshot>,
+    /// 自托管拉取在途结果（open_selfhost / poll_selfhost 续拉）。
+    selfhost_rx: Option<tokio::sync::oneshot::Receiver<crate::engine::selfhost::Snapshot>>,
+    /// 自托管面板滚动偏移（正文首行下标，0 = 顶部）。
+    pub selfhost_scroll: usize,
+    /// 自托管快照最近一次落地时刻（主循环注入的单调 ms）。
+    pub selfhost_at_ms: u64,
     /// 最近一轮工具调用轨迹（0.1.20 批次五）：回合落定时由 apply_chat_result
     /// 存量，/trace 面板按需展示全量明细；对话区克制策略不变。
     pub last_tool_trace: Vec<ToolTrace>,
@@ -433,6 +443,10 @@ impl App {
             evo_rx: None,
             evo_scroll: 0,
             evo_at_ms: 0,
+            selfhost: None,
+            selfhost_rx: None,
+            selfhost_scroll: 0,
+            selfhost_at_ms: 0,
             last_tool_trace: Vec::new(),
             trace_scroll: 0,
             backend_logs: Vec::new(),

@@ -14,7 +14,7 @@ use crate::style;
 /// 观测面板间互达的一行提示（追加到各面板页脚）。
 pub fn observe_hint() -> Span<'static> {
     Span::styled(
-        "  F10 健康 · F11 演化 · F12 轨迹 · F9 后端日志",
+        "  F10 健康 · F11 演化 · F12 轨迹 · F9 后端日志 · Alt+S 自托管",
         Style::default().fg(style::faint()),
     )
 }

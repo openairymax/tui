@@ -37,6 +37,7 @@ pub(super) fn read_only_panel(p: ActivePanel) -> bool {
             | ActivePanel::Evolution
             | ActivePanel::Trace
             | ActivePanel::BackendLog
+            | ActivePanel::SelfHost
     )
 }
 
