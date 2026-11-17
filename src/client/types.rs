@@ -165,25 +165,105 @@ pub struct HallTask {
 }
 
 /// hall.replay / hall.stream 单条事件。
-#[derive(Debug, Clone, Deserialize)]
+///
+/// 网关返回的是账本落盘事件文件信封
+/// `{"file":{id,category,task_id,node_id,ts_utc,seq,gseq,...},"access":{...},"content":<事件内容>}`
+/// （C-18：账本单点写盘格式），而面板与 /chain 消费的是扁平视图。故此处
+/// 手工反序列化：优先读 "file" 信封并摊平，同时兼容旧扁平形态，避免 TUI
+/// 因信封嵌套而静默丢字段（文件 id 在信封中名为 "id"）。
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct HallEvent {
-    #[serde(default)]
     pub file_id: String,
-    #[serde(default)]
     pub category: String,
-    #[serde(default)]
     pub task_id: String,
-    #[serde(default)]
     pub tenant_id: String,
-    #[serde(default)]
     pub node_id: String,
-    #[serde(default)]
     pub ts_utc: String,
-    #[serde(default)]
     pub seq: u64,
-    #[serde(default)]
     pub gseq: u64,
-    #[serde(default)]
     pub content: serde_json::Value,
+}
+
+impl HallEvent {
+    fn from_value(v: &serde_json::Value) -> Self {
+        let src = v.get("file").unwrap_or(v);
+        let field_str = |key: &str| -> String {
+            src.get(key)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let field_u64 = |key: &str| -> u64 {
+            src.get(key).and_then(|x| x.as_u64()).unwrap_or_default()
+        };
+        HallEvent {
+            file_id: {
+                let id = field_str("file_id");
+                if id.is_empty() {
+                    field_str("id")
+                } else {
+                    id
+                }
+            },
+            category: field_str("category"),
+            task_id: field_str("task_id"),
+            tenant_id: field_str("tenant_id"),
+            node_id: field_str("node_id"),
+            ts_utc: field_str("ts_utc"),
+            seq: field_u64("seq"),
+            gseq: field_u64("gseq"),
+            content: v
+                .get("content")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HallEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        Ok(HallEvent::from_value(&v))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HallEvent;
+
+    /// 网关 hall.replay/hall.stream 的真实信封形态（账本落盘文件原样）。
+    #[test]
+    fn hall_event_unwraps_file_envelope() {
+        let raw = r#"{"file":{"id":"default.t1.progress.20261117T010203004.0001.json",
+            "category":"progress","schema":"hall.event.v1","tenant_id":"default",
+            "task_id":"t1","node_id":null,"ts_utc":"20261117T010203004","seq":1,
+            "gseq":7,"prev_file":""},
+            "access":{"owner_role":"executor","write_roles":["executor"],
+            "read_roles":["cognition"]},
+            "content":{"event":"task_state","state":"executing","progress":0.5}}"#;
+        let e: HallEvent = serde_json::from_str(raw).unwrap();
+        assert_eq!(e.file_id, "default.t1.progress.20261117T010203004.0001.json");
+        assert_eq!(e.category, "progress");
+        assert_eq!(e.task_id, "t1");
+        assert_eq!(e.tenant_id, "default");
+        assert_eq!(e.ts_utc, "20261117T010203004");
+        assert_eq!(e.seq, 1);
+        assert_eq!(e.gseq, 7);
+        assert_eq!(e.content["state"], "executing");
+    }
+
+    /// 旧扁平形态仍可解析（兼容已缓存/手工构造的事件）。
+    #[test]
+    fn hall_event_accepts_flat_shape() {
+        let raw = r#"{"file_id":"f1","category":"result","task_id":"t2",
+            "gseq":3,"content":{"state":"completed"}}"#;
+        let e: HallEvent = serde_json::from_str(raw).unwrap();
+        assert_eq!(e.file_id, "f1");
+        assert_eq!(e.category, "result");
+        assert_eq!(e.gseq, 3);
+    }
 }
