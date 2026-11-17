@@ -22,12 +22,19 @@ fn event_key(e: &HallEvent) -> Option<&str> {
     (!e.file_id.is_empty()).then_some(e.file_id.as_str())
 }
 
+/// 时间线次序的第二关键字：gseq 是账本全局写序号（跨进程经水位线续接），
+/// 同毫秒内跨类别写入时只有它能给出真实写序；旧事件缺 gseq 时退回目录内
+/// seq（单类别内仍然正确，与 gateway 排序口径一致）。
+fn event_order(e: &HallEvent) -> (u64, u64) {
+    (if e.gseq > 0 { e.gseq } else { e.seq }, e.seq)
+}
+
 /// 合并本地事件与拉取/推送事件（M5 W4）。
 ///
-/// hall_events 保持升序（渲染层 rev 展示最新在前）；合并按 (ts_utc, seq)
-/// 稳定全局序（跨进程 gseq 会重启，不能作排序键），以 file_id 去重
-/// （事件文件 id 全局唯一）。SSE 增量与 RPC 全量两路数据在 gateway 侧
-/// 同为扁平事件形态（SSoT），此处即可用同一合并逻辑收敛。
+/// hall_events 保持升序（渲染层 rev 展示最新在前）；合并按 (ts_utc, gseq)
+/// 稳定全局序（与 gateway hall.replay/hall.stream 同一排序口径），以
+/// file_id 去重（事件文件 id 全局唯一）。SSE 增量与 RPC 全量两路数据在
+/// gateway 侧同为扁平事件形态（SSoT），此处即可用同一合并逻辑收敛。
 ///
 /// `seen` 是跨轮次的有界去重键 LRU（§6.10 #5）：本地窗口只保留最新
 /// HALL_EVENTS_MAX 条，窗口外的旧事件若被 RPC 全量重放，仅靠窗口内去重
@@ -53,7 +60,7 @@ fn merge_hall_events(
     }
     if !fresh.is_empty() {
         // 先排序再记键：LRU 按时间序淘汰，留下的是最新 256 个键
-        fresh.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| a.seq.cmp(&b.seq)));
+        fresh.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| event_order(a).cmp(&event_order(b))));
         for ev in &fresh {
             if let Some(key) = event_key(ev) {
                 seen.push_back(key.to_string());
@@ -63,7 +70,7 @@ fn merge_hall_events(
             seen.pop_front();
         }
         local.extend(fresh);
-        local.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| a.seq.cmp(&b.seq)));
+        local.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| event_order(a).cmp(&event_order(b))));
         local.dedup_by(|a, b| !a.file_id.is_empty() && a.file_id == b.file_id);
     }
     if local.len() > HALL_EVENTS_MAX {
@@ -720,7 +727,7 @@ mod tests {
 
     #[test]
     fn merge_sorts_out_of_order_increments() {
-        /* SSE 重连回放偶发乱序：按 (ts_utc, seq) 收敛 */
+        /* SSE 重连回放偶发乱序：按 (ts_utc, gseq) 收敛 */
         let mut local = vec![evt(
             "c.20260901T000000200.0001.json",
             "20260901T000000200",
@@ -737,6 +744,37 @@ mod tests {
         merge_hall_events(&mut local, incoming, &mut seen);
         assert_eq!(local.len(), 2);
         assert!(local[0].ts_utc < local[1].ts_utc);
+    }
+
+    #[test]
+    fn merge_orders_same_millisecond_events_by_gseq() {
+        /* seq 只在类别目录内计数，同毫秒跨类别会撞号；账本全局写序 gseq
+         * 才是真实次序（与 gateway hall.replay 同一口径）。 */
+        let ts = "20260901T000000100";
+        let mut first = evt("a.json", ts, 2, "progress");
+        first.gseq = 8;
+        let mut second = evt("b.json", ts, 1, "result");
+        second.gseq = 9;
+        let mut local = vec![second];
+        let mut seen: VecDeque<String> = VecDeque::new();
+        merge_hall_events(&mut local, vec![first], &mut seen);
+        assert_eq!(local[0].file_id, "a.json");
+        assert_eq!(local[1].file_id, "b.json");
+    }
+
+    #[test]
+    fn merge_legacy_events_without_gseq_fall_back_to_seq() {
+        /* 旧事件文件无 gseq：退回目录内 seq（单类别内仍然正确） */
+        let ts = "20260901T000000200";
+        let mut first = evt("a.json", ts, 1, "progress");
+        first.gseq = 0;
+        let mut second = evt("b.json", ts, 2, "progress");
+        second.gseq = 0;
+        let mut local = vec![second];
+        let mut seen: VecDeque<String> = VecDeque::new();
+        merge_hall_events(&mut local, vec![first], &mut seen);
+        assert_eq!(local[0].file_id, "a.json");
+        assert_eq!(local[1].file_id, "b.json");
     }
 
     #[test]
