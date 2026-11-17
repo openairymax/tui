@@ -9,40 +9,90 @@
 // 重写），本模块只做 UI 语义转译与 SSE 缓冲边界控制。所有权衡：文本增量
 // 即时回调（打字机）与最终权威文本分离——message 帧存在时以帧内容为准，
 // 否则回退增量累积，避免引擎不发 message 时丢内容。
+//
+// C-15：TUI 与 CLI 共用统一任务编排入口——对话/任务轮均走
+// task.submit_stream（服务端裁决 chat/task），计划与子目标消费 plan/step，
+// 阶段迁移以 task_state 事件为准；agent.run_stream 保留为兼容入口。
 
 use anyhow::Result;
 use log::{debug, info};
 
-use agentrt_rs::run_stream::{gen, run_stream_events};
+use agentrt_rs::run_stream::{gen, run_stream_events_with_method, METHOD_TASK_SUBMIT_STREAM};
 
 use super::GatewayClient;
 use super::RunResponse;
 
 impl GatewayClient {
-    /// agent.run_stream 事件流（0.1.9 M5 W1，方案 §2.4 v1 信封协议）。
+    /// task.submit_stream 事件流（C-15 统一任务编排入口，方案 §2.4 v1 信封）。
     ///
     /// 传输与帧解码由 agentrt-rs 协议客户端统一承担（端点与信封不在此处
     /// 重写），本方法只做 UI 语义转译，投递两个回调通道：
     ///   - `on_text`：token_delta.delta 增量文本（对话打字机实时渲染）；
-    ///   - `on_tool`：工具进度 / 思考链 / 错误事件（__airy_evt 语义 JSON，
-    ///     与 stream_chat 工具事件通道同格式，poll_pending 复用同一套消费）。
+    ///   - `on_tool`：工具进度 / 计划步骤 / 任务状态 / 错误事件（__airy_evt
+    ///     语义 JSON，与 stream_chat 工具事件通道同格式，poll_pending 复用
+    ///     同一套消费）。
     ///
     /// 返回最终 RunResponse：response = message 帧 content（引擎权威最终
     /// 文本）；引擎无 message 时回退 token_delta 累积。结构化错误帧
     /// （error 事件 code/message）以 Err 呈现，原始 JSON 不上屏。
     ///
     /// `params` 透传语义与 send_message 一致（prompt/agent_file/model/
-    /// session_id/agent/messages/gccp_answers），任务执行轮带 agent spec
-    /// 走 agent_d 编排分支。
+    /// session_id/agent/messages/gccp_answers）；`goal` 取 prompt。
     ///
     /// `resume_token`（C-14-07）：预算暂停后的断点续跑。携带时不再重放
     /// 历史——prompt/messages 均不下发，引擎按令牌内的步骤摘要与剩余目标
     /// 自行重建上下文。
-    // 11 参数 = 8 业务参数 + 双回调（流式渲染通道）：签名冻结理由同
-    // send_message；回调独立泛型不可并入参数结构体。
+    ///
+    /// `declared_mode`：客户端显式模式（None 交由服务端 auto 裁决）；
+    /// `confirmed`：用户已确认目标/计划（GCCP 门禁通过）。对话轮不带确认，
+    /// 长任务在门禁处得到 needs_intent（零引擎/零工具调用），由上层进入
+    /// 目标确认流程后带 confirmed=true 重新提交。
+    // 12 参数 = 9 业务参数 + 确认位 + 双回调（流式渲染通道）：签名冻结
+    // 理由同 send_message；回调独立泛型不可并入参数结构体。
     #[allow(clippy::too_many_arguments)]
-    pub async fn run_stream_turn<F, E>(
+    pub async fn run_task_stream_turn<F, E>(
         &self,
+        prompt: &str,
+        agent_file: &str,
+        model: Option<&str>,
+        session_id: &str,
+        agent: Option<serde_json::Value>,
+        messages: Option<serde_json::Value>,
+        gccp_answers: Option<&str>,
+        resume_token: Option<&str>,
+        declared_mode: Option<&str>,
+        confirmed: bool,
+        on_text: F,
+        on_tool: E,
+    ) -> Result<RunResponse>
+    where
+        F: FnMut(&str),
+        E: FnMut(&str),
+    {
+        self.stream_turn(
+            METHOD_TASK_SUBMIT_STREAM,
+            declared_mode,
+            confirmed,
+            prompt,
+            agent_file,
+            model,
+            session_id,
+            agent,
+            messages,
+            gccp_answers,
+            resume_token,
+            on_text,
+            on_tool,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_turn<F, E>(
+        &self,
+        method: &str,
+        declared_mode: Option<&str>,
+        confirmed: bool,
         prompt: &str,
         agent_file: &str,
         model: Option<&str>,
@@ -64,6 +114,19 @@ impl GatewayClient {
         });
         if !prompt.is_empty() {
             params["prompt"] = serde_json::Value::String(prompt.to_string());
+        }
+        if method == METHOD_TASK_SUBMIT_STREAM {
+            // 统一入口：goal 为任务目标（daemon 优先读 goal，其次历史/prompt）；
+            // 未确认时绝不携带 gccp_confirmed（门禁只在用户确认后放行）
+            if !prompt.is_empty() {
+                params["goal"] = serde_json::Value::String(prompt.to_string());
+            }
+            if let Some(m) = declared_mode {
+                params["mode"] = serde_json::Value::String(m.to_string());
+            }
+            if confirmed {
+                params["gccp_confirmed"] = serde_json::Value::Bool(true);
+            }
         }
         if let Some(tok) = resume_token {
             // 续跑：引擎以令牌为唯一上下文来源（不整轮重放）
@@ -90,8 +153,11 @@ impl GatewayClient {
             }
         }
         info!(
-            "POST {}/api/v1/agent/run/stream (agent.run_stream, prompt_len={}, session={})",
+            "POST {}/api/v1/agent/run/stream ({} mode={:?} confirmed={} prompt_len={}, session={})",
             self.base_url,
+            method,
+            declared_mode,
+            confirmed,
             prompt.len(),
             session_id
         );
@@ -111,8 +177,16 @@ impl GatewayClient {
         let mut resume_out: Option<String> = None;
         let mut rounds_used: Option<i64> = None;
         let mut rounds_limit: Option<i64> = None;
+        // C-15：服务端任务身份/模式裁决（run_start 元数据）与门禁/降级事实
+        let mut task_id: Option<String> = None;
+        let mut plan_id: Option<String> = None;
+        let mut mode: Option<String> = None;
+        let mut mode_reason: Option<String> = None;
+        let mut needs_intent: Option<serde_json::Value> = None;
+        let mut plan_unavailable: Option<String> = None;
+        let mut plan_steps: i64 = 0;
 
-        run_stream_events(&self.rs, params, |ev| {
+        run_stream_events_with_method(&self.rs, method, params, |ev| {
             match ev.event_type.as_str() {
                 // token_delta：增量文本 → 打字机实时渲染 + 本地累积
                 gen::AIRY_RS_TYPE_TOKEN_DELTA => {
@@ -190,10 +264,78 @@ impl GatewayClient {
                         }
                     }
                 }
-                // plan：引擎目标计划（DAG 已由 GRAD 确认阶段展示，此处克制
-                // 不进对话区，仅入日志）
+                // run_start：服务端任务身份与模式裁决（C-15 唯一事实源）
+                gen::AIRY_RS_TYPE_RUN_START => {
+                    task_id = ev.data_str(gen::AIRY_RS_K_TASK_ID).map(str::to_string);
+                    plan_id = ev.data_str(gen::AIRY_RS_K_PLAN_ID).map(str::to_string);
+                    mode = ev.data_str(gen::AIRY_RS_K_MODE).map(str::to_string);
+                    mode_reason = ev.data_str(gen::AIRY_RS_K_MODE_REASON).map(str::to_string);
+                    debug!(
+                        "{method}: run_start mode={:?} reason={:?} task={:?}",
+                        mode, mode_reason, task_id
+                    );
+                }
+                // plan：计划先于执行下发（C-15 顺序修正）——记步数，子目标
+                // 由随后的 step 帧逐条渲染
                 gen::AIRY_RS_TYPE_PLAN => {
-                    debug!("agent.run_stream: plan event (ignored, GRAD DAG shown)");
+                    if let Some(p) = ev.data_str(gen::AIRY_RS_K_PLAN_ID) {
+                        plan_id = Some(p.to_string());
+                    }
+                    if let Some(n) = ev.data_i64(gen::AIRY_RS_K_STEP_COUNT) {
+                        plan_steps = n;
+                        let line = serde_json::json!({
+                            "__airy_evt": "plan",
+                            "step_count": n,
+                        });
+                        on_tool(&line.to_string());
+                    }
+                }
+                // step：执行前的子目标（计划顺序）→ 计划步骤行
+                gen::AIRY_RS_TYPE_STEP => {
+                    let idx = ev.data_i64(gen::AIRY_RS_K_STEP_INDEX).unwrap_or(0);
+                    let cnt = ev
+                        .data_i64(gen::AIRY_RS_K_STEP_COUNT)
+                        .unwrap_or(plan_steps);
+                    let text = ev.data_str(gen::AIRY_RS_K_STEP).unwrap_or("").to_string();
+                    let status = ev
+                        .data_str(gen::AIRY_RS_K_STEP_STATUS)
+                        .unwrap_or("planned");
+                    let line = serde_json::json!({
+                        "__airy_evt": "plan_step",
+                        "index": idx,
+                        "count": cnt,
+                        "status": status,
+                        "text": text,
+                    });
+                    on_tool(&line.to_string());
+                }
+                // task_state：任务状态机迁移（submitted/planned/executing/
+                // completed/paused/failed/cancelled）。needs_intent 帧是 GCCP
+                // 门禁对象（零引擎/零工具调用），交由上层进入目标确认。
+                gen::AIRY_RS_TYPE_TASK_STATE => {
+                    let state = ev.data_str(gen::AIRY_RS_K_STATE).unwrap_or("");
+                    if state == "needs_intent" {
+                        needs_intent = Some(ev.data.clone());
+                    } else if !state.is_empty() {
+                        let line = serde_json::json!({
+                            "__airy_evt": "task_state",
+                            "state": state,
+                            "reason": ev.data_str(gen::AIRY_RS_K_REASON).unwrap_or(""),
+                        });
+                        on_tool(&line.to_string());
+                    }
+                }
+                // plan_unavailable：规划降级（think 不可达/无计划）——如实告知
+                gen::AIRY_RS_TYPE_PLAN_UNAVAILABLE => {
+                    let reason = ev
+                        .data_str(gen::AIRY_RS_K_REASON)
+                        .unwrap_or("plan_unavailable");
+                    plan_unavailable = Some(reason.to_string());
+                    let line = serde_json::json!({
+                        "__airy_evt": "plan_unavailable",
+                        "reason": reason,
+                    });
+                    on_tool(&line.to_string());
                 }
                 // error：结构化错误帧 → Err（UI 只呈现可读消息）
                 gen::AIRY_RS_TYPE_ERROR => {
@@ -256,16 +398,21 @@ impl GatewayClient {
             }
             info!("agent.run_stream: 预算暂停（{}），以续跑态返回", m);
         }
-        // 引擎成功以 message 帧为权威内容；无 message 时回退增量累积
+        // 引擎成功以 message 帧为权威内容；无 message 时回退增量累积。
+        // needs_intent 门禁帧（C-15）不触达引擎，文本为空是预期结果。
         let response = final_content.unwrap_or(text_acc);
-        if response.trim().is_empty() && !paused {
+        let gated = needs_intent.is_some();
+        if response.trim().is_empty() && !paused && !gated {
             return Err(anyhow::anyhow!("agent.run_stream: empty result"));
         }
         info!(
-            "← agent.run_stream OK ({} chars, tokens={:?}, status={:?})",
+            "← {} OK ({} chars, tokens={:?}, status={:?}, mode={:?}, gated={})",
+            method,
             response.len(),
             tokens,
-            run_status
+            run_status,
+            mode,
+            gated
         );
         Ok(RunResponse {
             session_id: session_id.to_string(),
@@ -280,6 +427,12 @@ impl GatewayClient {
             resume_token: resume_out,
             rounds_used,
             rounds_limit,
+            task_id,
+            plan_id,
+            mode,
+            mode_reason,
+            needs_intent,
+            plan_unavailable,
         })
     }
 }

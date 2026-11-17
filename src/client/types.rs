@@ -20,7 +20,7 @@ pub struct HealthResponse {
     pub uptime_seconds: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct RunResponse {
     /// 网关侧会话 ID（客户端预分配的 sid_for_task 已用于 Ctrl+X 取消，
     /// 此处保留字段保证反序列化数据完整性，UI 刻意不展示）
@@ -53,6 +53,28 @@ pub struct RunResponse {
     pub rounds_used: Option<i64>,
     #[serde(default)]
     pub rounds_limit: Option<i64>,
+    /// C-15：服务端任务身份（task_id 即本次 run_id，CLI/TUI/SDK 与重连
+    /// 共享同一条时间线）。
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// C-15：计划标识（plan 帧同源）。
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    /// C-15：服务端模式裁决（chat/task）。TUI 阶段切换的唯一事实源；
+    /// 正文 [MODE:*] 标记降级为提示。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// C-15：模式裁决依据（rule:engineering_verb / explicit:client_declared_task …）
+    #[serde(default)]
+    pub mode_reason: Option<String>,
+    /// C-15：needs_intent 门禁对象（未确认目标时零引擎/零工具调用）。
+    /// data 形如 {status,task_id,mode,mode_reason,gccp_missing[],message}
+    #[serde(default)]
+    pub needs_intent: Option<serde_json::Value>,
+    /// C-15：计划不可用原因（think_unavailable / plan_missing）；携带时
+    /// 表示本轮按 ReAct 工具循环直接执行，界面如实告知降级。
+    #[serde(default)]
+    pub plan_unavailable: Option<String>,
 }
 
 /// GCCP 目标澄清问题（think.process 第一段回传，见 gccp.h airy_gccp_question_t）

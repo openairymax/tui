@@ -65,16 +65,30 @@ fn spawn_sse_server(chunks: Vec<Vec<u8>>) -> String {
     spawn_sse_server_timed(chunks).0
 }
 
+/// 同 `spawn_sse_server`，额外回传客户端请求原文（方法名/参数断言用）。
+fn spawn_sse_server_capture(
+    chunks: Vec<Vec<u8>>,
+) -> (String, Arc<Mutex<Option<String>>>) {
+    let (url, _, req) = spawn_sse_server_timed(chunks);
+    (url, req)
+}
+
 /// 同 `spawn_sse_server`，额外回传**写出首个含 `token_delta` 帧的字节块**
 /// 后的时刻（`Instant` 单调单调、跨线程可比）——B2 V2.4「服务端首字节 →
 /// 首字上屏」时差取证的基准点。字节块未含该帧时保持 `None`。
 fn spawn_sse_server_timed(
     chunks: Vec<Vec<u8>>,
-) -> (String, Arc<Mutex<Option<std::time::Instant>>>) {
+) -> (
+    String,
+    Arc<Mutex<Option<std::time::Instant>>>,
+    Arc<Mutex<Option<String>>>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
     let addr = listener.local_addr().expect("local_addr");
     let first_delta: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+    let request: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mark = first_delta.clone();
+    let req_out = request.clone();
     let needle = format!(
         "\"{}\":\"{}\"",
         gen::AIRY_RS_K_TYPE,
@@ -112,7 +126,11 @@ fn spawn_sse_server_timed(
                 Ok(n) => req.extend_from_slice(&buf[..n]),
             }
         }
-        // 3. 回放：HTTP 响应头（无 Content-Length，靠连接关闭结束流）
+        // 3. 记录请求原文（方法名/参数断言），回放：HTTP 响应头（无
+        // Content-Length，靠连接关闭结束流）
+        if let Ok(mut g) = req_out.lock() {
+            *g = Some(String::from_utf8_lossy(&req).to_string());
+        }
         let _ = conn.write_all(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
         );
@@ -130,7 +148,7 @@ fn spawn_sse_server_timed(
         }
         // conn drop → FIN → 客户端 bytes_stream 结束
     });
-    (format!("http://{}", addr), first_delta)
+    (format!("http://{}", addr), first_delta, request)
 }
 
 /// 构造 v1 事件信封（字段键走 gen SSoT 常量）。
@@ -156,7 +174,7 @@ async fn drive_turn(base_url: &str) -> (Result<RunResponse>, Vec<String>, Vec<St
     let t = text_seen.clone();
     let g = tool_seen.clone();
     let result = client
-        .run_stream_turn(
+        .run_task_stream_turn(
             "请分析当前任务",
             "agents/main.agent.yaml",
             None,
@@ -165,6 +183,8 @@ async fn drive_turn(base_url: &str) -> (Result<RunResponse>, Vec<String>, Vec<St
             None,
             None,
             None,
+            None,
+            false,
             |chunk| t.lock().unwrap().push(chunk.to_string()),
             |evt| g.lock().unwrap().push(evt.to_string()),
         )
@@ -547,12 +567,12 @@ async fn replay_delta_first_char_within_100ms() {
         )),
     ]
     .concat();
-    let (url, server_wrote) = spawn_sse_server_timed(vec![body]);
+    let (url, server_wrote, _) = spawn_sse_server_timed(vec![body]);
     let first_char: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
     let fc = first_char.clone();
     let client = GatewayClient::new(&url).expect("client 构造");
     let result = client
-        .run_stream_turn(
+        .run_task_stream_turn(
             "请分析当前任务",
             "agents/main.agent.yaml",
             None,
@@ -561,6 +581,8 @@ async fn replay_delta_first_char_within_100ms() {
             None,
             None,
             None,
+            None,
+            false,
             move |_c| {
                 let mut g = fc.lock().unwrap();
                 if g.is_none() {
@@ -582,4 +604,168 @@ async fn replay_delta_first_char_within_100ms() {
         "服务端首字节 → 首字上屏时差须 ≤100ms，实测 {:?}",
         gap
     );
+}
+
+#[tokio::test]
+async fn task_turn_consumes_plan_step_and_task_state() {
+    // C-15：统一任务编排入口全链路——task.submit_stream 发送，run_start
+    // 元数据（task_id/mode）、plan/step（子目标）、task_state（阶段）与
+    // message/run_end 全部消费；未确认轮不得携带 gccp_confirmed。
+    let body = vec![
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({
+                gen::AIRY_RS_K_TASK_ID: "task-1",
+                gen::AIRY_RS_K_PLAN_ID: "plan-1",
+                gen::AIRY_RS_K_MODE: "task",
+                gen::AIRY_RS_K_MODE_REASON: "rule:engineering_verb",
+            }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_PLAN,
+            1,
+            serde_json::json!({
+                gen::AIRY_RS_K_TASK_ID: "task-1",
+                gen::AIRY_RS_K_PLAN_ID: "plan-1",
+                gen::AIRY_RS_K_STEP_COUNT: 2,
+            }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_STEP,
+            2,
+            serde_json::json!({
+                gen::AIRY_RS_K_STEP_INDEX: 1,
+                gen::AIRY_RS_K_STEP_COUNT: 2,
+                gen::AIRY_RS_K_STEP_STATUS: "planned",
+                gen::AIRY_RS_K_STEP: "检查环境",
+            }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_TASK_STATE,
+            3,
+            serde_json::json!({
+                gen::AIRY_RS_K_TASK_ID: "task-1",
+                gen::AIRY_RS_K_STATE: "executing",
+            }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_MESSAGE,
+            4,
+            serde_json::json!({
+                gen::AIRY_RS_K_ROLE: "assistant",
+                gen::AIRY_RS_K_CONTENT: "安装完成",
+            }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_END,
+            5,
+            serde_json::json!({ gen::AIRY_RS_K_STATUS: "completed", gen::AIRY_RS_K_USE_TICKS: 12 }),
+        )),
+    ]
+    .concat();
+
+    let (url, request) = spawn_sse_server_capture(vec![body]);
+    let tools: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let g = tools.clone();
+    let client = GatewayClient::new(&url).expect("client 构造");
+    let result = client
+        .run_task_stream_turn(
+            "安装火狐",
+            "agents/main.agent.yaml",
+            None,
+            "sess_t15",
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            |_c| {},
+            |evt| g.lock().unwrap().push(evt.to_string()),
+        )
+        .await
+        .expect("编排轮回放应成功");
+
+    let req = request.lock().unwrap().clone().expect("应捕获请求原文");
+    assert!(
+        req.contains("\"method\":\"task.submit_stream\""),
+        "统一入口必须走 task.submit_stream，实际请求: {req}"
+    );
+    assert!(
+        !req.contains("\"gccp_confirmed\""),
+        "未确认轮不得携带 gccp_confirmed"
+    );
+    assert_eq!(result.response, "安装完成");
+    assert_eq!(result.mode.as_deref(), Some("task"));
+    assert_eq!(result.task_id.as_deref(), Some("task-1"));
+    assert_eq!(result.plan_id.as_deref(), Some("plan-1"));
+    assert_eq!(result.rounds_used, None);
+    assert!(result.needs_intent.is_none());
+
+    let lines = tools.lock().unwrap().clone();
+    let joined = lines.join("\n");
+    assert!(joined.contains("\"__airy_evt\":\"plan\""), "{joined}");
+    assert!(joined.contains("\"__airy_evt\":\"plan_step\""), "{joined}");
+    assert!(joined.contains("检查环境"), "{joined}");
+    assert!(joined.contains("\"__airy_evt\":\"task_state\""), "{joined}");
+}
+
+#[tokio::test]
+async fn task_turn_needs_intent_is_not_an_error() {
+    // C-15：GCCP 门禁——needs_intent 帧（零引擎/零工具调用）不是错误：
+    // 结果为 Ok、正文为空、门禁对象随结果回传，供上层进入目标确认。
+    let body = vec![
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({
+                gen::AIRY_RS_K_TASK_ID: "task-2",
+                gen::AIRY_RS_K_MODE: "task",
+                gen::AIRY_RS_K_MODE_REASON: "rule:engineering_verb",
+            }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_TASK_STATE,
+            1,
+            serde_json::json!({
+                gen::AIRY_RS_K_TASK_ID: "task-2",
+                gen::AIRY_RS_K_STATE: "needs_intent",
+                gen::AIRY_RS_K_MODE: "task",
+                gen::AIRY_RS_K_GCCP_MISSING: ["goal", "plan"],
+                gen::AIRY_RS_K_MSG: "任务目标未确认",
+            }),
+        )),
+    ]
+    .concat();
+
+    let url = spawn_sse_server(vec![body]);
+    let tools: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let g = tools.clone();
+    let client = GatewayClient::new(&url).expect("client 构造");
+    let result = client
+        .run_task_stream_turn(
+            "安装火狐",
+            "agents/main.agent.yaml",
+            None,
+            "sess_t15",
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            |_c| {},
+            |evt| g.lock().unwrap().push(evt.to_string()),
+        )
+        .await
+        .expect("needs_intent 不是错误");
+
+    let intent = result.needs_intent.expect("门禁对象应回传");
+    assert_eq!(intent[gen::AIRY_RS_K_STATE], "needs_intent");
+    assert_eq!(intent[gen::AIRY_RS_K_MSG], "任务目标未确认");
+    assert!(result.response.is_empty());
+    assert_eq!(result.mode.as_deref(), Some("task"));
+    // 门禁帧不进工具通道（不上屏为工具调用）
+    assert!(tools.lock().unwrap().is_empty(), "needs_intent 不应产生工具事件");
 }

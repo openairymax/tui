@@ -249,6 +249,7 @@ impl GatewayClient {
             resume_token,
             rounds_used,
             rounds_limit,
+            ..Default::default()
         })
     }
 
