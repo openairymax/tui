@@ -85,8 +85,33 @@ fn default_gateway_url() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// A-9 H4：父进程（airy_cli）死亡联动。启动器被强杀时 CLI 经 PDEATHSIG
+/// 退出，TUI 若不做同样绑定就会在重启窗口内残留为孤儿并抢占终端。Linux 下
+/// 绑定 PR_SET_PDEATHSIG(SIGTERM)，并复查 getppid 处理「设置前父已死」竞态。
+#[cfg(target_os = "linux")]
+fn bind_parent_death() {
+    unsafe {
+        let ppid = libc::getppid();
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+            warn!(
+                "PR_SET_PDEATHSIG 设置失败: {}（父死不自退，退化为手动关闭）",
+                io::Error::last_os_error()
+            );
+            return;
+        }
+        if libc::getppid() != ppid {
+            eprintln!("agentrt-tui: 启动器已退出，停止进入交互界面");
+            std::process::exit(0);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bind_parent_death() {}
+
 #[tokio::main]
 pub async fn run() {
+    bind_parent_death();
     // 首帧预算的计时基准：进程进入 main 的第一时刻（§6.1 #1）。
     let boot = Boot::mark();
 
