@@ -83,6 +83,11 @@ pub(super) struct PendingTurn {
 }
 
 /// 后台请求的结果载荷（LLM 调用结果 / 连接检查结果）。
+///
+/// Run 变体携带完整回复、轨迹与续跑令牌（C-14-07），值尺寸略超 clippy 的
+/// 启发式阈值；该载荷每回合只构造一次，Box 化只增加分配而无收益，故按
+/// 机制保持值语义。
+#[allow(clippy::large_enum_variant)]
 pub(super) enum PendingOutcome {
     /// LLM 调用结果
     Run(Result<RunResponse>),

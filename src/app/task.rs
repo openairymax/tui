@@ -33,6 +33,149 @@ impl App {
         }
     }
 
+    /// 任务集状态迁移（C-14-07）唯一入口：记录迁移轨迹，供事故复盘对账。
+    pub(super) fn set_task_state(&mut self, to: TaskState) {
+        let from = self.task_state;
+        if from != to {
+            log::info!("task_state: {:?} -> {:?}（{}）", from, to, to.label());
+            self.task_state = to;
+        }
+    }
+
+    /// 消费协议终态（C-14-07）：`paused` 进入可续跑暂停并保存令牌；
+    /// 其余终态把旧暂停复位为执行中。返回 true 表示已按暂停路径处理，
+    /// 调用方不得再把引擎的预算提示当普通回复落盘。
+    ///
+    /// 事实源只认 `run_end.status`（D-13 落地后为 `task_state` 事件），
+    /// 正文标记不参与本状态迁移。
+    pub(super) fn observe_run_end(&mut self, r: &RunResponse) -> bool {
+        if r.status.as_deref() != Some("paused") {
+            if self.task_state == TaskState::Paused {
+                self.set_task_state(TaskState::Executing);
+                self.resume_token = None;
+            }
+            return false;
+        }
+        self.resume_token = r.resume_token.clone();
+        let budget = match (r.rounds_used, r.rounds_limit) {
+            (Some(u), Some(l)) => format!("（工具轮次 {}/{} 已用尽）", u, l),
+            _ => String::new(),
+        };
+        let token_hint = if self.resume_token.is_some() {
+            "已保存续跑令牌。"
+        } else {
+            "未收到续跑令牌。"
+        };
+        self.set_task_state(TaskState::Paused);
+        self.add_message(
+            MessageRole::System,
+            format!(
+                "任务已暂停：工具轮次预算耗尽{}{}输入{}。",
+                budget,
+                token_hint,
+                TaskState::choices()
+            ),
+        );
+        true
+    }
+
+    /// 非预算类中断 → 失败态（C-14-07）：禁止静默停留执行中。
+    pub(super) fn enter_task_failure(&mut self, reason: &str) {
+        self.resume_token = None;
+        self.set_task_state(TaskState::Failed);
+        self.add_message(
+            MessageRole::System,
+            format!("任务执行失败：{}。输入{}。", reason, TaskState::choices()),
+        );
+    }
+
+    /// 阻断态三选（继续/放弃/查看失败步骤）。返回是否已消费本次输入。
+    fn handle_blocked_choice(&mut self, input: &str) -> bool {
+        match input {
+            "继续" | "continue" => {
+                self.resume_blocked_task();
+                true
+            }
+            "放弃" | "abandon" => {
+                self.abandon_blocked_task();
+                true
+            }
+            "查看失败步骤" | "失败步骤" => {
+                self.show_failed_steps();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 「继续」：有令牌则原地续跑（复用 resume_token，不重放历史）；
+    /// 无令牌如实告知不可续跑，不发起整轮重放。
+    fn resume_blocked_task(&mut self) {
+        let Some(token) = self.resume_token.take() else {
+            self.add_message(
+                MessageRole::System,
+                "本次中断没有续跑令牌，无法原地续跑；请输入修改意见或重新下发任务。".to_string(),
+            );
+            return;
+        };
+        self.set_task_state(TaskState::Executing);
+        self.add_message(
+            MessageRole::System,
+            "从断点继续（复用 resume_token，不重放整轮历史）…".to_string(),
+        );
+        self.start_stream_pending(
+            PendingKind::StreamRound {
+                input: "继续".to_string(),
+            },
+            None,
+            Some(token),
+        );
+    }
+
+    /// 「放弃」：结束本次任务集并回到普通对话（不再保留断点）。
+    fn abandon_blocked_task(&mut self) {
+        self.resume_token = None;
+        self.set_task_state(TaskState::Executing);
+        if self.task_mode {
+            self.exit_task_mode();
+        } else {
+            self.set_flow_phase(FlowPhase::Chat);
+            self.add_message(
+                MessageRole::System,
+                "已放弃本次任务，回到普通对话。".to_string(),
+            );
+        }
+    }
+
+    /// 「查看失败步骤」：列出最近轨迹中的失败调用与换路原因（只读协议字段）。
+    fn show_failed_steps(&mut self) {
+        let lines: Vec<String> = self
+            .last_tool_trace
+            .iter()
+            .filter(|t| t.ok == Some(0))
+            .map(|t| {
+                let brief: String = t
+                    .result
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect();
+                match t.switch_reason.as_deref() {
+                    Some(why) => format!("- {}：{}（换路原因：{}）", t.tool, brief, why),
+                    None => format!("- {}：{}", t.tool, brief),
+                }
+            })
+            .collect();
+        let text = if lines.is_empty() {
+            "最近一轮没有失败的工具调用；失败发生在模型思考或传输层。".to_string()
+        } else {
+            format!("最近的失败步骤：\n{}", lines.join("\n"))
+        };
+        self.add_message(MessageRole::System, text);
+    }
+
     /// Submit the current input as a message.
     ///
     /// 任务流分派（同步；网络调用转入后台任务，由主循环 poll_pending 轮询）：
@@ -202,6 +345,17 @@ impl App {
             return Ok(());
         }
 
+        // C-14-07：暂停/失败为阻断态，先由用户三选裁决（不发给 LLM）。
+        // 未命中三选的其他输入视为新指令：显式复位为执行中，不静默保留
+        // 阻断态。
+        if self.task_state.is_blocked() {
+            if self.handle_blocked_choice(&input) {
+                return Ok(());
+            }
+            self.set_task_state(TaskState::Executing);
+            self.resume_token = None;
+        }
+
         // 记录输入历史（Alt+↑/↓ 浏览；去重，最新在后）
         self.push_history(&input);
 
@@ -339,7 +493,8 @@ impl App {
             PendingKind::StreamRound {
                 input: input.to_string(),
             },
-            messages,
+            Some(messages),
+            None,
         );
         Ok(())
     }
@@ -378,6 +533,12 @@ impl App {
         // + 日志详情），原始 JSON 错误信封永不上屏。
         let stream_err = self.settle_stream_tail();
         let res = match (stream_err, res) {
+            // 预算暂停也会带错误帧：终态为 paused 时以续跑态为准，错误
+            // 文案只入日志，不能覆盖成失败卡片。
+            (Some(msg), Ok(r)) if r.status.as_deref() == Some("paused") => {
+                log::info!("流式错误帧归入暂停态：{}", msg);
+                Ok(r)
+            }
             (Some(msg), Ok(_)) => Err(anyhow::anyhow!("{}", msg)),
             (_, other) => other,
         };
@@ -426,6 +587,12 @@ impl App {
                 }
                 if let Some(c) = response.cost_usd {
                     self.cost += c;
+                }
+
+                // C-14-07：预算暂停是终态而非普通回复——不再做正文净化、
+                // 模式判定与记忆落盘，直接进入暂停三选（含失败步骤可查）。
+                if self.observe_run_end(&response) {
+                    return;
                 }
 
                 // B3：结构化净化——模式判定保留（协议判定能力不回归），前导
@@ -539,6 +706,19 @@ impl App {
                 // §6.12 #4：可行动错误卡片——人话成因 + 修复命令 + 原始错误折叠，
                 // 裸错误串不再原样直达用户面。
                 self.fail_card(&e);
+                // C-14-07：任务上下文中的非零终态必须落到 Failed 并给出
+                // 三选，禁止界面静默停留在「执行中」。
+                if self.task_mode || self.flow_phase == FlowPhase::Executing {
+                    let why: String = e
+                        .to_string()
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .take(80)
+                        .collect();
+                    self.enter_task_failure(&why);
+                }
             }
         }
     }

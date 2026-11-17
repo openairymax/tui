@@ -40,6 +40,19 @@ pub struct RunResponse {
     /// GCCP 交互问题集（id/question/hint/required），展示给用户收集答案
     #[serde(default)]
     pub gccp_questions: Vec<GccpQuestion>,
+    /// run_end 终态（completed/paused/failed）：任务集状态迁移的唯一事实源
+    /// （C-14-07）；旧引擎不带该键时按 completed 处理。
+    #[serde(default)]
+    pub status: Option<String>,
+    /// 预算耗尽（AIRY_EBUDGET）时引擎下发的续跑令牌；携带它即可从断点
+    /// 继续，无需重放整轮历史。
+    #[serde(default)]
+    pub resume_token: Option<String>,
+    /// 已消耗工具轮次 / 协商上限（预算耗尽时用于界面说明）。
+    #[serde(default)]
+    pub rounds_used: Option<i64>,
+    #[serde(default)]
+    pub rounds_limit: Option<i64>,
 }
 
 /// GCCP 目标澄清问题（think.process 第一段回传，见 gccp.h airy_gccp_question_t）
@@ -63,6 +76,10 @@ pub struct ToolTrace {
     pub arguments: String,
     pub result: String,
     pub ok: Option<i64>,
+    /// 换路原因（C-14-04）：同一调用连续失败触发强制换策略时由引擎标注，
+    /// 失败步骤视图据此说明「为什么必须换参数/换工具」。
+    #[serde(default)]
+    pub switch_reason: Option<String>,
 }
 
 /// 待人工决议的工具审批请求（tool.pending / tool.approve）。

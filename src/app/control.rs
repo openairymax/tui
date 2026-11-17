@@ -206,6 +206,9 @@ impl App {
         self.task_mode = false;
         self.set_flow_phase(FlowPhase::Chat);
         self.set_task_control(TaskControl::Running);
+        // C-14-07：离开任务集即复位生命周期状态与断点令牌
+        self.set_task_state(crate::gccp::TaskState::Executing);
+        self.resume_token = None;
         self.gccp.dag = None;
         self.gccp.grad_plan.clear();
         self.add_message(
