@@ -273,8 +273,15 @@ pub struct App {
     /// 2026-08-17 F6 新增（gateway 透传 reasoning_content）。
     pub stream_reasoning: String,
     /// 流式思考链的模型轨（SSE reasoning 事件 model 字段，2.3.14）：
-    /// 匹配 AIRY_MODEL_T2/T1F/T1P 显示 [Dual Slow/Fast/Prof Think]。
+    /// 与 `slot_models` 精确比对后显示 [Dual Slow/Fast/Prof Think]。
     pub stream_reasoning_model: String,
+    /// C-19：`llm.slots_get` 的三角色 effective 模型（t2/t1f/t1p，空槽位
+    /// 已由 llm_d 回落 default_model）。徽标只读该快照，不再读 env 字符串。
+    pub slot_models: [String; 3],
+    /// C-19：槽位降级标记（有槽位空值/悬空）。仅展示，不改写配置。
+    pub slots_degraded: bool,
+    /// 槽位快照在途请求（与连接探测并发，静默落地）
+    slots_rx: Option<tokio::sync::oneshot::Receiver<Result<serde_json::Value>>>,
     /// 思考阶段开始时刻（首个 reasoning 增量到达时记录；chat 流式状态行
     /// 显示耗时，2026-08-19 与 C 版 CLI 的 "N 字 · T.Ts" 进度对齐）。
     pub stream_reasoning_start: Option<Instant>,
@@ -482,6 +489,9 @@ impl App {
             stream_tool_events: Vec::new(),
             stream_reasoning: String::new(),
             stream_reasoning_model: String::new(),
+            slot_models: Default::default(),
+            slots_degraded: false,
+            slots_rx: None,
             stream_reasoning_start: None,
             last_reasoning: None,
             think_scroll: 0,

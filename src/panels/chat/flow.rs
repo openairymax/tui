@@ -34,24 +34,19 @@ const NODE_SPIN: [&str; 4] = ["◐", "◓", "◑", "◒"];
 ///   t1-f 模型思考 → [Dual Fast Think]（快思考）
 ///   t1-p 模型思考 → [Dual Prof Think]（专业思考）
 /// 未识别（通用对话/llm_d 默认模型）→ 通用 [Dual Think]。
-/// 模型轨来自 gateway reasoning 事件 model 字段，与 env 配置
-/// AIRY_MODEL_T2 / AIRY_MODEL_T1F / AIRY_MODEL_T1P 双向模糊匹配
-/// （env 值可为模型名或端点 URL，model 为 llm_d 实际请求模型名）。
-fn dual_think_label(model: &str) -> &'static str {
+///
+/// C-19：判据只认 `llm.slots_get` 的 effective 三角色 model_id 精确相等，
+/// 不再按 env 字符串模糊匹配——env 值可为端点 URL 或与 model_id 不同名，
+/// 模糊匹配会把不同角色的模型误标到同一轨。
+fn dual_think_label(app: &App) -> &'static str {
+    let model = app.stream_reasoning_model.as_str();
     if model.is_empty() {
         return "[Dual Think]";
     }
-    const TRACKS: [(&str, &str); 3] = [
-        ("AIRY_MODEL_T2", "[Dual Slow Think]"),
-        ("AIRY_MODEL_T1F", "[Dual Fast Think]"),
-        ("AIRY_MODEL_T1P", "[Dual Prof Think]"),
-    ];
-    for (env, label) in TRACKS {
-        if let Ok(cfg) = std::env::var(env) {
-            let cfg = cfg.trim();
-            if !cfg.is_empty() && (model.contains(cfg) || cfg.contains(model)) {
-                return label;
-            }
+    const LABELS: [&str; 3] = ["[Dual Slow Think]", "[Dual Fast Think]", "[Dual Prof Think]"];
+    for (i, slot) in app.slot_models.iter().enumerate() {
+        if !slot.is_empty() && slot == model {
+            return LABELS[i];
         }
     }
     "[Dual Think]"
@@ -334,7 +329,7 @@ pub(super) fn render_tail(out: &mut Vec<Line<'static>>, app: &App, width: usize)
             // 思考链实时可见：模型轨标签区分快/慢/专业思考，计时与预览
             // 由下方折叠块承载（§6.2 #3），状态行只留字数。
             spans.push(Span::styled(
-                dual_think_label(&app.stream_reasoning_model),
+                dual_think_label(app),
                 Style::default().fg(style::primary()),
             ));
             spans.push(Span::styled(

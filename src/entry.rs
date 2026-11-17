@@ -288,6 +288,8 @@ async fn run_tui(
     // ── Phase 3b: 启动期连接探测与首帧并发（§6.1 #1）──
     // 健康探针异步落地，结果由主循环 poll_boot 热修正连接态；首绘不等网络。
     app.probe_connection();
+    // C-19：槽位 effective 快照同批并发（徽标判据，静默落地）。
+    app.probe_slots();
     info!("App state initialized. boot probe dispatched");
 
     // Main event loop
@@ -450,6 +452,7 @@ async fn run_app<B: Backend>(
         app.poll_dlogs(now_ms);
         // 启动期连接探测结果消费（§6.1 #1）：晚到即热修正连接态，不阻塞首绘。
         app.poll_boot();
+        app.poll_slots();
         // 在途请求结果消费（流式增量 / 结果落定 / 审批待决议）。空闲期内部早退
         // 无开销；busy 期它是唯一的流式与落定入口——等待期不再有独立内层循环。
         app.poll_pending(beats.has(Beat::Approvals));
