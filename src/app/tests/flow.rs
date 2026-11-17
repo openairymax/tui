@@ -148,6 +148,7 @@ async fn stream_delta_lands_on_arrival_and_settles() {
         resume_token: None,
         rounds_used: None,
         rounds_limit: None,
+        ..Default::default()
     })));
     assert!(sent.is_ok(), "结果通道应可发送");
     assert!(!app.poll_pending(true), "落定后不应再有待办请求");
@@ -352,6 +353,7 @@ fn fallback_badge_is_transient_and_once() {
         resume_token: None,
         rounds_used: None,
         rounds_limit: None,
+        ..Default::default()
     };
 
     app.apply_chat_result("问题".to_string(), Ok(run("降级回复正文")));
@@ -419,6 +421,7 @@ fn tool_result_body_lands_in_history() {
         resume_token: None,
         rounds_used: None,
         rounds_limit: None,
+        ..Default::default()
     };
     app.apply_chat_result("读文件".to_string(), Ok(run));
     let hit = app
@@ -486,6 +489,7 @@ fn paused_run() -> RunResponse {
         resume_token: Some("tok-1".to_string()),
         rounds_used: Some(8),
         rounds_limit: Some(8),
+        ..Default::default()
     }
 }
 

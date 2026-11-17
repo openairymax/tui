@@ -213,20 +213,17 @@ impl App {
             self.gccp.mark_all_running();
 
             // 注入目标 + 已确认事实 + 流程图，LLM 开始执行。
-            // 任务执行必须携带 agent 编排 spec：gateway 依据 params.agent 走
-            // spawn+invoke（agent_d）真实调度，否则只会进入纯 LLM 工具循环。
+            // C-15：执行轮走统一任务编排入口 task.submit_stream（与 CLI 同源），
+            // 由服务端模式裁决 + GCCP 门禁放行；客户端携带 gccp_confirmed
+            // （用户已在本阶段确认），计划/子目标/状态经 plan/step/task_state
+            // 事件回传渲染——不再依赖正文 [MODE:TASK] 标记或客户端 agent spec。
             let prompt = gccp::build_execute_prompt(&self.gccp);
-            let agent_spec = serde_json::json!({ "role": "coding" });
             // 执行轮同样携带对话历史（GCCP 确认过程），编排分支可引用上下文
             // （0.1.18 B1：Full 策略——任务确认链完整性优先，边界标记包裹）
             let history = self.build_history_messages(&prompt, input, HistoryPolicy::Full);
-            // 0.1.9 M5 W1：执行轮切 agent.run_stream v1 事件流（协议先行）——
-            // token 增量/工具进度/思考链/结构化错误实时渲染，替代一次性
-            // agent.run 的"静默等待"。引擎事件经 gateway 纯翻译后逐帧消费。
             self.start_run_stream_pending(
                 PendingKind::GradConfirm { confirmed: true },
                 &prompt,
-                Some(agent_spec),
                 history,
                 None,
             );

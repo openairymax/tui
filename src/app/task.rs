@@ -42,6 +42,20 @@ impl App {
         }
     }
 
+    /// C-15：task_state 事件 → 任务集状态（D-13 事实源取代 run_end 推断）。
+    /// needs_intent 门禁帧已由客户端转译为 RunResponse.needs_intent，不经
+    /// 本路径；未知状态忽略（宽容读取）。
+    pub(super) fn observe_task_state(&mut self, state: &str) {
+        let to = match state {
+            "submitted" | "planned" | "executing" => TaskState::Executing,
+            "completed" => TaskState::Completed,
+            "paused" => TaskState::Paused,
+            "failed" | "cancelled" => TaskState::Failed,
+            _ => return,
+        };
+        self.set_task_state(to);
+    }
+
     /// 消费协议终态（C-14-07）：`paused` 进入可续跑暂停并保存令牌；
     /// 其余终态把旧暂停复位为执行中。返回 true 表示已按暂停路径处理，
     /// 调用方不得再把引擎的预算提示当普通回复落盘。
@@ -458,6 +472,43 @@ impl App {
         }
     }
 
+    /// C-15：任务目标门禁（needs_intent）呈现——展示服务端裁决依据与缺失
+    /// 槽位，随后进入 GCCP 目标确认。门禁由服务端判定，客户端不得以默认
+    /// 答案绕过（r5d）；本方法不发起任何引擎/工具调用。
+    fn present_needs_intent(&mut self, intent: &serde_json::Value, input: &str) {
+        let message = intent
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("目标信息不完整，需先确认后再执行");
+        let reason = intent
+            .get("mode_reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        let missing: Vec<String> = intent
+            .get("gccp_missing")
+            .and_then(|m| m.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut text = message.to_string();
+        if !reason.is_empty() {
+            text.push_str(&format!("（判定依据：{reason}）"));
+        }
+        if !missing.is_empty() {
+            text.push_str(&format!("；待确认：{}", missing.join("、")));
+        }
+        log::info!(
+            "apply_chat_result: needs_intent 门禁（missing={:?}），进入目标确认",
+            missing
+        );
+        self.add_message(MessageRole::System, text);
+        self.start_gccp(input);
+    }
+
     /// 普通对话轮次：发送增强 prompt，并按 LLM 判定的模式切换任务流。
     ///
     /// 普通对话（未连接时先检查；已连接走流式 SSE 增量渲染，Claude 风格）。
@@ -582,6 +633,13 @@ impl App {
                     return;
                 }
 
+                // C-15：needs_intent 门禁（服务端裁决，零引擎/零工具调用）→
+                // 进入目标确认（GCCP），不得以默认值直接执行（r5d）。
+                if let Some(intent) = response.needs_intent.clone() {
+                    self.present_needs_intent(&intent, &input);
+                    return;
+                }
+
                 if let Some(t) = response.tokens_used {
                     self.tokens += t;
                 }
@@ -681,20 +739,38 @@ impl App {
                 // 执行阶段 LLM 自报 [TASK:DONE] → 自动沉淀技能
                 let llm_done = gccp::has_task_done_marker(&response.response);
 
-                match mode {
-                    ModeMarker::TaskGccp => {
-                        // 大任务集：进入任务事实确认（GCCP）
-                        log::info!("apply_chat_result: LLM 判定大任务集，进入 GCCP");
-                        self.start_gccp(&input);
-                    }
-                    ModeMarker::Task => {
-                        log::info!("apply_chat_result: LLM 判定任务集，直接进入执行");
+                // C-15：阶段切换以服务端 run_start.mode 为唯一事实源；正文
+                // [MODE:*] 标记降级为提示（D-13），只记日志不驱动阶段。
+                if mode != ModeMarker::Chat {
+                    log::info!("apply_chat_result: 正文模式标记（提示，不驱动阶段）: {:?}", mode);
+                }
+                // C-15：任务身份/裁决依据/规划降级只入日志（对话区克制展示；
+                // 降级提示已由工具通道 plan_unavailable 行呈现）
+                if response.task_id.is_some() || response.plan_unavailable.is_some() {
+                    log::info!(
+                        "apply_chat_result: task={:?} plan={:?} mode_reason={:?} plan_unavailable={:?}",
+                        response.task_id,
+                        response.plan_id,
+                        response.mode_reason,
+                        response.plan_unavailable
+                    );
+                }
+                match response.mode.as_deref() {
+                    Some("task") => {
+                        log::info!("apply_chat_result: 服务端裁决 task，进入执行");
                         self.task_mode = true;
                         self.set_flow_phase(FlowPhase::Executing);
                     }
-                    ModeMarker::Chat => {
+                    Some("chat") => {
                         self.task_mode = false;
                         self.set_flow_phase(FlowPhase::Chat);
+                    }
+                    _ => {
+                        // 旧引擎/非统一入口无裁决字段：阶段保持不变
+                        log::debug!(
+                            "apply_chat_result: 无服务端模式裁决，阶段保持 {:?}",
+                            self.flow_phase
+                        );
                     }
                 }
 

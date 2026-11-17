@@ -102,14 +102,13 @@ impl App {
         });
     }
 
-    /// 发起流式对话请求（普通对话路径）：0.1.9 二轮收敛——legacy
-    /// /api/v1/chat/stream（网关内 LLM 工具循环）退役，统一走
-    /// agent.run_stream v1 事件流（gateway SSE 纯翻译端点）。全应用仅
-    /// 存在一条流式通道，行为/错误语义/工具事件渲染完全一致。
+    /// 发起流式对话轮请求（统一任务编排入口，C-15）：所有普通对话轮走
+    /// task.submit_stream（服务端裁决 chat/task），与 CLI 同源。对话不再由
+    /// 客户端预判链路；长任务在门禁处得到 needs_intent，由 apply 侧进入
+    /// 目标确认后带确认重新提交。
     ///
     /// `messages` 为完整对话历史（OpenAI messages 数组，末条 user 为
-    /// 增强后 prompt）；prompt 取末条 user content，随 params.prompt
-    /// 透传（run_stream 语义要求）。
+    /// 增强后 prompt）；prompt 取末条 user content，随 params.goal 透传。
     ///
     /// `resume`（C-14-07）：预算暂停后的断点续跑令牌。Some 时不携带历史
     /// （messages 为 None），引擎按令牌内的步骤摘要续跑，不整轮重放。
@@ -140,6 +139,8 @@ impl App {
             .and_then(|m| m.get("content").and_then(|c| c.as_str()))
             .unwrap_or("")
             .to_string();
+        // 续跑是已确认任务的继续执行；新对话轮不带 gccp_confirmed
+        let confirmed = resume.is_some();
         // 流式通道：tokio 任务把事件帧转译后的文本增量送进 mpsc，主循环
         // poll_pending 消费；工具/思考/错误事件走独立通道渲染
         let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -148,7 +149,7 @@ impl App {
         let sid_for_task = session_id.clone();
         let task = tokio::spawn(async move {
             let result = gateway
-                .run_stream_turn(
+                .run_task_stream_turn(
                     &prompt,
                     &agent_file,
                     model.as_deref(),
@@ -157,6 +158,8 @@ impl App {
                     messages,
                     None,
                     resume.as_deref(),
+                    resume.as_deref().map(|_| "task"),
+                    confirmed,
                     |chunk| {
                         let _ = stream_tx.send(chunk.to_string());
                     },
@@ -168,7 +171,7 @@ impl App {
             let _ = tx.send(PendingOutcome::Run(result));
         });
         log::info!(
-            "start_stream_pending: 流式请求已发起（session={}）",
+            "start_stream_pending: task.submit_stream 已发起（session={}）",
             session_id
         );
         self.begin_busy();
@@ -232,17 +235,15 @@ impl App {
         });
     }
 
-    /// 发起 agent.run_stream 事件流请求（0.1.9 M5 W1，任务执行轮）。
+    /// 发起任务执行轮事件流请求（C-15 统一入口：task.submit_stream）。
     ///
-    /// 经 gateway POST /api/v1/agent/run/stream 消费 §2.4 v1 事件帧：
-    /// token_delta → 打字机实时渲染（stream_rx）；工具进度/思考链/错误 →
-    /// 工具事件通道（tool_rx）；完整结果经 oneshot 回传后按 GradConfirm
-    /// 语义 apply（执行轮最终以 message 帧 content 为准）。
+    /// 用户在 GRAD 阶段确认后进入执行：携带 `mode="task"` 与
+    /// `gccp_confirmed=true` 通过服务端目标门禁，计划/子目标/状态迁移经
+    /// plan/step/task_state 事件渲染（不再依赖正文 [MODE:TASK] 标记）。
     pub(super) fn start_run_stream_pending(
         &mut self,
         kind: PendingKind,
         prompt: &str,
-        agent: Option<serde_json::Value>,
         history: Option<serde_json::Value>,
         gccp_answers: Option<String>,
     ) {
@@ -261,15 +262,17 @@ impl App {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = gateway
-                .run_stream_turn(
+                .run_task_stream_turn(
                     &prompt,
                     &agent_file,
                     model.as_deref(),
                     &sid_for_task,
-                    agent,
+                    None,
                     history,
                     gccp_answers.as_deref(),
                     None,
+                    Some("task"),
+                    true,
                     |chunk| {
                         let _ = stream_tx.send(chunk.to_string());
                     },
@@ -281,7 +284,7 @@ impl App {
             let _ = tx.send(PendingOutcome::Run(result));
         });
         log::info!(
-            "start_run_stream_pending: agent.run_stream 已发起（session={}，kind={:?}）",
+            "start_run_stream_pending: task.submit_stream 已发起（session={}，kind={:?}）",
             session_id,
             kind
         );
@@ -353,6 +356,33 @@ impl App {
     pub(super) fn render_tool_event(evt_json: &str) -> Option<String> {
         let v: serde_json::Value = serde_json::from_str(evt_json).ok()?;
         let kind = v.get("__airy_evt")?.as_str()?;
+        // C-15：计划/子目标/规划降级事件不带工具名，先于工具动作表渲染
+        match kind {
+            "plan" => {
+                let n = v.get("step_count").and_then(|x| x.as_i64()).unwrap_or(0);
+                return Some(format!("已生成 {n} 步执行计划"));
+            }
+            "plan_step" => {
+                let idx = v.get("index").and_then(|x| x.as_i64()).unwrap_or(0) + 1;
+                let cnt = v.get("count").and_then(|x| x.as_i64()).unwrap_or(0);
+                let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                return Some(if text.is_empty() {
+                    format!("计划 {idx}/{cnt}")
+                } else {
+                    format!("计划 {idx}/{cnt}：{text}")
+                });
+            }
+            "plan_unavailable" => {
+                let reason = v
+                    .get("reason")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("unknown");
+                return Some(format!(
+                    "未生成执行计划（{reason}），按工具循环直接执行"
+                ));
+            }
+            _ => {}
+        }
         let tool = v.get("tool").and_then(|t| t.as_str()).unwrap_or("tool");
         let action = Self::tool_action(tool);
         match kind {

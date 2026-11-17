@@ -430,6 +430,15 @@ impl App {
                         }
                         continue;
                     }
+                    // C-15：task_state 事件驱动任务状态机（阶段渲染）；
+                    // needs_intent 已在客户端转译为结果字段，不上工具通道。
+                    if v.get("__airy_evt").and_then(|k| k.as_str()) == Some("task_state") {
+                        if let Some(state) = v.get("state").and_then(|s| s.as_str()) {
+                            self.observe_task_state(state);
+                            log::debug!("task_state 事件: {state}");
+                        }
+                        continue;
+                    }
                 }
                 if let Some(line) = App::render_tool_event(&evt) {
                     self.stream_tool_events.push(line);
