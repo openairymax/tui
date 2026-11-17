@@ -148,6 +148,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             ActivePanel::Evolution => panels::evolution::render(f, main_area, app),
             ActivePanel::Trace => panels::trace::render(f, main_area, app),
             ActivePanel::BackendLog => panels::backend_logs::render(f, main_area, app),
+            ActivePanel::SelfHost => panels::selfhost::render(f, main_area, app),
         }
     }
     // 回放骨架行（0.1.19 §6.1 #2）：会话恢复期间主区不空白，右下角常显

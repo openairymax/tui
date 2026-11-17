@@ -41,6 +41,7 @@ pub(crate) mod probe;
 pub(crate) mod sanitize;
 pub(crate) mod sched;
 pub(crate) mod screen;
+pub(crate) mod selfhost;
 pub(crate) mod term;
 pub(crate) mod toast;
 pub(crate) mod view;

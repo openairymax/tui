@@ -339,6 +339,12 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         {
             app.focus_open();
         }
+        // Alt+S：自托管专页（0.1.21 D-1）——llm_d 端点事实只读视图
+        KeyCode::Char('s') | KeyCode::Char('S')
+            if key.modifiers.contains(event::KeyModifiers::ALT) =>
+        {
+            app.open_selfhost();
+        }
         // Ctrl+M：鼠标滚轮捕获会话级开关（0.1.18 B11，默认关；
         // 终端序列由 run_app 循环头的唯一执行点发送）
         KeyCode::Char('m') | KeyCode::Char('M')
@@ -411,6 +417,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_up();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_up();
+            } else if app.active_panel == ActivePanel::SelfHost {
+                app.sh_scroll_up();
             } else if app.active_panel == ActivePanel::Config {
                 app.cfg_sel_up();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
@@ -438,6 +446,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_down();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_down();
+            } else if app.active_panel == ActivePanel::SelfHost {
+                app.sh_scroll_down();
             } else if app.active_panel == ActivePanel::Config {
                 app.cfg_sel_down();
             } else if key.modifiers.contains(event::KeyModifiers::ALT) {
@@ -465,6 +475,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_pgup();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_pgup();
+            } else if app.active_panel == ActivePanel::SelfHost {
+                app.sh_page_up();
             } else if app.active_panel == ActivePanel::Config {
                 app.cfg_scroll_up();
             } else if app.active_panel == ActivePanel::Plugins {
@@ -492,6 +504,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.trace_pgdn();
             } else if app.active_panel == ActivePanel::BackendLog {
                 app.dlog_pgdn();
+            } else if app.active_panel == ActivePanel::SelfHost {
+                app.sh_page_down();
             } else if app.active_panel == ActivePanel::Config {
                 app.cfg_scroll_down();
             } else if app.active_panel == ActivePanel::Plugins {

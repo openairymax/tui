@@ -447,6 +447,8 @@ async fn run_app<B: Backend>(
         app.poll_health(now_ms);
         // 演化指标拉取结果消费（/evolution 打开期间续拉，空闲期早退无开销）。
         app.poll_evo(now_ms);
+        // 自托管快照消费（/selfhost 或 Alt+S 打开期间续拉）。
+        app.poll_selfhost(now_ms);
         // 批次五：/mem 检索结果与后端日志尾读快照消费（各自在途通道早退无开销）。
         app.poll_mem();
         app.poll_dlogs(now_ms);

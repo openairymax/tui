@@ -472,6 +472,7 @@ impl App {
             "/daemons".into(),
             "/health".into(),
             "/evolution".into(),
+            "/selfhost".into(),
             "/diag".into(),
             "/agents".into(),
             "/tools".into(),
