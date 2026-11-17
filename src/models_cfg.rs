@@ -62,7 +62,11 @@ impl ModelRow {
     }
 }
 
-/// 双思考系统配置（think: 段）。
+/// 双思考系统配置：`slots:` 三角色（t2/t1f/t1p）+ `think:` 开关段。
+///
+/// C-19 起槽位只引用 `models:` 的 model_id，`think.*_model` 三键废弃
+/// （仍可读、写入一律落到 slots）。字段名沿用 slow/fast/prof 以便向导
+/// 复用，语义即 t2/t1f/t1p。
 #[derive(Debug, Clone, Default)]
 pub struct ThinkCfg {
     pub enabled: Option<bool>,
@@ -78,6 +82,16 @@ pub struct ModelYaml {
     pub rows: Vec<ModelRow>,
     pub default_model: String,
     pub think: Option<ThinkCfg>,
+    /// 顶层 `slots:` 原始声明（三值为空 = 回落 default_model）。
+    pub slots: Option<SlotsCfg>,
+}
+
+/// 顶层 `slots:` 段（角色 → model_id）。
+#[derive(Debug, Clone, Default)]
+pub struct SlotsCfg {
+    pub t2: String,
+    pub t1f: String,
+    pub t1p: String,
 }
 
 /// model.yaml 路径：$AIRY_HOME/config/model.yaml（HOME 回退 ~/.airymaxrt）。
@@ -99,6 +113,7 @@ fn parse_model_yaml(content: &str) -> ModelYaml {
     let mut out = ModelYaml::default();
     let mut cur_row: Option<ModelRow> = None;
     let mut in_think = false;
+    let mut in_slots = false;
     let mut in_models = false;
 
     for raw in content.lines() {
@@ -125,11 +140,20 @@ fn parse_model_yaml(content: &str) -> ModelYaml {
             if trimmed == "think:" {
                 in_think = true;
                 in_models = false;
+                in_slots = false;
                 out.think = Some(ThinkCfg::default());
+                continue;
+            }
+            if trimmed == "slots:" {
+                in_slots = true;
+                in_models = false;
+                in_think = false;
+                out.slots = Some(SlotsCfg::default());
                 continue;
             }
             in_models = false;
             in_think = false;
+            in_slots = false;
             continue;
         }
         // models 表：列表项 `- name:`（2 空格缩进）
@@ -168,6 +192,18 @@ fn parse_model_yaml(content: &str) -> ModelYaml {
             }
             continue;
         }
+        // slots 段字段（2 空格缩进）：t2/t1f/t1p 只引用 models 的 model_id
+        if in_slots && indent == 2 {
+            if let (Some(cfg), Some((k, v))) = (out.slots.as_mut(), split_kv(trimmed)) {
+                match k {
+                    "t2" => cfg.t2 = unquote(v).to_string(),
+                    "t1f" => cfg.t1f = unquote(v).to_string(),
+                    "t1p" => cfg.t1p = unquote(v).to_string(),
+                    _ => {}
+                }
+            }
+            continue;
+        }
         // 其他缩进内容：保持解析器状态（如 models 内注释/高级配置）由 set_row_field 兜底
         if in_models && indent >= 4 {
             if let Some(row) = cur_row.as_mut() {
@@ -179,6 +215,20 @@ fn parse_model_yaml(content: &str) -> ModelYaml {
     }
     if let Some(prev) = cur_row.take() {
         out.rows.push(prev);
+    }
+    // slots 优先：槽位非空即覆盖废弃 think.*_model；无 think 段时合成一份
+    // 供向导展示（写入仍走 slots，不回写废弃键）。
+    if let Some(slots) = out.slots.clone() {
+        let t = out.think.get_or_insert_with(ThinkCfg::default);
+        if !slots.t2.is_empty() {
+            t.slow_model = slots.t2;
+        }
+        if !slots.t1f.is_empty() {
+            t.fast_model = slots.t1f;
+        }
+        if !slots.t1p.is_empty() {
+            t.prof_model = slots.t1p;
+        }
     }
     out
 }
@@ -330,11 +380,12 @@ fn patch_lines(original: &str, idx: usize, row: &ModelRow, think: &ThinkCfg) -> 
             .find(|(k, _)| *k == "model_id")
             .map(|(_, v)| unquote(v.trim()).to_string());
         let mut i = end;
-        // 之后的内容照抄，直到 think 段（由 think 处理）
+        // 之后的内容照抄，直到 slots/think 段（两段统一重写，避免重复键）
         while i < lines.len() {
             let l = lines[i];
             let trimmed = l.trim_start();
-            if trimmed == "think:" && l.len() - trimmed.len() == 0 {
+            let top = l.len() - trimmed.len() == 0;
+            if top && (trimmed == "think:" || trimmed == "slots:") {
                 break;
             }
             // default_model 指向被替换的旧 model_id → 跟随新 model_id
@@ -348,24 +399,25 @@ fn patch_lines(original: &str, idx: usize, row: &ModelRow, think: &ThinkCfg) -> 
             out.push(l.to_string());
             i += 1;
         }
-        // 写 think 段（追加或替换）
-        write_think_section(&mut out, think, &lines[i..]);
+        // 写 slots + think 段（追加或替换）
+        write_tail_sections(&mut out, think, &lines[i..]);
         return out.join("\n") + "\n";
     }
 
     // models 表为空/索引越界：末尾追加模型行（补全 think 段后）
     for (i, l) in lines.iter().enumerate() {
         let trimmed = l.trim_start();
-        if trimmed == "think:" && l.len() - trimmed.len() == 0 {
+        let top = l.len() - trimmed.len() == 0;
+        if top && (trimmed == "think:" || trimmed == "slots:") {
             let mut head = out.clone();
             append_model_block(&mut head, row);
-            write_think_section(&mut head, think, &lines[i..]);
+            write_tail_sections(&mut head, think, &lines[i..]);
             return head.join("\n") + "\n";
         }
         out.push(l.to_string());
     }
     append_model_block(&mut out, row);
-    write_think_section(&mut out, think, &[]);
+    write_tail_sections(&mut out, think, &[]);
     out.join("\n") + "\n"
 }
 
@@ -382,44 +434,52 @@ fn append_model_block(out: &mut Vec<String>, row: &ModelRow) {
     }
 }
 
-/// 写 think 段：替换现有 `  <key>:` 行，补插缺失键。
-fn write_think_section(out: &mut Vec<String>, think: &ThinkCfg, rest: &[&str]) {
+/// 写 slots + think 段：槽位统一落 `slots:`（C-19 单一事实源），
+/// `think:` 只留 enabled/timeout_ms；两段已知键一律重写，未知行保留。
+fn write_tail_sections(out: &mut Vec<String>, think: &ThinkCfg, rest: &[&str]) {
+    out.push("".to_string());
+    out.push("slots:".to_string());
+    if !think.slow_model.is_empty() {
+        out.push(format!("  t2: {}", think.slow_model));
+    }
+    if !think.fast_model.is_empty() {
+        out.push(format!("  t1f: {}", think.fast_model));
+    }
+    if !think.prof_model.is_empty() {
+        out.push(format!("  t1p: {}", think.prof_model));
+    }
     out.push("".to_string());
     out.push("think:".to_string());
     if let Some(en) = think.enabled {
         out.push(format!("  enabled: {}", en));
     }
-    if !think.slow_model.is_empty() {
-        out.push(format!("  think2_slow_model: {}", think.slow_model));
-    }
-    if !think.fast_model.is_empty() {
-        out.push(format!("  think1_fast_model: {}", think.fast_model));
-    }
-    if !think.prof_model.is_empty() {
-        out.push(format!("  think1_prof_model: {}", think.prof_model));
-    }
     if !think.timeout_ms.is_empty() {
         out.push(format!("  timeout_ms: {}", think.timeout_ms));
     }
-    // rest（原 think 段后续行）：跳过原 think: 头行，保留未知键行
-    if !rest.is_empty() {
-        let known = [
-            "enabled",
-            "think2_slow_model",
-            "think1_fast_model",
-            "think1_prof_model",
-            "timeout_ms",
-        ];
-        for l in rest.iter().skip(1) {
-            let trimmed = l.trim_start();
-            if let Some((k, _)) = split_kv(trimmed) {
-                if known.contains(&k) {
-                    continue;
-                }
+    // rest（原 slots/think 段起始）：跳过两段头行，保留未知键行
+    let known = [
+        "t2",
+        "t1f",
+        "t1p",
+        "enabled",
+        "think2_slow_model",
+        "think1_fast_model",
+        "think1_prof_model",
+        "timeout_ms",
+    ];
+    for l in rest.iter() {
+        let trimmed = l.trim_start();
+        let top = l.len() - trimmed.len() == 0;
+        if top && (trimmed == "think:" || trimmed == "slots:") {
+            continue;
+        }
+        if let Some((k, _)) = split_kv(trimmed) {
+            if known.contains(&k) {
+                continue;
             }
-            if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                out.push(l.to_string());
-            }
+        }
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            out.push(l.to_string());
         }
     }
 }
@@ -468,15 +528,20 @@ fn build_minimal_yaml(row: &ModelRow, think: &ThinkCfg) -> String {
         s.push_str(&format!("default_model: {}\n", row.model_id));
     }
     s.push('\n');
+    s.push_str("slots:\n");
+    if !think.slow_model.is_empty() {
+        s.push_str(&format!("  t2: {}\n", think.slow_model));
+    }
+    if !think.fast_model.is_empty() {
+        s.push_str(&format!("  t1f: {}\n", think.fast_model));
+    }
+    if !think.prof_model.is_empty() {
+        s.push_str(&format!("  t1p: {}\n", think.prof_model));
+    }
+    s.push('\n');
     s.push_str("think:\n");
     if let Some(en) = think.enabled {
         s.push_str(&format!("  enabled: {}\n", en));
-    }
-    if !think.slow_model.is_empty() {
-        s.push_str(&format!("  think2_slow_model: {}\n", think.slow_model));
-    }
-    if !think.fast_model.is_empty() {
-        s.push_str(&format!("  think1_fast_model: {}\n", think.fast_model));
     }
     s
 }
@@ -530,10 +595,12 @@ models:
 
 default_model: "deepseek-v4-flash"
 
+slots:
+  t2: "deepseek-v4-pro"
+  t1f: "deepseek-v4-flash"
+
 think:
   enabled: true
-  think2_slow_model: "deepseek-v4-pro"
-  think1_fast_model: "deepseek-v4-flash"
 "#;
 
     #[test]
@@ -544,9 +611,20 @@ think:
         assert_eq!(m.rows[0].base_url, "https://api.deepseek.com");
         assert_eq!(m.rows[1].model_id, "GLM-4.7-Flash");
         assert_eq!(m.default_model, "deepseek-v4-flash");
+        let slots = m.slots.expect("slots section");
+        assert_eq!(slots.t2, "deepseek-v4-pro");
+        assert_eq!(slots.t1f, "deepseek-v4-flash");
         let think = m.think.expect("think section");
         assert_eq!(think.enabled, Some(true));
         assert_eq!(think.slow_model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn parse_legacy_think_models_backward_compatible() {
+        let src = "think:\n  enabled: true\n  think2_slow_model: \"m-slow\"\n";
+        let m = parse_model_yaml(src);
+        assert!(m.slots.is_none());
+        assert_eq!(m.think.expect("think").slow_model, "m-slow");
     }
 
     #[test]
@@ -570,6 +648,11 @@ think:
         assert!(patched.contains("GLM-4.7-Flash"), "第二行模型必须保留");
         assert!(patched.contains("# AgentRT 大语言模型配置文件"));
         assert!(patched.contains("enabled: false"), "think enabled 应更新");
+        assert!(patched.contains("t2: deepseek-flash"), "槽位写入 slots 段");
+        assert!(
+            !patched.contains("think2_slow_model"),
+            "不得再写废弃 think.*_model 键"
+        );
         assert!(
             !patched.contains("deepseek-v4-flash\""),
             "旧 model_id 应被替换"
@@ -595,7 +678,8 @@ think:
         let out = build_minimal_yaml(&row, &think);
         assert!(out.contains("models:"));
         assert!(out.contains("mode: local"));
-        assert!(out.contains("think2_slow_model: llama3"));
+        assert!(out.contains("t2: llama3"));
+        assert!(out.contains("t1f: llama3"));
     }
 
     #[test]
@@ -614,7 +698,7 @@ think:
             patched.contains("# AgentRT 大语言模型配置文件"),
             "文件头注释保留"
         );
-        assert!(patched.contains("think1_fast_model"), "think 段保留");
+        assert!(patched.contains("t1f: \"deepseek-v4-flash\""), "slots 段保留");
         assert!(patched.contains("name: \"GLM\""), "其余模型行保留");
     }
 

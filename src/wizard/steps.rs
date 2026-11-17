@@ -597,6 +597,7 @@ mod tests {
                 prof_model: String::new(),
                 timeout_ms: String::new(),
             }),
+            slots: None,
         };
         let seed = |key| seed_value(key, &m, "hint-model");
         assert_eq!(seed(FieldKey::Provider), "anthropic");

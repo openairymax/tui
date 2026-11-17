@@ -278,6 +278,56 @@ impl App {
         }
     }
 
+    /// C-19：拉取槽位 effective 快照（与首帧并发，静默不占对话区）。
+    ///
+    /// 徽标需要「角色 → 实际 model_id」的权威映射，只能来自 llm_d
+    /// （model.yaml + env 归并后的结果）；TUI 自己读 model.yaml 会漏掉
+    /// env 覆盖与空槽位回落，故统一走 `llm.slots_get`。
+    pub fn probe_slots(&mut self) {
+        if self.slots_rx.is_some() {
+            return;
+        }
+        let gw = self.gateway.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(gw.rpc_call("llm.slots_get", serde_json::json!({})).await);
+        });
+        self.slots_rx = Some(rx);
+    }
+
+    /// 消费槽位快照；失败静默丢弃（daemon 未起时徽标退回通用标签）。
+    pub fn poll_slots(&mut self) {
+        let Some(mut rx) = self.slots_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(v)) => self.absorb_slots(&v),
+            Ok(Err(e)) => log::debug!("slots_get 失败，徽标退回通用标签: {e}"),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => self.slots_rx = Some(rx),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        }
+    }
+
+    /// 吸收 `slots` 对象（slots_get / list_models 同形：角色 → {declared,effective}）。
+    pub(crate) fn absorb_slots(&mut self, v: &serde_json::Value) {
+        let Some(slots) = v.get("slots").and_then(|s| s.as_object()) else {
+            return;
+        };
+        for (i, role) in ["t2", "t1f", "t1p"].iter().enumerate() {
+            if let Some(m) = slots
+                .get(*role)
+                .and_then(|o| o.get("effective"))
+                .and_then(|m| m.as_str())
+            {
+                self.slot_models[i] = m.to_string();
+            }
+        }
+        self.slots_degraded = v
+            .get("degraded")
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false);
+    }
+
     /// 应用探测结果：连接态/版本/状态条/日志的唯一改写落点。
     ///
     /// 同一份真实探测同时回填健康表（U12）：连接态与健康表同源，不会出现

@@ -185,6 +185,9 @@ impl App {
                     self.add_message(MessageRole::System, text);
                 }
                 OpsOutcome::Call(Ok(v)) => {
+                    // C-19：/models 与 /rpc llm.slots_get 同一份带 slots 的结果，
+                    // 顺手刷新徽标判据，避免用户必须重启 TUI 才看到新槽位。
+                    self.absorb_slots(&v);
                     let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string());
                     self.add_message(
                         MessageRole::System,
