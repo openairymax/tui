@@ -164,6 +164,7 @@ async fn drive_turn(base_url: &str) -> (Result<RunResponse>, Vec<String>, Vec<St
             None,
             None,
             None,
+            None,
             |chunk| t.lock().unwrap().push(chunk.to_string()),
             |evt| g.lock().unwrap().push(evt.to_string()),
         )
@@ -556,6 +557,7 @@ async fn replay_delta_first_char_within_100ms() {
             "agents/main.agent.yaml",
             None,
             "sess_t04",
+            None,
             None,
             None,
             None,

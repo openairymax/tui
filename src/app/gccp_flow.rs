@@ -252,6 +252,11 @@ impl App {
             None
         };
         let res = match (stream_err, res) {
+            // 预算暂停带错误帧：以 paused 终态为准，交给暂停三选处理
+            (Some(msg), Ok(r)) if r.status.as_deref() == Some("paused") => {
+                log::info!("执行轮错误帧归入暂停态：{}", msg);
+                Ok(r)
+            }
             (Some(msg), Ok(_)) => Err(anyhow::anyhow!("{}", msg)),
             (_, other) => other,
         };
@@ -263,6 +268,11 @@ impl App {
                 if confirmed {
                     if let Some(c) = r.cost_usd {
                         self.cost += c;
+                    }
+                    // C-14-07：预算暂停先于「任务完成」判定——引擎的预算
+                    // 提示不是任务回复，不落盘、不触发技能蒸馏。
+                    if self.observe_run_end(&r) {
+                        return;
                     }
                     let cleaned = gccp::strip_task_done(&r.response);
                     self.add_message(MessageRole::Agent, cleaned.clone());
@@ -288,11 +298,15 @@ impl App {
                 if confirmed {
                     self.set_flow_phase(FlowPhase::GradConfirm);
                     self.gccp.init_node_states();
+                    // C-14-07：失败必须可见（Failed），不得静默保留执行中
+                    self.resume_token = None;
+                    self.set_task_state(TaskState::Failed);
                     self.add_message(
                         MessageRole::System,
                         format!(
-                            "任务执行失败：{}。可输入「确认」重试，或输入修改意见修订流程图。",
-                            e
+                            "任务执行失败：{}。可输入「确认」重新执行、输入修改意见修订流程图，或{}。",
+                            e,
+                            TaskState::choices()
                         ),
                     );
                 } else {
@@ -332,6 +346,9 @@ impl App {
         self.task_mode = false;
         self.set_flow_phase(FlowPhase::Chat);
         self.set_task_control(TaskControl::Running);
+        // C-14-07：任务集自然完成是唯一的 Completed 迁移点
+        self.set_task_state(crate::gccp::TaskState::Completed);
+        self.resume_token = None;
         self.gccp.dag = None;
         log::info!("finish_task: 任务收尾完成（distilled={}）", distilled);
         if !distilled {

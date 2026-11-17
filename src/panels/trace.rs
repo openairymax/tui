@@ -111,6 +111,7 @@ mod tests {
             arguments: args.to_string(),
             result: result.to_string(),
             ok,
+            switch_reason: None,
         }
     }
 

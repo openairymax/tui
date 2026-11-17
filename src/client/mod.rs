@@ -219,6 +219,18 @@ impl GatewayClient {
             .get("tool_trace")
             .and_then(|v| serde_json::from_value::<Vec<ToolTrace>>(v.clone()).ok());
 
+        // run_end 终态与续跑令牌（C-14-07）：状态迁移只认协议字段，不解析正文。
+        let status = result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let resume_token = result
+            .get("resume_token")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let rounds_used = result.get("rounds_used").and_then(|v| v.as_i64());
+        let rounds_limit = result.get("rounds_limit").and_then(|v| v.as_i64());
+
         info!(
             "← agent/run OK ({}ms, {} tokens)",
             elapsed.as_millis(),
@@ -233,6 +245,10 @@ impl GatewayClient {
             tool_trace,
             gccp_need_interaction,
             gccp_questions,
+            status,
+            resume_token,
+            rounds_used,
+            rounds_limit,
         })
     }
 

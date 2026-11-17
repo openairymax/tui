@@ -147,6 +147,7 @@ fn golden_trace_panel_renders_tool_detail() {
         arguments: "{\"path\":\"a.txt\"}".to_string(),
         result: "文件内容样例".to_string(),
         ok: Some(1),
+        switch_reason: None,
     }];
     fx.app.active_panel = ActivePanel::Trace;
     let s = fx.draw();

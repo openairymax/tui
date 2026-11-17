@@ -34,7 +34,11 @@ impl GatewayClient {
     /// `params` 透传语义与 send_message 一致（prompt/agent_file/model/
     /// session_id/agent/messages/gccp_answers），任务执行轮带 agent spec
     /// 走 agent_d 编排分支。
-    // 10 参数 = 7 业务参数 + 双回调（流式渲染通道）：签名冻结理由同
+    ///
+    /// `resume_token`（C-14-07）：预算暂停后的断点续跑。携带时不再重放
+    /// 历史——prompt/messages 均不下发，引擎按令牌内的步骤摘要与剩余目标
+    /// 自行重建上下文。
+    // 11 参数 = 8 业务参数 + 双回调（流式渲染通道）：签名冻结理由同
     // send_message；回调独立泛型不可并入参数结构体。
     #[allow(clippy::too_many_arguments)]
     pub async fn run_stream_turn<F, E>(
@@ -46,6 +50,7 @@ impl GatewayClient {
         agent: Option<serde_json::Value>,
         messages: Option<serde_json::Value>,
         gccp_answers: Option<&str>,
+        resume_token: Option<&str>,
         mut on_text: F,
         mut on_tool: E,
     ) -> Result<RunResponse>
@@ -54,10 +59,16 @@ impl GatewayClient {
         E: FnMut(&str),
     {
         let mut params = serde_json::json!({
-            "prompt": prompt,
             "agent_file": agent_file,
             "interactive": true,
         });
+        if !prompt.is_empty() {
+            params["prompt"] = serde_json::Value::String(prompt.to_string());
+        }
+        if let Some(tok) = resume_token {
+            // 续跑：引擎以令牌为唯一上下文来源（不整轮重放）
+            params["resume_token"] = serde_json::Value::String(tok.to_string());
+        }
         if let Some(m) = model {
             if !m.is_empty() {
                 params["model"] = serde_json::Value::String(m.to_string());
@@ -95,6 +106,11 @@ impl GatewayClient {
             std::collections::HashMap::new();
         // 完整轨迹只在 run_end 下发一次（stream 路径无 RPC result 可读）
         let mut tool_trace: Option<Vec<super::ToolTrace>> = None;
+        // run_end 终态（C-14-07）：paused/failed 是任务集状态迁移的事实源
+        let mut run_status: Option<String> = None;
+        let mut resume_out: Option<String> = None;
+        let mut rounds_used: Option<i64> = None;
+        let mut rounds_limit: Option<i64> = None;
 
         run_stream_events(&self.rs, params, |ev| {
             match ev.event_type.as_str() {
@@ -198,6 +214,10 @@ impl GatewayClient {
                     tokens = ev.data_i64(gen::AIRY_RS_K_USE_TICKS).map(|t| t as u64);
                     let status = ev.data_str(gen::AIRY_RS_K_STATUS).unwrap_or("completed");
                     debug!("agent.run_stream: run_end (status={})", status);
+                    run_status = Some(status.to_string());
+                    resume_out = ev.data_str(gen::AIRY_RS_K_RESUME_TOKEN).map(str::to_string);
+                    rounds_used = ev.data_i64(gen::AIRY_RS_K_ROUNDS_USED);
+                    rounds_limit = ev.data_i64(gen::AIRY_RS_K_ROUNDS_LIMIT);
                     // 工具轨迹随终态帧整体下发（tool/arguments/result/ok）：
                     // tool_start/tool_end 只有动作名与成败，不足以还原调用。
                     if let Some(tr) = ev.data.get(gen::AIRY_RS_K_TOOL_TRACE) {
@@ -227,19 +247,25 @@ impl GatewayClient {
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        // 结构化错误优先：引擎失败仅发 error 帧（无 message）
+        // 预算暂停是可达终态而非错误：run_end(status=paused) 携带续跑令牌
+        // 时优先返回成功帧，错误帧文案只入日志（界面按暂停三选呈现）。
+        let paused = run_status.as_deref() == Some("paused") && resume_out.is_some();
         if let Some(m) = err_msg {
-            return Err(anyhow::anyhow!("{}", m));
+            if !paused {
+                return Err(anyhow::anyhow!("{}", m));
+            }
+            info!("agent.run_stream: 预算暂停（{}），以续跑态返回", m);
         }
         // 引擎成功以 message 帧为权威内容；无 message 时回退增量累积
         let response = final_content.unwrap_or(text_acc);
-        if response.trim().is_empty() {
+        if response.trim().is_empty() && !paused {
             return Err(anyhow::anyhow!("agent.run_stream: empty result"));
         }
         info!(
-            "← agent.run_stream OK ({} chars, tokens={:?})",
+            "← agent.run_stream OK ({} chars, tokens={:?}, status={:?})",
             response.len(),
-            tokens
+            tokens,
+            run_status
         );
         Ok(RunResponse {
             session_id: session_id.to_string(),
@@ -250,6 +276,10 @@ impl GatewayClient {
             tool_trace,
             gccp_need_interaction: false,
             gccp_questions: Vec::new(),
+            status: run_status,
+            resume_token: resume_out,
+            rounds_used,
+            rounds_limit,
         })
     }
 }

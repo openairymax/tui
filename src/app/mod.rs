@@ -18,7 +18,7 @@ use crate::engine::health::{Banner, ErrAgg, HealthTable, Stamp, Timeline};
 use crate::engine::leader::Leader;
 use crate::engine::sched::Lane;
 use crate::engine::toast::ToastQueue;
-use crate::gccp::{self, FlowPhase, GccpState, TaskControl};
+use crate::gccp::{self, FlowPhase, GccpState, TaskControl, TaskState};
 use crate::ime::ImeEngine;
 use crate::memory::{self, ConversationMemory};
 use crate::skills::{self, SkillStore};
@@ -252,6 +252,10 @@ pub struct App {
     pending: Option<PendingTurn>,
     /// 任务集执行控制状态（人工暂停/中止，默认运行中）
     pub task_control: TaskControl,
+    /// 任务集生命周期状态（C-14-07）：由协议终态驱动，阻断态必须三选。
+    pub task_state: TaskState,
+    /// 预算暂停时保存的续跑令牌（继续时原样复用，不重放整轮）
+    pub resume_token: Option<String>,
     /// 输入历史（Alt+↑/↓ 浏览，与对话滚动解耦；去重，最多 50 条）
     input_history: Vec<String>,
     /// 输入历史浏览位置（None = 未在浏览，回到手输状态）
@@ -470,6 +474,8 @@ impl App {
             wizard: wizard::WizardState::new(),
             pending: None,
             task_control: TaskControl::Running,
+            task_state: TaskState::Executing,
+            resume_token: None,
             input_history: Vec::with_capacity(16),
             history_pos: None,
             streaming_text: String::new(),

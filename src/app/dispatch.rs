@@ -110,7 +110,15 @@ impl App {
     /// `messages` 为完整对话历史（OpenAI messages 数组，末条 user 为
     /// 增强后 prompt）；prompt 取末条 user content，随 params.prompt
     /// 透传（run_stream 语义要求）。
-    pub(super) fn start_stream_pending(&mut self, kind: PendingKind, messages: serde_json::Value) {
+    ///
+    /// `resume`（C-14-07）：预算暂停后的断点续跑令牌。Some 时不携带历史
+    /// （messages 为 None），引擎按令牌内的步骤摘要续跑，不整轮重放。
+    pub(super) fn start_stream_pending(
+        &mut self,
+        kind: PendingKind,
+        messages: Option<serde_json::Value>,
+        resume: Option<String>,
+    ) {
         let gateway = self.gateway.clone();
         let agent_file = self.agent_file.clone();
         let model = if self.model.is_empty() {
@@ -119,9 +127,11 @@ impl App {
             Some(self.model.clone())
         };
         let session_id = self.new_session_id();
-        // prompt：末条 user 消息文本（chat_round 构造的增强 prompt）
+        // prompt：末条 user 消息文本（chat_round 构造的增强 prompt）；
+        // 续跑时不带历史，prompt 为空，上下文全部来自令牌
         let prompt = messages
-            .as_array()
+            .as_ref()
+            .and_then(|m| m.as_array())
             .and_then(|a| {
                 a.iter()
                     .rev()
@@ -144,8 +154,9 @@ impl App {
                     model.as_deref(),
                     &sid_for_task,
                     None,
-                    Some(messages),
+                    messages,
                     None,
+                    resume.as_deref(),
                     |chunk| {
                         let _ = stream_tx.send(chunk.to_string());
                     },
@@ -258,6 +269,7 @@ impl App {
                     agent,
                     history,
                     gccp_answers.as_deref(),
+                    None,
                     |chunk| {
                         let _ = stream_tx.send(chunk.to_string());
                     },

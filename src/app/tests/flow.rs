@@ -144,6 +144,10 @@ async fn stream_delta_lands_on_arrival_and_settles() {
         tool_trace: None,
         gccp_need_interaction: false,
         gccp_questions: Vec::new(),
+        status: None,
+        resume_token: None,
+        rounds_used: None,
+        rounds_limit: None,
     })));
     assert!(sent.is_ok(), "结果通道应可发送");
     assert!(!app.poll_pending(true), "落定后不应再有待办请求");
@@ -344,6 +348,10 @@ fn fallback_badge_is_transient_and_once() {
         tool_trace: None,
         gccp_need_interaction: false,
         gccp_questions: Vec::new(),
+        status: None,
+        resume_token: None,
+        rounds_used: None,
+        rounds_limit: None,
     };
 
     app.apply_chat_result("问题".to_string(), Ok(run("降级回复正文")));
@@ -396,6 +404,7 @@ fn tool_result_body_lands_in_history() {
         arguments: "{}".to_string(),
         result: "第一行正文\n第二行正文".to_string(),
         ok: Some(1),
+        switch_reason: None,
     };
     let run = RunResponse {
         session_id: "s".to_string(),
@@ -406,6 +415,10 @@ fn tool_result_body_lands_in_history() {
         tool_trace: Some(vec![trace]),
         gccp_need_interaction: false,
         gccp_questions: Vec::new(),
+        status: None,
+        resume_token: None,
+        rounds_used: None,
+        rounds_limit: None,
     };
     app.apply_chat_result("读文件".to_string(), Ok(run));
     let hit = app
@@ -457,3 +470,133 @@ fn busy_secs_snapshot_publishes_on_interval() {
     assert_eq!(app.busy_shown_secs, 0.0);
 }
 
+// ─────────── C-14-07：任务集 Failed/Paused 状态机与三选 ───────────
+
+fn paused_run() -> RunResponse {
+    RunResponse {
+        session_id: "s".to_string(),
+        response: String::new(),
+        tokens_used: Some(3),
+        cost_usd: None,
+        thinking: None,
+        tool_trace: None,
+        gccp_need_interaction: false,
+        gccp_questions: Vec::new(),
+        status: Some("paused".to_string()),
+        resume_token: Some("tok-1".to_string()),
+        rounds_used: Some(8),
+        rounds_limit: Some(8),
+    }
+}
+
+/// 预算暂停：状态迁移只认 run_end.status，保存令牌并给出三选，且不把
+/// 引擎预算提示当任务回复入史。
+#[test]
+fn paused_run_enters_three_choice_state() {
+    use crate::gccp::{FlowPhase, TaskState};
+    let _h = crate::test_env::Home::new("c14-paused");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.memory = Box::new(GatewayMemory::volatile());
+    app.task_mode = true;
+    app.set_flow_phase(FlowPhase::Executing);
+
+    app.apply_chat_result("执行任务".to_string(), Ok(paused_run()));
+
+    assert_eq!(app.task_state, TaskState::Paused, "预算耗尽须进入暂停态");
+    assert_eq!(app.resume_token.as_deref(), Some("tok-1"), "续跑令牌须保存");
+    let note = app.messages.back().expect("暂停说明已入史").content.clone();
+    assert!(note.contains("工具轮次 8/8"), "须说明预算用量: {note}");
+    for key in ["继续", "放弃", "查看失败步骤"] {
+        assert!(note.contains(key), "三选缺少 {key}: {note}");
+    }
+    assert!(
+        !app.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.content.contains("budget")),
+        "预算提示不得作为回复入史"
+    );
+}
+
+/// 非预算中断：任务上下文中的错误落到 Failed，禁止静默停留在执行中。
+#[test]
+fn failed_run_enters_failed_state() {
+    use crate::gccp::TaskState;
+    let _h = crate::test_env::Home::new("c14-failed");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.memory = Box::new(GatewayMemory::volatile());
+    app.task_mode = true;
+
+    app.apply_chat_result(
+        "执行任务".to_string(),
+        Err(anyhow::anyhow!("tool service unreachable")),
+    );
+
+    assert_eq!(app.task_state, TaskState::Failed);
+    let note = app.messages.back().expect("失败说明已入史").content.clone();
+    assert!(note.contains("查看失败步骤"), "须给出失败出口: {note}");
+}
+
+/// 无令牌时「继续」不得整轮重放：如实拒绝并保持阻断态。
+#[test]
+fn resume_without_token_refuses_replay() {
+    use crate::gccp::TaskState;
+    let _h = crate::test_env::Home::new("c14-no-token");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.task_state = TaskState::Paused;
+    app.resume_token = None;
+
+    app.submit_input("继续").expect("continue");
+    assert!(!app.is_busy(), "无令牌不得发起续跑请求");
+    let note = app.messages.back().expect("说明已入史").content.clone();
+    assert!(note.contains("没有续跑令牌"), "须如实说明不可续跑: {note}");
+}
+
+/// 有令牌时「继续」以 resume_token 续跑，且不把「继续」当用户消息入史。
+#[tokio::test]
+async fn resume_with_token_dispatches_resume() {
+    use crate::gccp::TaskState;
+    let _h = crate::test_env::Home::new("c14-resume");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.task_state = TaskState::Paused;
+    app.resume_token = Some("tok-2".to_string());
+
+    app.submit_input("继续").expect("continue");
+    assert!(app.is_busy(), "有令牌应发起续跑请求");
+    assert!(
+        !app.messages
+            .iter()
+            .any(|m| m.role == MessageRole::User && m.content == "继续"),
+        "三选输入不应作为用户消息入史"
+    );
+    app.abort_task();
+}
+
+/// 查看失败步骤：只读轨迹字段，列出失败调用与换路原因。
+#[test]
+fn view_failed_steps_lists_switch_reason() {
+    use crate::gccp::TaskState;
+    let _h = crate::test_env::Home::new("c14-steps");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.task_state = TaskState::Failed;
+    app.last_tool_trace = vec![crate::client::ToolTrace {
+        tool: "shell_run".to_string(),
+        arguments: "{}".to_string(),
+        result: "Error: command not found".to_string(),
+        ok: Some(0),
+        switch_reason: Some("identical call blocked after 2 failures".to_string()),
+    }];
+
+    app.submit_input("查看失败步骤").expect("steps");
+    let note = app.messages.back().expect("步骤说明已入史").content.clone();
+    assert!(note.contains("shell_run"), "须列出失败工具: {note}");
+    assert!(
+        note.contains("identical call blocked"),
+        "须列出换路原因: {note}"
+    );
+    assert!(!app.is_busy(), "查看失败步骤不应发起请求");
+}

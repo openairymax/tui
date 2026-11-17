@@ -37,4 +37,4 @@ pub use parse::{
     strip_task_done,
 };
 pub use prompt::{build_execute_prompt, build_grad_prompt, build_qn_prompt};
-pub use state::{FlowPhase, GccpState, NodeState, TaskControl};
+pub use state::{FlowPhase, GccpState, NodeState, TaskControl, TaskState};

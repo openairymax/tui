@@ -171,14 +171,27 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 crate::gccp::TaskControl::Aborted => "  ✕ 已中止",
                 crate::gccp::TaskControl::Running => "  Ctrl+X 中止 · Ctrl+Z 暂停",
             };
+            // C-14-07：阻断态（暂停/失败）替换「执行中」文案并给出三选，
+            // 避免运行态被静默呈现为仍在执行。
+            let (title, tail) = match app.task_state {
+                crate::gccp::TaskState::Paused => (
+                    "任务集已暂停".to_string(),
+                    format!("  {}", crate::gccp::TaskState::choices()),
+                ),
+                crate::gccp::TaskState::Failed => (
+                    "任务集已失败".to_string(),
+                    format!("  {}", crate::gccp::TaskState::choices()),
+                ),
+                _ => (format!("任务集执行中{node_hint}"), control_hint.to_string()),
+            };
             out.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(
-                    format!("任务集执行中{node_hint}"),
+                    title,
                     // 苹果轻量字重风格：无粗体，暖黄
                     Style::default().fg(style::warning()),
                 ),
-                Span::styled(control_hint, Style::default().fg(style::dim())),
+                Span::styled(tail, Style::default().fg(style::dim())),
             ]));
 
             // DAG 节点状态持续渲染（P2-C 过程可视化；2026-08-21 增甘特式进度条）：

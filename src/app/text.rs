@@ -110,6 +110,8 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  GRAD（任务流程图确认）：五问齐备后生成流程图与结构化依赖图（DAG），".to_string(),
         "    确认后开始执行；执行中可 Ctrl+X 中止、Ctrl+Z 暂停。".to_string(),
         "  任务集执行中输入「完成」或 LLM 回复 [TASK:DONE] 即完成。".to_string(),
+        "  轮次预算用尽或执行失败时进入暂停/失败态，输入「继续」断点续跑、".to_string(),
+        "  「放弃」结束任务、「查看失败步骤」检查失败调用与换路原因。".to_string(),
         String::new(),
         "记忆:".to_string(),
         "  对话记忆经网关记忆服务（mem.*）持久化，与 CLI 共享同一记忆库，".to_string(),

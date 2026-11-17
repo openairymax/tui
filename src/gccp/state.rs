@@ -49,6 +49,45 @@ impl TaskControl {
     }
 }
 
+/// 任务集生命周期状态（C-14-07）。
+///
+/// 迁移的事实源是协议终态（`run_end.status`；D-13 落地后由 `task_state`
+/// 事件取代），**不解析正文标记**。与 TaskControl 正交：后者是用户按键
+/// 产生的控制态，本状态是运行结果的事实态，两者可同时存在。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskState {
+    /// 执行中（默认）
+    #[default]
+    Executing,
+    /// 已完成（任务集终态）
+    Completed,
+    /// 预算暂停：可凭 resume_token 从断点续跑
+    Paused,
+    /// 失败：非预算类中断，需用户裁决
+    Failed,
+}
+
+impl TaskState {
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskState::Executing => "执行中",
+            TaskState::Completed => "已完成",
+            TaskState::Paused => "已暂停",
+            TaskState::Failed => "已失败",
+        }
+    }
+
+    /// 阻断态：必须由用户三选后才能推进，禁止静默停留执行中。
+    pub fn is_blocked(self) -> bool {
+        matches!(self, TaskState::Paused | TaskState::Failed)
+    }
+
+    /// 三选提示：界面徽章与系统消息共用同一文案，避免两处漂移。
+    pub fn choices() -> &'static str {
+        "「继续」断点续跑 · 「放弃」结束任务 · 「查看失败步骤」检查失败调用"
+    }
+}
+
 impl FlowPhase {
     /// 状态栏展示名（中文术语）
     #[allow(dead_code)] // 单测使用；UI 按阶段匹配颜色自行展示
