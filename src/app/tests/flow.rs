@@ -542,9 +542,10 @@ fn failed_run_enters_failed_state() {
     assert!(note.contains("查看失败步骤"), "须给出失败出口: {note}");
 }
 
-/// 无令牌时「继续」不得整轮重放：如实拒绝并保持阻断态。
-#[test]
-fn resume_without_token_refuses_replay() {
+/// D-12：暂停态无本地令牌时「继续」改从服务端取回断点，不整轮重放。
+/// 重启后本地令牌随进程消失，但 agent_d 仍保存着 paused 回合。
+#[tokio::test]
+async fn resume_without_token_queries_server_turns() {
     use crate::gccp::TaskState;
     let _h = crate::test_env::Home::new("c14-no-token");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
@@ -553,9 +554,49 @@ fn resume_without_token_refuses_replay() {
     app.resume_token = None;
 
     app.submit_input("继续").expect("continue");
-    assert!(!app.is_busy(), "无令牌不得发起续跑请求");
+    assert!(app.is_busy(), "应发起 agent.turns 断点查询");
     let note = app.messages.back().expect("说明已入史").content.clone();
-    assert!(note.contains("没有续跑令牌"), "须如实说明不可续跑: {note}");
+    assert!(
+        note.contains("从服务端取回断点"),
+        "须说明正在取回断点: {note}"
+    );
+    app.abort_task();
+}
+
+/// D-12：服务重启（UNAVAILABLE）进入可续跑暂停态——不落失败卡。
+#[tokio::test]
+async fn unavailable_enters_paused_not_failed() {
+    use crate::gccp::TaskState;
+    let _h = crate::test_env::Home::new("c14-unavail");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+
+    app.enter_task_paused("agent service restarting", 900, Some("tok-7".to_string()));
+    assert_eq!(app.task_state, TaskState::Paused);
+    assert_eq!(app.resume_token.as_deref(), Some("tok-7"));
+    let note = app.messages.back().expect("暂停说明已入史").content.clone();
+    assert!(note.contains("已暂停且未失败"), "须显式声明未失败: {note}");
+    assert!(note.contains("0.9 秒"), "须带上重试提示: {note}");
+}
+
+/// D-12：agent.turns 返回 paused 回合时，取令牌原地续跑。
+#[tokio::test]
+async fn apply_turn_state_resumes_with_server_token() {
+    use crate::gccp::TaskState;
+    let _h = crate::test_env::Home::new("c14-turns");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.task_state = TaskState::Paused;
+    app.resume_token = None;
+
+    let turns = serde_json::json!({"count": 2, "turns": [
+        {"turn_id": "a", "state": "running", "token": "skip"},
+        {"turn_id": "b", "state": "paused", "token": "tok-9"},
+    ]});
+    app.apply_turn_state(Ok(turns));
+    assert!(app.is_busy(), "取得令牌后应发起续跑");
+    assert_eq!(app.task_state, TaskState::Executing);
+    app.abort_task();
 }
 
 /// 有令牌时「继续」以 resume_token 续跑，且不把「继续」当用户消息入史。

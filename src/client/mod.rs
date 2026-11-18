@@ -30,6 +30,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use stream::Unavailable;
 pub use types::*;
 
 /// Gateway API client for the TUI application.

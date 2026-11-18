@@ -103,6 +103,60 @@ impl App {
         );
     }
 
+    /// D-12：下游重启/断流 → 可续跑暂停（不是失败）。
+    ///
+    /// 服务端在工具边界落盘，已完成步骤不会重跑；本地若已拿到令牌直接
+    /// 复用，否则「继续」改走 agent.turns 取回（见 resume_blocked_task）。
+    pub(super) fn enter_task_paused(
+        &mut self,
+        detail: &str,
+        retry_ms: u64,
+        token: Option<String>,
+    ) {
+        if token.is_some() {
+            self.resume_token = token;
+        }
+        let secs = retry_ms.max(200) as f64 / 1000.0;
+        let why: String = detail.lines().next().unwrap_or("").chars().take(120).collect();
+        self.set_task_state(TaskState::Paused);
+        self.add_message(
+            MessageRole::System,
+            format!(
+                "执行服务正在重启，本回合已暂停且未失败（完成的步骤不会重跑）。约 {:.1} 秒后输入{}。原因：{}",
+                secs,
+                TaskState::choices(),
+                why
+            ),
+        );
+    }
+
+    /// D-12：消费 agent.turns 查询结果——取最近一条 paused 回合的令牌续跑。
+    pub(super) fn apply_turn_state(&mut self, res: Result<serde_json::Value>) {
+        let value = match res {
+            Ok(v) => v,
+            Err(e) => {
+                self.add_message(
+                    MessageRole::System,
+                    format!("取回断点令牌失败（服务可能仍在重启）：{}", e),
+                );
+                return;
+            }
+        };
+        match paused_token(&value) {
+            Some(t) if !t.is_empty() => {
+                self.resume_token = Some(t);
+                self.resume_blocked_task();
+            }
+            _ => {
+                self.add_message(
+                    MessageRole::System,
+                    "服务端没有可续跑的暂停回合（回合可能已结束或未留下令牌）；请重新下发任务。"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     /// 阻断态三选（继续/放弃/查看失败步骤）。返回是否已消费本次输入。
     fn handle_blocked_choice(&mut self, input: &str) -> bool {
         match input {
@@ -126,6 +180,15 @@ impl App {
     /// 无令牌如实告知不可续跑，不发起整轮重放。
     fn resume_blocked_task(&mut self) {
         let Some(token) = self.resume_token.take() else {
+            // D-12：重启后本地令牌随进程消失，但服务端仍保存着断点。
+            if self.task_state == TaskState::Paused {
+                self.add_message(
+                    MessageRole::System,
+                    "本地没有续跑令牌，正在从服务端取回断点…".to_string(),
+                );
+                self.start_turns_pending();
+                return;
+            }
             self.add_message(
                 MessageRole::System,
                 "本次中断没有续跑令牌，无法原地续跑；请输入修改意见或重新下发任务。".to_string(),
@@ -782,6 +845,14 @@ impl App {
                 }
             }
             Err(e) => {
+                // D-12：下游重启窗口不是失败——不弹失败卡，直接可续跑暂停。
+                if let Some(u) = e.downcast_ref::<crate::client::Unavailable>() {
+                    let detail = u.detail.clone();
+                    let retry = u.retry_ms;
+                    let token = u.token.clone();
+                    self.enter_task_paused(&detail, retry, token);
+                    return;
+                }
                 // §6.12 #4：可行动错误卡片——人话成因 + 修复命令 + 原始错误折叠，
                 // 裸错误串不再原样直达用户面。
                 self.fail_card(&e);
@@ -800,5 +871,47 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// D-12：从 agent.turns 应答中取最近一条 paused 回合的续跑令牌。
+///
+/// 纯函数（不读 App 状态），便于直测；令牌缺失或为空都按「不可续跑」处理，
+/// 由调用方给出重新下发的提示。
+fn paused_token(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("turns")?
+        .as_array()?
+        .iter()
+        .find(|t| t.get("state").and_then(|s| s.as_str()) == Some("paused"))?
+        .get("token")?
+        .as_str()
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paused_token;
+    use serde_json::json;
+
+    #[test]
+    fn paused_token_picks_first_paused_turn() {
+        let v = json!({"count": 3, "turns": [
+            {"turn_id": "a", "state": "running", "token": "run"},
+            {"turn_id": "b", "state": "paused", "token": "tok-1"},
+            {"turn_id": "c", "state": "paused", "token": "tok-2"},
+        ]});
+        assert_eq!(paused_token(&v).as_deref(), Some("tok-1"));
+    }
+
+    #[test]
+    fn paused_token_ignores_missing_or_empty() {
+        assert_eq!(paused_token(&json!({"turns": []})), None);
+        assert_eq!(
+            paused_token(&json!({"turns": [{"state": "running", "token": "x"}]})),
+            None
+        );
+        assert_eq!(paused_token(&json!({"turns": [{"state": "paused"}]})), None);
+        assert_eq!(paused_token(&json!({})), None);
     }
 }

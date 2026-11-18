@@ -194,6 +194,28 @@ impl App {
         self.stream_tool_events.clear();
     }
 
+    /// D-12：向网关查询暂停回合，取回重启后仍可续跑的令牌。
+    /// 走后台任务，避免 UI 线程在服务重启窗口被阻塞。
+    pub(super) fn start_turns_pending(&mut self) {
+        let gateway = self.gateway.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let r = gateway.rpc_call("agent.turns", serde_json::json!({})).await;
+            let _ = tx.send(PendingOutcome::Turns(r));
+        });
+        log::info!("start_turns_pending: 查询 agent.turns 断点");
+        self.begin_busy();
+        self.set_task_control(TaskControl::Running);
+        self.pending = Some(PendingTurn {
+            rx,
+            kind: PendingKind::TurnState,
+            task: Some(task),
+            session_id: String::new(),
+            stream_rx: None,
+            tool_rx: None,
+        });
+    }
+
     /// 未连接时的连接检查：后台执行健康检查，通过后继续真实请求。
     pub(super) fn start_connect_then(
         &mut self,

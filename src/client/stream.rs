@@ -17,10 +17,50 @@
 use anyhow::Result;
 use log::{debug, info};
 
+use agentrt_rs::error::AgentOSError;
 use agentrt_rs::run_stream::{gen, run_stream_events_with_method, METHOD_TASK_SUBMIT_STREAM};
 
 use super::GatewayClient;
 use super::RunResponse;
+
+/// 下游服务正在重启（gateway 503 UNAVAILABLE）：本回合没有失败。
+///
+/// 携带服务端给出的重试提示；界面据此进入可续跑暂停态，而不是失败卡片，
+/// 并保留「继续」按钮所需的语义（令牌由服务端 agent.turns 保存）。
+#[derive(Debug)]
+pub struct Unavailable {
+    pub detail: String,
+    pub retry_ms: u64,
+    /// 断流前若已收到续跑令牌则直接携带，省一次 agent.turns 查询。
+    pub token: Option<String>,
+}
+
+impl Unavailable {
+    fn from_error(e: &AgentOSError) -> Self {
+        let detail = e.to_string();
+        Self {
+            retry_ms: parse_retry_ms(&detail).unwrap_or(800),
+            detail,
+            token: None,
+        }
+    }
+}
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "执行服务正在重启，{}ms 后可继续：{}", self.retry_ms, self.detail)
+    }
+}
+
+impl std::error::Error for Unavailable {}
+
+/// 从错误文本中提取 `retry_after_ms`（网关 503 应答体）。
+fn parse_retry_ms(s: &str) -> Option<u64> {
+    const KEY: &str = "\"retry_after_ms\":";
+    let i = s.find(KEY)? + KEY.len();
+    let digits: String = s[i..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
 
 impl GatewayClient {
     /// task.submit_stream 事件流（C-15 统一任务编排入口，方案 §2.4 v1 信封）。
@@ -408,7 +448,29 @@ impl GatewayClient {
             }
         })
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| {
+            // UNAVAILABLE 带类别跨过 string 转换：上层按暂停态处理，
+            // 其余错误仍走失败呈现。
+            if e.is_unavailable() {
+                anyhow::Error::new(Unavailable::from_error(&e))
+            } else {
+                anyhow::anyhow!("{e}")
+            }
+        })?;
+
+        // 没有终态帧就断开：agent_d 重启或被网关中止，回合未失败。
+        // message/error 帧已落定则视为正常收尾（旧引擎不带 run_end 的兼容
+        // 契约）；只有「仅有增量、没有任何裁决帧」才是中途断流，必须让上层
+        // 进入暂停态（可续跑），不能把半截结果当成 completed 呈现。
+        let settled = final_content.is_some() || err_msg.is_some();
+        if run_status.is_none() && needs_intent.is_none() && !settled {
+            debug!("agent.run_stream: stream closed before run_end");
+            return Err(anyhow::Error::new(Unavailable {
+                detail: "event stream closed before run_end".to_string(),
+                retry_ms: 800,
+                token: resume_out.take(),
+            }));
+        }
 
         // 预算暂停是可达终态而非错误：run_end(status=paused) 携带续跑令牌
         // 时优先返回成功帧，错误帧文案只入日志（界面按暂停三选呈现）。
@@ -521,4 +583,28 @@ fn fail_text(fail: Option<&serde_json::Value>, msg: &str) -> String {
         out.push_str(&format!("（影响节点 {n}）"));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_retry_ms, Unavailable};
+    use agentrt_rs::error::AgentOSError;
+    use agentrt_rs::CODE_UNAVAILABLE;
+
+    #[test]
+    fn retry_hint_is_parsed_from_gateway_body() {
+        let body = r#"{"error":{"code":-32000,"data":{"code":"UNAVAILABLE","retry_after_ms":1500}}}"#;
+        let e = AgentOSError::with_code(CODE_UNAVAILABLE, body);
+        let u = Unavailable::from_error(&e);
+        assert_eq!(u.retry_ms, 1500);
+        assert!(u.to_string().contains("1500ms"), "display must show hint");
+    }
+
+    #[test]
+    fn retry_hint_defaults_when_absent() {
+        let e = AgentOSError::with_code(CODE_UNAVAILABLE, "down");
+        assert_eq!(Unavailable::from_error(&e).retry_ms, 800);
+        assert_eq!(parse_retry_ms("no hint here"), None);
+        assert_eq!(parse_retry_ms(r#""retry_after_ms":"x""#), None);
+    }
 }
