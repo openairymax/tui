@@ -46,6 +46,7 @@ mod poll;
 mod selfhost;
 mod session;
 mod task;
+mod task_store;
 mod text;
 pub(crate) mod toolcat;
 

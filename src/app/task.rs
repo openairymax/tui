@@ -34,11 +34,13 @@ impl App {
     }
 
     /// 任务集状态迁移（C-14-07）唯一入口：记录迁移轨迹，供事故复盘对账。
+    /// D-13：阻断态迁移即落 `task_state.json`，跨进程重启后仍能三选。
     pub(super) fn set_task_state(&mut self, to: TaskState) {
         let from = self.task_state;
         if from != to {
             log::info!("task_state: {:?} -> {:?}（{}）", from, to, to.label());
             self.task_state = to;
+            self.save_task_state();
         }
     }
 
@@ -46,12 +48,8 @@ impl App {
     /// needs_intent 门禁帧已由客户端转译为 RunResponse.needs_intent，不经
     /// 本路径；未知状态忽略（宽容读取）。
     pub(super) fn observe_task_state(&mut self, state: &str) {
-        let to = match state {
-            "submitted" | "planned" | "executing" => TaskState::Executing,
-            "completed" => TaskState::Completed,
-            "paused" => TaskState::Paused,
-            "failed" | "cancelled" => TaskState::Failed,
-            _ => return,
+        let Some(to) = gccp::task_state_of(state) else {
+            return;
         };
         self.set_task_state(to);
     }
@@ -85,6 +83,25 @@ impl App {
     /// 事实源只认 `run_end.status`（D-13 落地后为 `task_state` 事件），
     /// 正文标记不参与本状态迁移。
     pub(super) fn observe_run_end(&mut self, r: &RunResponse) -> bool {
+        // D-13：task_state 事件是唯一事实源。若已收终态与 run_end.status
+        // 冲突（例如事件已 failed、结果帧却说 completed），以 task_state
+        // 为准并告警——两条通道各自改写界面会让用户看到互相矛盾的结论。
+        if let Some(s) = r.status.as_deref() {
+            if let Some(ev) = gccp::task_state_of(s) {
+                if self.task_state.is_terminal() && self.task_state != ev {
+                    log::warn!(
+                        "终态冲突：已收 task_state={:?}，run_end.status={}（以 task_state 为准）",
+                        self.task_state,
+                        s
+                    );
+                    let body = gccp::strip_task_done(&r.response);
+                    if !body.trim().is_empty() {
+                        self.add_message(MessageRole::Agent, body);
+                    }
+                    return true;
+                }
+            }
+        }
         // C-17：判据无法取证 → 未验证态（内容可交付，但明确不是已完成）。
         if r.status.as_deref() == Some("unverified") {
             self.resume_token = None;

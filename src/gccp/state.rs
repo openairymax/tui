@@ -85,9 +85,29 @@ impl TaskState {
         matches!(self, TaskState::Paused | TaskState::Failed | TaskState::Unverified)
     }
 
+    /// 终态：任务集已收口，后续结果帧不得再改写（D-13 冲突仲裁用）。
+    pub fn is_terminal(self) -> bool {
+        matches!(self, TaskState::Completed | TaskState::Failed | TaskState::Unverified)
+    }
+
     /// 三选提示：界面徽章与系统消息共用同一文案，避免两处漂移。
     pub fn choices() -> &'static str {
         "「继续」断点续跑 · 「放弃」结束任务 · 「查看失败步骤」检查失败调用"
+    }
+}
+
+/// 协议状态名 → 任务集状态（D-13 唯一映射点）。
+///
+/// task_state 事件与 run_end.status 共用本函数，避免两条通道各写一套
+/// match 而漂移；未知状态返回 None（宽容读取，不猜测）。
+pub fn task_state_of(s: &str) -> Option<TaskState> {
+    match s {
+        "submitted" | "planned" | "executing" => Some(TaskState::Executing),
+        "completed" => Some(TaskState::Completed),
+        "paused" => Some(TaskState::Paused),
+        "failed" | "cancelled" => Some(TaskState::Failed),
+        "unverified" => Some(TaskState::Unverified),
+        _ => None,
     }
 }
 

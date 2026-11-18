@@ -255,3 +255,34 @@ fn task_control_labels() {
     assert_eq!(TaskControl::Paused.label(), "已暂停");
     assert_eq!(TaskControl::Aborted.label(), "已中止");
 }
+
+/// D-13：协议状态名到任务集状态的唯一映射（task_state 事件与
+/// run_end.status 共用），未知名不得猜测成执行中。
+#[test]
+fn task_state_of_maps_protocol_names() {
+    assert_eq!(task_state_of("submitted"), Some(TaskState::Executing));
+    assert_eq!(task_state_of("planned"), Some(TaskState::Executing));
+    assert_eq!(task_state_of("executing"), Some(TaskState::Executing));
+    assert_eq!(task_state_of("paused"), Some(TaskState::Paused));
+    assert_eq!(task_state_of("completed"), Some(TaskState::Completed));
+    assert_eq!(task_state_of("failed"), Some(TaskState::Failed));
+    assert_eq!(task_state_of("cancelled"), Some(TaskState::Failed));
+    assert_eq!(task_state_of("unverified"), Some(TaskState::Unverified));
+    assert_eq!(task_state_of("weird"), None);
+    assert_eq!(task_state_of(""), None);
+}
+
+/// D-13：终态只含已收口三态；阻断态 = 暂停 + 两个异常终态。
+#[test]
+fn task_state_terminal_and_blocked_sets() {
+    for s in [TaskState::Completed, TaskState::Failed, TaskState::Unverified] {
+        assert!(s.is_terminal(), "{:?} 应为终态", s);
+    }
+    for s in [TaskState::Paused, TaskState::Failed, TaskState::Unverified] {
+        assert!(s.is_blocked(), "{:?} 应为阻断态", s);
+    }
+    assert!(!TaskState::Completed.is_blocked());
+    assert!(!TaskState::Executing.is_terminal());
+    assert!(!TaskState::Executing.is_blocked());
+    assert!(!TaskState::Paused.is_terminal());
+}
