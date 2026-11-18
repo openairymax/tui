@@ -69,10 +69,10 @@ fn confirm_and_done_detection() {
 }
 
 #[test]
-fn task_done_marker_helpers() {
-    assert!(has_task_done_marker("已完成\n[TASK:DONE]"));
-    assert!(!has_task_done_marker("已完成"));
+fn task_done_marker_is_stripped_not_trusted() {
+    // C-17：标记只做展示剥离，不再作为完成信号。
     assert_eq!(strip_task_done("任务完成\n[TASK:DONE]"), "任务完成");
+    assert_eq!(strip_task_done("正文"), "正文");
 }
 
 #[test]

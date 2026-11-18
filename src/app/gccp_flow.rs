@@ -260,6 +260,11 @@ impl App {
                     if let Some(c) = r.cost_usd {
                         self.cost += c;
                     }
+                    // C-17：判据门禁——无判据的任务不启动（零引擎/零工具调用）。
+                    if let Some(nc) = r.needs_criteria.clone() {
+                        self.show_needs_crit(&nc);
+                        return;
+                    }
                     // C-14-07：预算暂停先于「任务完成」判定——引擎的预算
                     // 提示不是任务回复，不落盘、不触发技能蒸馏。
                     if self.observe_run_end(&r) {
@@ -269,7 +274,16 @@ impl App {
                     self.add_message(MessageRole::Agent, cleaned.clone());
                     // 0.1.18 B4：执行轮同样不落思考链（与 apply_chat_result 对齐）
                     self.mem_push_tagged("assistant", &cleaned, "task");
-                    if gccp::has_task_done_marker(&r.response) {
+                    // C-17：判据复核结果上屏；完成只认证据，正文 [TASK:DONE]
+                    // 不再参与完成判定。
+                    self.show_verify(&r);
+                    let verified = r
+                        .verification
+                        .as_ref()
+                        .and_then(|v| v.get("ok"))
+                        .and_then(|x| x.as_bool())
+                        == Some(true);
+                    if verified || self.task_state == TaskState::Completed {
                         self.complete_task();
                     }
                 } else {
