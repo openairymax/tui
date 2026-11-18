@@ -33,8 +33,7 @@ mod tests;
 
 pub use dag::{parse_dag, render_dag_lines};
 pub use parse::{
-    has_task_done_marker, is_confirm, is_task_done_input, parse_answers, parse_questions,
-    strip_task_done,
+    is_confirm, is_task_done_input, parse_answers, parse_questions, strip_task_done,
 };
 pub use prompt::{build_execute_prompt, build_grad_prompt, build_qn_prompt};
 pub use state::{FlowPhase, GccpState, NodeState, TaskControl, TaskState};

@@ -71,6 +71,11 @@ pub struct RunResponse {
     /// data 形如 {status,task_id,mode,mode_reason,gccp_missing[],message}
     #[serde(default)]
     pub needs_intent: Option<serde_json::Value>,
+    /// C-17：needs_criteria 门禁对象（显式声明 task 但无可执行判据时返回，
+    /// 零引擎/零工具调用）。data 形如 {status,task_id,mode,mode_reason,
+    /// message,example{criteria[]}}。
+    #[serde(default)]
+    pub needs_criteria: Option<serde_json::Value>,
     /// C-15：计划不可用原因（think_unavailable / plan_missing）；携带时
     /// 表示本轮按 ReAct 工具循环直接执行，界面如实告知降级。
     #[serde(default)]
@@ -79,6 +84,11 @@ pub struct RunResponse {
     /// 界面直接显示 total，不再按字符数或 use_ticks 换算。
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// C-17：完成判据复核证据（tool_d verifier 逐项结果）。`ok=false`
+    /// 时 items[] 携带每条的 type/expect/actual，界面据此说明未达成原因；
+    /// 字段缺失表示旧引擎或本轮无判据。
+    #[serde(default)]
+    pub verification: Option<serde_json::Value>,
 }
 
 /// D-11：run_end.usage 的 wire 形态。TUI 只消费 total 与 source —— 界面

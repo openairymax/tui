@@ -225,7 +225,11 @@ impl GatewayClient {
         let mut mode: Option<String> = None;
         let mut mode_reason: Option<String> = None;
         let mut needs_intent: Option<serde_json::Value> = None;
+        // C-17：显式声明 task 但缺可执行判据 → needs_criteria 门禁对象
+        let mut needs_criteria: Option<serde_json::Value> = None;
         let mut plan_unavailable: Option<String> = None;
+        // C-17：完成判据复核证据（tool_d verifier 逐项结果）
+        let mut verification: Option<serde_json::Value> = None;
         let mut plan_steps: i64 = 0;
 
         run_stream_events_with_method(&self.rs, method, params, |ev| {
@@ -359,12 +363,15 @@ impl GatewayClient {
                     on_tool(&line.to_string());
                 }
                 // task_state：任务状态机迁移（submitted/planned/executing/
-                // completed/paused/failed/cancelled）。needs_intent 帧是 GCCP
-                // 门禁对象（零引擎/零工具调用），交由上层进入目标确认。
+                // completed/paused/failed/cancelled/unverified）。needs_intent 与
+                // needs_criteria 是门禁对象（零引擎/零工具调用），交由上层进入
+                // 目标确认 / 判据补充。
                 gen::AIRY_RS_TYPE_TASK_STATE => {
                     let state = ev.data_str(gen::AIRY_RS_K_STATE).unwrap_or("");
                     if state == "needs_intent" {
                         needs_intent = Some(ev.data.clone());
+                    } else if state == gen::AIRY_RS_STATE_NEEDS_CRITERIA {
+                        needs_criteria = Some(ev.data.clone());
                     } else if !state.is_empty() {
                         let line = serde_json::json!({
                             "__airy_evt": "task_state",
@@ -421,6 +428,9 @@ impl GatewayClient {
                     resume_out = ev.data_str(gen::AIRY_RS_K_RESUME_TOKEN).map(str::to_string);
                     rounds_used = ev.data_i64(gen::AIRY_RS_K_ROUNDS_USED);
                     rounds_limit = ev.data_i64(gen::AIRY_RS_K_ROUNDS_LIMIT);
+                    // C-17：复核证据随终态帧下发（成功亦含 ok=true），
+                    // 界面据此逐项呈现判据结果。
+                    verification = ev.data.get(gen::AIRY_RS_K_VERIFICATION).cloned();
                     // 工具轨迹随终态帧整体下发（tool/arguments/result/ok）：
                     // tool_start/tool_end 只有动作名与成败，不足以还原调用。
                     if let Some(tr) = ev.data.get(gen::AIRY_RS_K_TOOL_TRACE) {
@@ -463,7 +473,7 @@ impl GatewayClient {
         // 契约）；只有「仅有增量、没有任何裁决帧」才是中途断流，必须让上层
         // 进入暂停态（可续跑），不能把半截结果当成 completed 呈现。
         let settled = final_content.is_some() || err_msg.is_some();
-        if run_status.is_none() && needs_intent.is_none() && !settled {
+        if run_status.is_none() && needs_intent.is_none() && needs_criteria.is_none() && !settled {
             debug!("agent.run_stream: stream closed before run_end");
             return Err(anyhow::Error::new(Unavailable {
                 detail: "event stream closed before run_end".to_string(),
@@ -472,20 +482,23 @@ impl GatewayClient {
             }));
         }
 
-        // 预算暂停是可达终态而非错误：run_end(status=paused) 携带续跑令牌
-        // 时优先返回成功帧，错误帧文案只入日志（界面按暂停三选呈现）。
+        // 预算暂停与判据不可取证都是可达终态而非错误：paused 携带续跑令牌，
+        // unverified 携带逐项证据，两者都按成功帧返回，界面分别呈现
+        // 「暂停三选」与「未验证」。
         let paused = run_status.as_deref() == Some("paused") && resume_out.is_some();
+        let unverified = run_status.as_deref() == Some(gen::AIRY_RS_STATE_UNVERIFIED);
+        let soft = paused || unverified;
         if let Some(m) = err_msg {
-            if !paused {
+            if !soft {
                 return Err(anyhow::anyhow!("{}", m));
             }
-            info!("agent.run_stream: 预算暂停（{}），以续跑态返回", m);
+            info!("agent.run_stream: 软终态（{}），以结果帧返回", m);
         }
         // 引擎成功以 message 帧为权威内容；无 message 时回退增量累积。
-        // needs_intent 门禁帧（C-15）不触达引擎，文本为空是预期结果。
+        // needs_intent / needs_criteria 门禁帧不触达引擎，文本为空是预期结果。
         let response = final_content.unwrap_or(text_acc);
-        let gated = needs_intent.is_some();
-        if response.trim().is_empty() && !paused && !gated {
+        let gated = needs_intent.is_some() || needs_criteria.is_some();
+        if response.trim().is_empty() && !soft && !gated {
             return Err(anyhow::anyhow!("agent.run_stream: empty result"));
         }
         info!(
@@ -515,8 +528,10 @@ impl GatewayClient {
             mode,
             mode_reason,
             needs_intent,
+            needs_criteria,
             plan_unavailable,
             usage,
+            verification,
         })
     }
 }
@@ -539,6 +554,38 @@ pub(super) fn sse_frame_end(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|w| w == b"\n\n").map(|p| p + 2)
 }
 
+/// C-17：失败载荷中的未达成判据 → 单行摘要（type/expect/实际值）。
+/// 只列前 3 条，其余以「等 N 项」收口，保证错误行可读。
+fn unmet_items(f: &serde_json::Value) -> Option<String> {
+    let items = f
+        .get(gen::AIRY_RS_K_VERIFICATION)?
+        .get("items")?
+        .as_array()?;
+    let mut unmet: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for it in items {
+        if it.get("pass").and_then(|v| v.as_bool()) != Some(false) {
+            continue;
+        }
+        total += 1;
+        if unmet.len() >= 3 {
+            continue;
+        }
+        let ty = it.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+        let expect = it.get("expect").and_then(|v| v.as_str()).unwrap_or("");
+        let actual = it.get("actual").and_then(|v| v.as_str()).unwrap_or("");
+        unmet.push(format!("{ty} {expect}（实际 {actual}）"));
+    }
+    if unmet.is_empty() {
+        return None;
+    }
+    let mut out = unmet.join("、");
+    if total > unmet.len() {
+        out.push_str(&format!("等 {total} 项"));
+    }
+    Some(out)
+}
+
 /// D-10：失败载荷 → 一行用户可读结论。判据（origin/reason/next_action）
 /// 由 daemon 唯一给出，这里只做中文呈现；未知原因原样透出，避免新原因
 /// 上线后被吞掉。
@@ -556,6 +603,8 @@ fn fail_text(fail: Option<&serde_json::Value>, msg: &str) -> String {
         gen::AIRY_RS_REASON_DENIED => "操作未获审批",
         gen::AIRY_RS_REASON_EMPTY => "模型返回空结果",
         gen::AIRY_RS_REASON_PROVIDER => "模型服务不可达",
+        gen::AIRY_RS_REASON_UNMET => "完成判据未达成",
+        gen::AIRY_RS_REASON_UNVERIFIED => "完成判据无法取证",
         gen::AIRY_RS_REASON_AGENT => "执行失败",
         "" => return msg.to_string(),
         other => other,
@@ -567,9 +616,14 @@ fn fail_text(fail: Option<&serde_json::Value>, msg: &str) -> String {
     {
         gen::AIRY_RS_NEXT_RETRY => "可原样重试",
         gen::AIRY_RS_NEXT_RESUME => "请用 continue 续跑，不要原样重发",
+        gen::AIRY_RS_NEXT_ADJUST => "请按未达成项调整后重试",
         _ => "建议人工排查",
     };
     let mut out = format!("失败原因：{name}；下一步：{hint}");
+    if let Some(items) = unmet_items(f) {
+        out.push_str("；未达成：");
+        out.push_str(&items);
+    }
     let used = f.get(gen::AIRY_RS_K_BUDGET_USED).and_then(|v| v.as_u64());
     let total = f.get(gen::AIRY_RS_K_BUDGET_TOTAL).and_then(|v| v.as_u64());
     if let (Some(u), Some(t)) = (used, total) {

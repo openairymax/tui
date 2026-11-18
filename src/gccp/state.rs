@@ -65,6 +65,8 @@ pub enum TaskState {
     Paused,
     /// 失败：非预算类中断，需用户裁决
     Failed,
+    /// 未验证（C-17）：判据无法取证，内容可交付但不得显示已完成
+    Unverified,
 }
 
 impl TaskState {
@@ -74,12 +76,13 @@ impl TaskState {
             TaskState::Completed => "已完成",
             TaskState::Paused => "已暂停",
             TaskState::Failed => "已失败",
+            TaskState::Unverified => "未验证",
         }
     }
 
     /// 阻断态：必须由用户三选后才能推进，禁止静默停留执行中。
     pub fn is_blocked(self) -> bool {
-        matches!(self, TaskState::Paused | TaskState::Failed)
+        matches!(self, TaskState::Paused | TaskState::Failed | TaskState::Unverified)
     }
 
     /// 三选提示：界面徽章与系统消息共用同一文案，避免两处漂移。

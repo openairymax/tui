@@ -56,6 +56,28 @@ impl App {
         self.set_task_state(to);
     }
 
+    /// C-17：判据复核结果上屏（唯一呈现出口）。通过时给条数，未通过时给
+    /// 逐项 type/expect/实际值；无 verification 字段时静默（旧引擎/无判据）。
+    pub(super) fn show_verify(&mut self, r: &RunResponse) {
+        let v = match r.verification.as_ref() {
+            Some(v) => v,
+            None => return,
+        };
+        let n = v
+            .get("items")
+            .and_then(|i| i.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        if v.get("ok").and_then(|x| x.as_bool()) == Some(true) {
+            self.add_message(MessageRole::System, format!("完成判据复核通过（{n} 项）"));
+        } else {
+            self.add_message(
+                MessageRole::System,
+                format!("完成判据未通过：{}", verify_brief(Some(v))),
+            );
+        }
+    }
+
     /// 消费协议终态（C-14-07）：`paused` 进入可续跑暂停并保存令牌；
     /// 其余终态把旧暂停复位为执行中。返回 true 表示已按暂停路径处理，
     /// 调用方不得再把引擎的预算提示当普通回复落盘。
@@ -63,6 +85,23 @@ impl App {
     /// 事实源只认 `run_end.status`（D-13 落地后为 `task_state` 事件），
     /// 正文标记不参与本状态迁移。
     pub(super) fn observe_run_end(&mut self, r: &RunResponse) -> bool {
+        // C-17：判据无法取证 → 未验证态（内容可交付，但明确不是已完成）。
+        if r.status.as_deref() == Some("unverified") {
+            self.resume_token = None;
+            self.set_task_state(TaskState::Unverified);
+            self.add_message(
+                MessageRole::System,
+                format!(
+                    "任务未验证：{}输入「继续」补充判据后复跑，或输入「放弃」结束任务。",
+                    verify_brief(r.verification.as_ref())
+                ),
+            );
+            let body = gccp::strip_task_done(&r.response);
+            if !body.trim().is_empty() {
+                self.add_message(MessageRole::Agent, body);
+            }
+            return true;
+        }
         if r.status.as_deref() != Some("paused") {
             if self.task_state == TaskState::Paused {
                 self.set_task_state(TaskState::Executing);
@@ -578,6 +617,32 @@ impl App {
         self.start_gccp(input);
     }
 
+    /// C-17：needs_criteria 门禁呈现——任务模式缺可执行判据时，服务端拒绝
+    /// 启动（零引擎/零工具调用）。此处如实给出所需判据形态与示例，并退回
+    /// 对话，由用户补充后重新提交。
+    pub(super) fn show_needs_crit(&mut self, nc: &serde_json::Value) {
+        let msg = nc
+            .get("message")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+            .unwrap_or("任务模式需要至少一条可执行的完成判据");
+        let mut text = format!("{msg}。");
+        let example = nc
+            .get("example")
+            .and_then(|e| e.get("criteria"))
+            .and_then(|c| c.as_array());
+        if let Some(items) = example {
+            let shown: Vec<String> = items.iter().take(2).map(|v| v.to_string()).collect();
+            if !shown.is_empty() {
+                text.push_str(&format!("判据示例：{}。", shown.join("、")));
+            }
+        }
+        text.push_str("请说明期望的文件、命令或服务状态后重新提交。");
+        log::info!("apply_chat_result: needs_criteria 门禁，退回对话补充判据");
+        self.set_flow_phase(FlowPhase::Chat);
+        self.add_message(MessageRole::System, text);
+    }
+
     /// 普通对话轮次：发送增强 prompt，并按 LLM 判定的模式切换任务流。
     ///
     /// 普通对话（未连接时先检查；已连接走流式 SSE 增量渲染，Claude 风格）。
@@ -709,6 +774,13 @@ impl App {
                     return;
                 }
 
+                // C-17：needs_criteria 门禁（显式 task 但无可执行判据，零引擎/
+                // 零工具调用）→ 呈现判据要求并退回对话，不得无证据执行。
+                if let Some(nc) = response.needs_criteria.clone() {
+                    self.show_needs_crit(&nc);
+                    return;
+                }
+
                 self.acc_tokens(&response);
                 if let Some(c) = response.cost_usd {
                     self.cost += c;
@@ -802,9 +874,8 @@ impl App {
                     self.mem_push_tagged("assistant", &cleaned, "chat");
                 }
 
-                // 执行阶段 LLM 自报 [TASK:DONE] → 自动沉淀技能
-                let llm_done = gccp::has_task_done_marker(&response.response);
-
+                // C-17：判据复核结果上屏（通过给条数，未通过给逐项差异）。
+                self.show_verify(&response);
                 // C-15：阶段切换以服务端 run_start.mode 为唯一事实源；正文
                 // [MODE:*] 标记降级为提示（D-13），只记日志不驱动阶段。
                 if mode != ModeMarker::Chat {
@@ -840,7 +911,17 @@ impl App {
                     }
                 }
 
-                if llm_done && self.flow_phase == FlowPhase::Executing {
+                // C-17：完成只认证据——判据复核通过或服务端 task_state=completed；
+                // 正文 [TASK:DONE] 与「本轮 rc=0」都不再单独构成完成。
+                let verified = response
+                    .verification
+                    .as_ref()
+                    .and_then(|v| v.get("ok"))
+                    .and_then(|x| x.as_bool())
+                    == Some(true);
+                if self.flow_phase == FlowPhase::Executing
+                    && (verified || self.task_state == TaskState::Completed)
+                {
                     self.complete_task();
                 }
             }
@@ -889,9 +970,42 @@ fn paused_token(value: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// C-17：未验证终态的判据摘要（最多 3 条，超出的以「等 N 项」收口）。
+/// 判据证据来自 tool_d verifier，字段 type/expect/actual 由协议固定。
+fn verify_brief(v: Option<&serde_json::Value>) -> String {
+    let items = v
+        .and_then(|v| v.get("items"))
+        .and_then(|i| i.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    let mut lines: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for it in items {
+        if it.get("pass").and_then(|p| p.as_bool()) != Some(false) {
+            continue;
+        }
+        total += 1;
+        if lines.len() >= 3 {
+            continue;
+        }
+        let ty = it.get("type").and_then(|x| x.as_str()).unwrap_or("?");
+        let expect = it.get("expect").and_then(|x| x.as_str()).unwrap_or("");
+        let actual = it.get("actual").and_then(|x| x.as_str()).unwrap_or("");
+        lines.push(format!("{ty} {expect}（实际 {actual}）"));
+    }
+    if lines.is_empty() {
+        return "未提供可复核的完成判据。".to_string();
+    }
+    let mut out = lines.join("；");
+    if total > lines.len() {
+        out.push_str(&format!("等 {} 项", total));
+    }
+    format!("未达成判据：{out}。")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::paused_token;
+    use super::{paused_token, verify_brief};
     use serde_json::json;
 
     #[test]
@@ -913,5 +1027,27 @@ mod tests {
         );
         assert_eq!(paused_token(&json!({"turns": [{"state": "paused"}]})), None);
         assert_eq!(paused_token(&json!({})), None);
+    }
+
+    #[test]
+    fn verify_brief_lists_unmet_items() {
+        let v = json!({"ok": false, "items": [
+            {"type": "file", "expect": "out/r.txt contains done", "actual": "absent", "pass": false},
+            {"type": "cmd", "expect": "test -f out/r.txt", "actual": "exit=1", "pass": false},
+            {"type": "service", "expect": "tcp:8080", "actual": "open", "pass": true},
+        ]});
+        let s = verify_brief(Some(&v));
+        assert!(s.contains("file out/r.txt contains done（实际 absent）"));
+        assert!(s.contains("cmd test -f out/r.txt（实际 exit=1）"));
+        assert!(!s.contains("service"));
+    }
+
+    #[test]
+    fn verify_brief_without_evidence_is_explicit() {
+        assert_eq!(verify_brief(None), "未提供可复核的完成判据。");
+        assert_eq!(
+            verify_brief(Some(&json!({"ok": true, "items": []}))),
+            "未提供可复核的完成判据。"
+        );
     }
 }

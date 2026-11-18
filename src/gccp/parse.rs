@@ -110,12 +110,10 @@ pub fn is_task_done_input(input: &str) -> bool {
     )
 }
 
-/// 检查 LLM 输出中是否含 [TASK:DONE] 标记（任务成功信号）
-pub fn has_task_done_marker(resp: &str) -> bool {
-    resp.contains("[TASK:DONE]")
-}
-
-/// 剥离 [TASK:DONE] 标记及其所在行（展示用）
+/// 剥离 [TASK:DONE] 标记及其所在行（展示用）。
+///
+/// C-17 起模型不再被要求输出该标记，完成判定改由服务端判据复核承担；
+/// 保留剥离逻辑只为兼容旧会话回放中残留的标记，避免其污染正文。
 pub fn strip_task_done(resp: &str) -> String {
     resp.lines()
         .filter(|l| !l.trim().contains("[TASK:DONE]"))
