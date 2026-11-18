@@ -601,6 +601,11 @@ impl App {
                     self.apply_distill_result(res);
                 }
             }
+            PendingKind::TurnState => {
+                if let PendingOutcome::Turns(res) = outcome {
+                    self.apply_turn_state(res);
+                }
+            }
             PendingKind::CheckConnect {
                 kind,
                 prompt,

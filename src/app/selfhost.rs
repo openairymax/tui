@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use crate::engine::selfhost::{snapshot, unavailable, Snapshot};
+use crate::engine::selfhost::{snapshot, unavailable};
 use crate::engine::sched::Lane;
 
 use super::*;

@@ -55,6 +55,8 @@ pub(super) enum PendingKind {
     GradConfirm { confirmed: bool },
     /// 任务完成经验蒸馏（原 complete_task 网络部分）
     Distill,
+    /// D-12：向 agent.turns 取回重启后仍暂停的回合令牌
+    TurnState,
     /// 未连接时的连接检查：通过后继续执行 kind/prompt 的真实请求
     CheckConnect {
         kind: Box<PendingKind>,
@@ -93,6 +95,8 @@ pub(super) enum PendingOutcome {
     Run(Result<RunResponse>),
     /// 连接检查结果（成功与否）
     Connect(bool),
+    /// D-12：agent.turns 查询结果（暂停回合列表）
+    Turns(Result<serde_json::Value>),
 }
 
 /// GCCP 两段式交互第一段挂起状态（P-A）：think.process 返回

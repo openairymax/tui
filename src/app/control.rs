@@ -176,6 +176,9 @@ impl App {
             PendingKind::CheckConnect { .. } => {
                 self.add_message(MessageRole::System, "已中止连接等待。".to_string());
             }
+            PendingKind::TurnState => {
+                self.add_message(MessageRole::System, "已中止断点查询。".to_string());
+            }
         }
         self.add_log("INFO", "任务已人工中止（Ctrl+X）".to_string());
     }
