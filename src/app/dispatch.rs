@@ -65,7 +65,7 @@ impl App {
         } else {
             Some(self.model.clone())
         };
-        // 客户端预分配会话 ID：Ctrl+X 中止时凭此调用 gateway agent.cancel
+        // 客户端预分配会话 ID：Ctrl+X 中止时凭此调用 gateway task.cancel
         let session_id = self.new_session_id();
         let sid_for_task = session_id.clone();
         let prompt_len = prompt.len();

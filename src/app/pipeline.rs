@@ -76,7 +76,7 @@ pub(super) struct PendingTurn {
     pub(super) rx: tokio::sync::oneshot::Receiver<PendingOutcome>,
     pub(super) kind: PendingKind,
     pub(super) task: Option<tokio::task::JoinHandle<()>>,
-    /// 客户端预分配会话 ID（Ctrl+X 时调用 gateway agent.cancel 中止运行中请求）
+    /// 客户端预分配会话 ID（Ctrl+X 时调用 gateway task.cancel 中止运行中请求）
     pub(super) session_id: String,
     /// 流式输出接收端（StreamRound）：SSE 增量块（option：非流式请求为 None）
     pub(super) stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
