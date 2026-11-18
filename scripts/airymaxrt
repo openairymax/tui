@@ -54,16 +54,44 @@ RUNTIME_DIR="${AIRY_HOME}/run"
 GATEWAY_PORT="${AIRY_GATEWAY_PORT:-8080}"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
 
-if [ -f "${AIRY_MODEL_CONFIG:-$AIRY_HOME/config/model.yaml}" ]; then
-    MODEL_CONFIG="${AIRY_MODEL_CONFIG:-$AIRY_HOME/config/model.yaml}"
+# A-6：路径唯一来源。机制侧 airy_paths_query() 经 `airy_cli paths --json`
+# 导出十项，脚本不再自拼目录——历史上启动器写 $AIRY_HOME/logs，而 daemon 写
+# data/agentrt/logs，doctor 只看到一半日志。取不到（开发态未构建 CLI）时按
+# 机制同款派生规则兜底，并在 doctor 中显式告警「路径来源不可用」。
+_paths_json() {
+    local _c
+    for _c in "$AIRY_HOME/bin/airy_cli" "$SCRIPT_DIR/airy_cli"; do
+        [ -x "$_c" ] || continue
+        "$_c" paths --json 2>/dev/null && return 0
+    done
+    return 1
+}
+_PJ="$(_paths_json || true)"
+_pget() { printf '%s' "$_PJ" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
+LOG_DIR="$(_pget log)"
+RUNTIME_DIR="$(_pget run)"
+AIRY_CFG_DIR="$(_pget config)"
+LOG_DIR="${LOG_DIR:-$AIRY_HOME/data/agentrt/logs}"
+RUNTIME_DIR="${RUNTIME_DIR:-${AIRY_RUNTIME_DIR:-$AIRY_HOME/run}}"
+AIRY_CFG_DIR="${AIRY_CFG_DIR:-$AIRY_HOME/config}"
+# 旧布局迁移：logs/ 只存启动器日志，daemon 日志本就在 data/agentrt/logs；
+# 新根不存在时整目录搬过去，两处并存则保留旧目录供人工清理（doctor 告警）。
+if [ -d "$AIRY_HOME/logs" ] && [ ! -L "$AIRY_HOME/logs" ] && [ "$AIRY_HOME/logs" != "$LOG_DIR" ] &&
+   [ ! -e "$LOG_DIR" ]; then
+    mkdir -p "$(dirname "$LOG_DIR")" 2>/dev/null || true
+    mv "$AIRY_HOME/logs" "$LOG_DIR" 2>/dev/null || true
+fi
+
+if [ -f "${AIRY_MODEL_CONFIG:-$AIRY_CFG_DIR/model.yaml}" ]; then
+    MODEL_CONFIG="${AIRY_MODEL_CONFIG:-$AIRY_CFG_DIR/model.yaml}"
 else
     MODEL_CONFIG="${AIRY_MODEL_CONFIG:-$AIRYRT_HOME/ecosystem/manager/model/model.yaml}"
 fi
 AGENT_FILE="${AIRY_AGENT_FILE:-agents/main.agent.yaml}"
 
-LOG_FILE="$AIRY_HOME/logs/airymaxrt.log"
+LOG_FILE="$LOG_DIR/airymaxrt.log"
 AIRYRT_LOG_LEVEL="${AIRYRT_LOG_LEVEL:-info}"
-mkdir -p "$AIRY_HOME/logs" "$RUNTIME_DIR"
+mkdir -p "$LOG_DIR" "$RUNTIME_DIR"
 touch "$LOG_FILE" 2>/dev/null || true
 
 _log_num() {
@@ -309,7 +337,7 @@ diag_daemons() {
     [ -n "$left" ] || return 0
     log error "关键 daemon 未就绪: ${left}（对话/认知/执行链路必需）"
     for n in $left; do
-        _lines="$(tail -n 3 "$AIRY_HOME/logs/${n}.out" 2>/dev/null | grep -v 'nohup: ignoring input' | tr '\n' ' ' | sed 's/  */ /g')" || true
+        _lines="$(tail -n 3 "$LOG_DIR/${n}.out" 2>/dev/null | grep -v 'nohup: ignoring input' | tr '\n' ' ' | sed 's/  */ /g')" || true
         [ -n "$_lines" ] && log error "  ${n}: ${_lines}"
     done
     log error "处理: 'airymaxrt doctor' 检查组件，或 'airymaxrt stop' 收摊后重试"
@@ -433,6 +461,9 @@ sup_bin_link() {
     local bin="$1" dst
     [ -x "$bin" ] || return 0
     dst="$AIRY_HOME/bin/${bin##*/}"
+    # 已在目标位（解包即用态由 bin/ 自锚定命中）时直接返回：否则 ln -sfn
+    # 会把 dst 指回自身，一次启动即摧毁 bin/ 下的整组组件链接。
+    [ "$bin" = "$dst" ] && return 0
     [ -e "$dst" ] && [ ! -L "$dst" ] && return 0
     [ "$(readlink "$dst" 2>/dev/null)" = "$bin" ] && return 0
     mkdir -p "$AIRY_HOME/bin" 2>/dev/null || true
@@ -1125,6 +1156,15 @@ apply_package() {
     return 0
 }
 
+# A-9 H1：按「命令行以该路径开头」锚定，且正则元字符按字面量转义。
+# 旧写法 pkill -f "$AIRY_HOME/bin/$d" 会把 ssh 会话（命令行内携带同一
+# 路径字符串）一并命中——这是 H1 自匹配的根因。
+pkill_bin() {
+    local _pat
+    _pat="$(printf '%s' "$1" | sed 's/[][\\.*^$]/\\&/g')"
+    pkill -f -- "^${_pat}([[:space:]]|$)" >/dev/null 2>&1
+}
+
 stop_running_daemons() {
     # B13 收摊归一：daemon 群生命周期归 supervisor_d，先走 shutdown；
     # pkill 循环仅兜底清理旧版（B13 前直拉起）残留实例
@@ -1141,7 +1181,7 @@ stop_running_daemons() {
         [ -f "$d" ] || continue
         d="${d##*/}"
         if [ -x "$AIRY_HOME/bin/$d" ]; then
-            pkill -f "$AIRY_HOME/bin/$d" >/dev/null 2>&1 && found=1
+            pkill_bin "$AIRY_HOME/bin/$d" && found=1
             if [ -r /proc/self/exe ] && command -v pgrep >/dev/null 2>&1; then
                 for p in $(pgrep -x "$d" 2>/dev/null); do
                     exe="$(readlink "/proc/$p/exe" 2>/dev/null)"
@@ -1422,7 +1462,9 @@ case "$CMD" in
         echo "                        （monitor --daemon 后台常驻 / --stop 停止）"
         echo "      airymaxrt status      查看运行时状态"
         echo "      airymaxrt stop        收摊 daemon 群（supervisor.shutdown 唯一收摊入口）"
-        echo "      airymaxrt doctor      组件健康检查"
+        echo "      airymaxrt doctor [--online] [--gc-empty-out]  组件健康检查"
+        echo "                        （--online 联网校验 api key；--gc-empty-out 回收"
+        echo "                          白名单内 0 字节且超期（默认 7 天）的 .out）"
         echo "      airymaxrt logs [N]    查看最近日志（默认 airymaxrt.log 末 50 行；"
         echo "                            logs <name> 看指定 daemon，如 logs llm_d）"
         echo "      airymaxrt update      自更新（--check 仅检查 / --channel stable|rc|beta"
@@ -1511,9 +1553,9 @@ case "$CMD" in
                 fi
                 mkdir -p "$RUNTIME_DIR"
                 nohup bash "$SCRIPT_DIR/airymaxrt" monitor \
-                    >"$AIRY_HOME/logs/airymaxrt-monitor.log" 2>&1 &
+                    >"$LOG_DIR/airymaxrt-monitor.log" 2>&1 &
                 echo "$!" >"$_MON_PID_FILE"
-                log info "硬件监控后台运行（PID=$!，日志 $AIRY_HOME/logs/airymaxrt-monitor.log）"
+                log info "硬件监控后台运行（PID=$!，日志 $LOG_DIR/airymaxrt-monitor.log）"
                 exit 0
                 ;;
             --stop)
@@ -1645,14 +1687,136 @@ case "$CMD" in
         exit 0
         ;;
     doctor)
-        miss=0
-        for name in CLI_BIN GATEWAY_BIN LLM_BIN THINK_BIN; do
-            eval "val=\${$name:-}"
-            if [ -n "$val" ] && [ -x "$val" ]; then log info "$name: $val"; else log warn "$name: 缺失"; miss=1; fi
+        # A-6：自检不再恒绿。FAIL 收敛为退出码 1；WARN 只提示——未配密钥、
+        # 端点离线属用户配置选择，不是安装损坏，不能与「装坏了」同码。
+        _dn_f=0
+        _dn_w=0
+        _dn_pass() { log info "[PASS] $*"; }
+        _dn_warn() { log warn "[WARN] $*"; _dn_w=$((_dn_w + 1)); }
+        _dn_fail() { log error "[FAIL] $*"; _dn_f=$((_dn_f + 1)); }
+        _dn_norm() { printf '%s' "${1#v}" | sed -n 's/^\([0-9][0-9.]*\).*/\1/p'; }
+        _dn_online=0
+        _dn_gc=0
+        if [ $# -ge 1 ]; then
+            shift # 丢掉 "doctor" 自身，其余按选项解析
+        fi
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --online) _dn_online=1 ;;
+                --gc-empty-out) _dn_gc=1 ;;
+                *) log warn "doctor: 忽略未知参数 $1" ;;
+            esac
+            shift
         done
-        if [ -f "$AIRY_HOME/config/secrets.env" ]; then log info "secrets.env: 就绪"; else log warn "secrets.env: 缺失（LLM 不可用）"; miss=1; fi
-        if [ -f "$AIRY_HOME/config/install.env" ]; then log info "install.env: 就绪"; else log warn "install.env: 缺失"; fi
-        if command -v curl >/dev/null 2>&1; then log info "curl: 就绪"; else log warn "curl: 缺失"; miss=1; fi
+        # A-5：空 .out 回收。只删「白名单 daemon 名 + size 0 + mtime 超期」，
+        # 超期天数取 AIRY_GC_EMPTY_OUT_DAYS（默认 7）；白名单外一律不碰。
+        _dn_gc_empty_out() {
+            _gc_days="${AIRY_GC_EMPTY_OUT_DAYS:-7}"
+            case "$_gc_days" in ''|*[!0-9]*) _gc_days=7 ;; esac
+            _gc_n=0
+            _gc_scan=0
+            if [ ! -d "$LOG_DIR" ]; then
+                _dn_pass "空日志回收: 日志根不存在（$LOG_DIR，无需回收）"
+                return 0
+            fi
+            for _gc_f in "$LOG_DIR"/*.out; do
+                [ -f "$_gc_f" ] || continue
+                _gc_b="${_gc_f##*/}"
+                case "$_gc_b" in
+                    gateway_d.out|llm_d.out|think_d.out|agent_d.out|tool_d.out|\
+                    notify_d.out|supervisor_d.out|memory_d.out|maths.out) ;;
+                    *) continue ;;
+                esac
+                _gc_scan=$((_gc_scan + 1))
+                [ -s "$_gc_f" ] && continue
+                [ -n "$(find "$_gc_f" -maxdepth 0 -mtime +"$_gc_days" 2>/dev/null)" ] ||
+                    continue
+                rm -f -- "$_gc_f" && _gc_n=$((_gc_n + 1))
+            done
+            _dn_pass "空日志回收: 白名单 ${_gc_scan} 个 .out，删除 ${_gc_n} 个（0 字节且 >${_gc_days} 天）"
+        }
+        _dn_get() { printf '%s' "$2" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
+
+        # 路径来源自证：LOG_DIR/RUNTIME_DIR 必须出自 airy_cli 同一事实源，
+        # 否则 doctor 与 daemon 会各看一半日志（A-6 修复的双根问题）。
+        if [ -n "${_PJ:-}" ]; then
+            _dn_pass "路径来源: airy_cli paths log=$LOG_DIR"
+        else
+            _dn_warn "路径来源: airy_cli 不可用，已按机制同款规则兜底 log=$LOG_DIR"
+        fi
+        if [ -d "$AIRY_HOME/logs" ] && [ "$AIRY_HOME/logs" != "$LOG_DIR" ]; then
+            _dn_warn "旧日志根残留: $AIRY_HOME/logs（新根 $LOG_DIR；确认无进程写入后可删）"
+        fi
+        if [ "$_dn_gc" = "1" ]; then
+            _dn_gc_empty_out
+        fi
+
+        # 发布标识：install.env 与运行期构建自证必须同源，否则装的是 A 版、
+        # 配置记的是 B 版，升级与排障都会指向错误版本。
+        _dn_env="$AIRY_HOME/config/install.env"
+        _dn_iv=""
+        [ -f "$_dn_env" ] && _dn_iv="$(sed -n 's/^AIRY_VERSION=//p' "$_dn_env" 2>/dev/null | head -1)"
+        if [ -z "$_dn_iv" ]; then
+            _dn_warn "发布标识: install.env 无 AIRY_VERSION（开发态运行）"
+        elif [ -n "$CLI_BIN" ] && [ -x "$CLI_BIN" ]; then
+            _dn_br="$("$CLI_BIN" --version 2>/dev/null |
+                awk '{for (i = 1; i <= NF; i++) if ($i ~ /^v?[0-9]+(\.[0-9]+)+$/) {print $i; exit}}' ||
+                true)"
+            if [ "$(_dn_norm "$_dn_br")" = "$(_dn_norm "$_dn_iv")" ] &&
+               [ -n "$(_dn_norm "$_dn_br")" ]; then
+                _dn_pass "发布标识: $_dn_iv（install.env 与 airy_cli 一致）"
+            else
+                _dn_fail "发布标识: install.env=$_dn_iv，airy_cli=${_dn_br:-未知}（请 reinstall）"
+            fi
+        else
+            _dn_fail "发布标识: 无可执行 airy_cli，版本无法自证"
+        fi
+
+        # 安装清单：schema + 条目数。缺失只在安装态（有 install.env）为 FAIL，
+        # 开发态属正常；清单损坏会让卸载无法逐件回收，残留必查。
+        _dn_mf="$AIRY_HOME/install-manifest.json"
+        if [ -f "$_dn_mf" ]; then
+            if head -n 3 "$_dn_mf" | grep -q '"schema": 1' && grep -q '"entries"' "$_dn_mf"; then
+                _dn_n="$(grep -c '"path":' "$_dn_mf" 2>/dev/null || true)"
+                case "${_dn_n:-}" in ''|*[!0-9]*) _dn_n=0 ;; esac
+                if [ "$_dn_n" -gt 0 ]; then
+                    _dn_mr="$(sed -n 's/.*"release": "\([^"]*\)".*/\1/p' "$_dn_mf" | head -1)"
+                    if [ -n "$_dn_mr" ] && [ -n "$_dn_iv" ] &&
+                       [ "$(_dn_norm "$_dn_mr")" != "$(_dn_norm "$_dn_iv")" ]; then
+                        _dn_fail "安装清单陈旧: release=$_dn_mr，install.env=$_dn_iv（升级未刷新清单）"
+                    else
+                        _dn_pass "安装清单: schema=1，${_dn_n} 件"
+                    fi
+                else
+                    _dn_fail "安装清单 entries 为空: $_dn_mf"
+                fi
+            else
+                _dn_fail "安装清单损坏: $_dn_mf（请 reinstall）"
+            fi
+        elif [ -f "$_dn_env" ]; then
+            _dn_fail "安装清单缺失: $_dn_mf（安装态必备，请 reinstall）"
+        else
+            _dn_warn "安装清单: 无（开发态运行）"
+        fi
+
+        for _dn_nm in CLI_BIN GATEWAY_BIN LLM_BIN THINK_BIN AGENT_BIN TOOL_BIN SUPERVISOR_BIN; do
+            eval "_dn_v=\${$_dn_nm:-}"
+            if [ -n "$_dn_v" ] && [ -x "$_dn_v" ]; then
+                _dn_pass "$_dn_nm: $_dn_v"
+            else
+                _dn_fail "$_dn_nm: 缺失或不可执行"
+            fi
+        done
+        if [ ! -f "$AIRY_HOME/config/secrets.env" ]; then
+            _dn_warn "secrets.env: 缺失——API 模式请在 $AIRY_CFG_DIR/secrets.env 写 <KEY>=<值>，或把模型行改为 mode: local"
+        else
+            _dn_pass "secrets.env: 就绪"
+        fi
+        if command -v curl >/dev/null 2>&1; then
+            _dn_pass "curl: 就绪"
+        else
+            _dn_warn "curl: 缺失（安装/更新与联网探测不可用）"
+        fi
         _BL_D="$(sed -n 's/^AIRY_BIN_LINK=//p' "$AIRY_HOME/config/install.env" 2>/dev/null | head -1)"
         _BL_D="${_BL_D:-$HOME/.local/bin/airymaxrt}"
         _BD_D="${_BL_D%/airymaxrt}"
@@ -1667,9 +1831,9 @@ case "$CMD" in
             if [ "$_seg" = "$_P_SEG" ]; then _P_SEG=""; else _P_SEG="${_P_SEG#*:}"; fi
         done
         if [ "$_PATH_FOUND" = "1" ]; then
-            log info "PATH: ${_BD_D} 在 PATH 中"
+            _dn_pass "PATH: ${_BD_D} 在 PATH 中"
         else
-            log warn "PATH: ${_BD_D} 不在 PATH 中——输入 airymaxrt 会报 command not found"
+            _dn_warn "PATH: ${_BD_D} 不在 PATH 中——输入 airymaxrt 会报 command not found"
             _RC_D="$HOME/.bashrc"
             case "$(basename "${SHELL:-/bin/sh}")" in
                 zsh) _RC_D="$HOME/.zshrc" ;;
@@ -1677,7 +1841,6 @@ case "$CMD" in
                 sh|dash|ash) _RC_D="$HOME/.profile" ;;
             esac
             log warn "  永久生效: echo 'export PATH=\"${_BD_D}:\$PATH\"' >> \"${_RC_D}\" && source \"${_RC_D}\""
-            miss=1
         fi
         _LD_MISS=""
         if command -v ldd >/dev/null 2>&1; then
@@ -1687,36 +1850,229 @@ case "$CMD" in
                 if [ -n "$_nf" ]; then
                     _LD_MISS="$_LD_MISS
   $(basename "$_b"): $(echo "$_nf" | sed 's/.*=> not found/缺/' | tr '\n' '; ')"
-                    miss=1
                 fi
             done
             if [ -n "$_LD_MISS" ]; then
-                log warn "运行库缺失（daemon 将无法启动）:$_LD_MISS"
+                _dn_fail "运行库缺失（daemon 无法启动）:$_LD_MISS"
                 log warn "  修复: airymaxrt reinstall（干净重装，保留 config/data）"
             else
-                log info "运行库: 全部可解析"
+                _dn_pass "运行库: 全部可解析"
             fi
         else
-            log info "运行库: 平台无 ldd，跳过动态库解析检查"
+            _dn_warn "运行库: 平台无 ldd，跳过动态库解析检查"
         fi
-        if [ "$miss" = "0" ]; then log info "doctor: 全部就绪"; else log warn "doctor: 存在缺失项"; fi
+
+        # 运行目录与 daemon 控制口：目录不可写则 daemon 起不来；控制口全无
+        # 说明未拉起（WARN），部分在线说明有成员掉队（WARN）。
+        if mkdir -p "$RUNTIME_DIR" 2>/dev/null && [ -w "$RUNTIME_DIR" ]; then
+            _dn_pass "运行目录: $RUNTIME_DIR 可写"
+        else
+            _dn_fail "运行目录不可写: $RUNTIME_DIR"
+        fi
+        _dn_up=0
+        for _dn_s in supervisor llm think agent tool; do
+            _sock_alive "$RUNTIME_DIR/$_dn_s.sock" && _dn_up=$((_dn_up + 1))
+        done
+        case "$_dn_up" in
+            5) _dn_pass "daemon 群: 5/5 控制口在线" ;;
+            0) _dn_warn "daemon 群: 未运行（airymaxrt 拉起后复查）" ;;
+            *) _dn_warn "daemon 群: ${_dn_up}/5 控制口在线（部分成员未就绪）" ;;
+        esac
+
+        # 日志根可写 + 审计无界增长。*_d.out 是 nohup 兜底捕获，大小只反映
+        # 是否崩溃过，不作 PASS/FAIL 判据——健康判据在结构化日志与 socket。
+        if mkdir -p "$LOG_DIR" 2>/dev/null && [ -w "$LOG_DIR" ]; then
+            _dn_pass "日志目录: $LOG_DIR 可写"
+        else
+            _dn_fail "日志目录不可写: $LOG_DIR（daemon 审计与排障将失明）"
+        fi
+        _dn_amax="${AIRY_AUDIT_MAX_BYTES:-67108864}"
+        case "$_dn_amax" in ''|*[!0-9]*) _dn_amax=67108864 ;; esac
+        for _dn_af in "$LOG_DIR/daemon_audit.log" "$LOG_DIR/audit.log"; do
+            [ -f "$_dn_af" ] || continue
+            _dn_asz="$(wc -c < "$_dn_af" 2>/dev/null | tr -d ' ')"
+            case "${_dn_asz:-}" in ''|*[!0-9]*) _dn_asz=0 ;; esac
+            if [ "$_dn_asz" -gt "$_dn_amax" ]; then
+                _dn_fail "审计日志超限: $_dn_af ${_dn_asz}B > ${_dn_amax}B（无轮转，磁盘会被写满）"
+            else
+                _dn_pass "审计日志: $(basename "$_dn_af") ${_dn_asz}B（上限 ${_dn_amax}B）"
+            fi
+        done
+
+        # 模型配置与 agent 包：缺失即 LLM/角色不可用，属可修复告警。
+        if [ -f "$MODEL_CONFIG" ]; then
+            _dn_pass "模型配置: $MODEL_CONFIG"
+        else
+            _dn_warn "模型配置缺失: $MODEL_CONFIG（或 AIRY_MODEL_CONFIG 指定）"
+        fi
+        if [ -d "$AIRY_HOME/lib/agents" ] || [ -d "$AIRYRT_HOME/ecosystem/agents" ]; then
+            _dn_pass "agent 包: 已就位"
+        else
+            _dn_warn "agent 包: 未找到（$AIRY_HOME/lib/agents）"
+        fi
+
+        # 连接三态（A-7）：local 免 key；api 缺 key 给出两条可执行修法；
+        # 只有 --online 才联网校验——离线自检不能把网络故障算成安装损坏。
+        # 密钥只经 stdin 交给 curl（-K -），不进 argv，ps 不可见。
+        _dn_key() {
+            local _k
+            _k="${!1:-}"
+            if [ -z "$_k" ] && [ -f "$AIRY_CFG_DIR/secrets.env" ]; then
+                _k="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" \
+                    "$AIRY_CFG_DIR/secrets.env" 2>/dev/null | head -1)"
+                _k="${_k%"${_k##*[![:space:]]}"}"
+                _k="${_k#\"}"
+                _k="${_k%\"}"
+            fi
+            printf '%s' "$_k"
+        }
+        _dn_probe() {
+            local _k _c
+            _k="$(_dn_key "$2")"
+            [ -n "$_k" ] || { printf '401'; return 0; }
+            _k="${_k//\\/\\\\}"
+            _k="${_k//\"/\\\"}"
+            _c="$(printf 'header = "Authorization: Bearer %s"\n' "$_k" |
+                curl -sS -K - -o /dev/null -w '%{http_code}' --max-time 5 \
+                    "${1%/}/models" 2>/dev/null || true)"
+            case "$_c" in 2?? | 401 | 403 | 000) ;; *) _c=000 ;; esac
+            printf '%s' "$_c"
+        }
+        _dn_rows=""
+        if [ -f "$MODEL_CONFIG" ] && [ -n "${CLI_BIN:-}" ] && [ -x "$CLI_BIN" ]; then
+            _dn_rows="$("$CLI_BIN" models --json --file "$MODEL_CONFIG" 2>/dev/null || true)"
+            if [ -z "$_dn_rows" ]; then
+                _dn_warn "模型连接表: 无法解析 $MODEL_CONFIG（确认 models: 列表格式）"
+            else
+                while IFS= read -r _dn_row; do
+                    [ -n "$_dn_row" ] || continue
+                    _dn_mn="$(_dn_get name "$_dn_row")"
+                    _dn_mm="$(_dn_get mode "$_dn_row")"
+                    _dn_mu="$(_dn_get base_url "$_dn_row")"
+                    _dn_me="$(_dn_get key_env "$_dn_row")"
+                    _dn_mh="$(printf '%s' "$_dn_row" |
+                        sed -n 's/.*"has_key":\([0-9]*\).*/\1/p')"
+                    if [ "$_dn_mm" = "local" ]; then
+                        _dn_pass "provider ${_dn_mn}: 本地模型（免 key）"
+                    elif [ "$_dn_mh" != "1" ]; then
+                        _dn_warn "provider ${_dn_mn}: 缺 key——在 $AIRY_CFG_DIR/secrets.env 写 ${_dn_me}=<密钥>，或把该行 mode 改为 local"
+                    elif [ "$_dn_online" != "1" ]; then
+                        _dn_warn "provider ${_dn_mn}: 已配置 key（未联网校验；doctor --online 可验）"
+                    else
+                        _dn_code="$(_dn_probe "$_dn_mu" "$_dn_me")"
+                        case "$_dn_code" in
+                            2??) _dn_pass "provider ${_dn_mn}: key 有效（HTTP ${_dn_code}）" ;;
+                            401 | 403)
+                                _dn_fail "provider ${_dn_mn}: key 无效（HTTP ${_dn_code}）——检查 $AIRY_CFG_DIR/secrets.env 的 ${_dn_me}"
+                                ;;
+                            000) _dn_warn "provider ${_dn_mn}: 端点不可达（${_dn_mu}）——检查网络或 base_url" ;;
+                            *) _dn_pass "provider ${_dn_mn}: 端点可达（HTTP ${_dn_code}，未校验鉴权）" ;;
+                        esac
+                    fi
+                done <<EOF
+$_dn_rows
+EOF
+            fi
+        fi
+
+        # B-3：GPU 段与选路降级。探测在机制侧（airy_cli gpu），doctor 只读
+        # 呈现，不尝试修复。选路顺序与 llm_d 一致：显式配置 > 能力匹配 >
+        # 远端 API > CPU 自托管；每次降级必须打印原因，否则用户无法判断
+        # 「为何明明有卡却没用上」。
+        _dn_num() { printf '%s' "$2" | sed -n "s/.*\"$1\":\([0-9]*\).*/\1/p"; }
+        _dn_gver="r3"
+        _dn_gdev=0
+        _dn_gbound=0
+        _dn_gbe=""
+        _dn_grsn=""
+        _dn_gdrv=""
+        _dn_gacc=""
+        _dn_gvram=""
+        _dn_gmem="未知"
+        _dn_gpu=""
+        if [ -n "${CLI_BIN:-}" ] && [ -x "$CLI_BIN" ]; then
+            _dn_gpu="$("$CLI_BIN" gpu --json 2>/dev/null || true)"
+        fi
+        if [ -z "$_dn_gpu" ]; then
+            _dn_warn "GPU: airy_cli gpu 不可用，无法判定加速器（按 CPU 自托管）"
+        else
+            _dn_gver="$(_dn_get verdict "$_dn_gpu")"
+            _dn_gbe="$(_dn_get backend "$_dn_gpu")"
+            _dn_grsn="$(_dn_get reason "$_dn_gpu")"
+            _dn_gdrv="$(_dn_get drivers "$_dn_gpu")"
+            _dn_gacc="$(_dn_get accel "$_dn_gpu")"
+            _dn_gdev="$(_dn_num devices "$_dn_gpu")"
+            _dn_gbound="$(_dn_num drv_bound "$_dn_gpu")"
+            _dn_gvram="$(_dn_num vram_mb "$_dn_gpu")"
+            case "${_dn_gdev:-}" in ''|*[!0-9]*) _dn_gdev=0 ;; esac
+            case "${_dn_gbound:-}" in ''|*[!0-9]*) _dn_gbound=0 ;; esac
+            case "${_dn_gvram:-}" in ''|*[!0-9]*) _dn_gvram=0 ;; esac
+            [ "$_dn_gvram" -eq 0 ] || _dn_gmem="${_dn_gvram}MiB"
+            if [ "$_dn_gver" = "r1" ] || [ "$_dn_gver" = "r2" ]; then
+                if [ -n "$_dn_gbe" ]; then
+                    _dn_pass "GPU: 加速器 ${_dn_gacc:-未知}，驱动 ${_dn_gdrv}，显存 ${_dn_gmem}，后端 ${_dn_gbe}（结论 ${_dn_gver}，L1/L2/L3 已打通）"
+                else
+                    _dn_warn "GPU: 结论 ${_dn_gver} 但无后端（探测器结论不自洽）"
+                fi
+            elif [ "$_dn_gdev" -gt 0 ] && [ "$_dn_gbound" -lt "$_dn_gdev" ]; then
+                _dn_warn "GPU: 检出 ${_dn_gdev} 块加速器（${_dn_gdrv}），仅 ${_dn_gbound} 块驱动已绑定——驱动不可用（${_dn_grsn}）；降级原因：驱动未就绪"
+            elif [ "$_dn_gdev" -gt 0 ]; then
+                _dn_warn "GPU: 加速器在（${_dn_gacc:-未知} ${_dn_gdrv}，显存 ${_dn_gmem}）但无加速后端应答（${_dn_grsn}）；降级原因：后端未就绪"
+            else
+                _dn_pass "GPU: 未检出加速器（${_dn_grsn}）；降级原因：本机无 GPU，按 CPU 自托管"
+            fi
+        fi
+
+        _dn_local=0
+        _dn_remote=0
+        _dn_lname=""
+        _dn_rname=""
+        while IFS= read -r _dn_row; do
+            [ -n "$_dn_row" ] || continue
+            _dn_mm="$(_dn_get mode "$_dn_row")"
+            _dn_mh="$(printf '%s' "$_dn_row" | sed -n 's/.*"has_key":\([0-9]*\).*/\1/p')"
+            if [ "$_dn_mm" = "local" ]; then
+                _dn_local=$((_dn_local + 1))
+                [ -n "$_dn_lname" ] || _dn_lname="$(_dn_get name "$_dn_row")"
+            elif [ "$_dn_mh" = "1" ]; then
+                _dn_remote=$((_dn_remote + 1))
+                [ -n "$_dn_rname" ] || _dn_rname="$(_dn_get name "$_dn_row")"
+            fi
+        done <<EOF
+$_dn_rows
+EOF
+        if [ "$_dn_local" -gt 0 ]; then
+            _dn_pass "选路: 显式配置 → ${_dn_lname}（model.yaml 声明 ${_dn_local} 条 local provider）"
+        elif [ "$_dn_gver" = "r1" ] || [ "$_dn_gver" = "r2" ]; then
+            _dn_pass "选路: 能力匹配 → ${_dn_gbe}（GPU 后端可用，未声明 local provider）"
+        elif [ "$_dn_remote" -gt 0 ]; then
+            _dn_warn "选路: 远端 API → ${_dn_rname}（降级原因：GPU 档不可用：${_dn_grsn:-未探测}）"
+        else
+            _dn_warn "选路: CPU 自托管（降级原因：无 local provider、无可用 GPU 后端、无已配密钥的 api provider）"
+        fi
+
+        if [ "$_dn_f" -gt 0 ]; then
+            log error "doctor: ${_dn_f} 项失败，${_dn_w} 项告警（逐项见上）"
+            exit 1
+        fi
+        log info "doctor: 全部通过（${_dn_w} 项告警）"
         exit 0
         ;;
     logs)
         _arg="${2:-}"
         _n=50
-        _file="$AIRY_HOME/logs/airymaxrt.log"
+        _file="$LOG_DIR/airymaxrt.log"
         case "$_arg" in
             "") ;;
             *[!0-9]*)
-                if [ -f "$AIRY_HOME/logs/$_arg" ]; then
-                    _file="$AIRY_HOME/logs/$_arg"
-                elif [ -f "$AIRY_HOME/logs/${_arg}.out" ]; then
-                    _file="$AIRY_HOME/logs/${_arg}.out"
-                elif [ -f "$AIRY_HOME/logs/${_arg}.log" ]; then
-                    _file="$AIRY_HOME/logs/${_arg}.log"
+                if [ -f "$LOG_DIR/$_arg" ]; then
+                    _file="$LOG_DIR/$_arg"
+                elif [ -f "$LOG_DIR/${_arg}.out" ]; then
+                    _file="$LOG_DIR/${_arg}.out"
+                elif [ -f "$LOG_DIR/${_arg}.log" ]; then
+                    _file="$LOG_DIR/${_arg}.log"
                 else
-                    log error "未找到日志: ${_arg}（可用: $(ls "$AIRY_HOME/logs" 2>/dev/null | tr '\n' ' ')）"
+                    log error "未找到日志: ${_arg}（可用: $(ls "$LOG_DIR" 2>/dev/null | tr '\n' ' ')）"
                     exit 1
                 fi
                 _n="${3:-50}"
@@ -1831,14 +2187,45 @@ clear_front_screen() {
     fi
 }
 
+# A-9 H3：daemon 存活数为唯一口径——启动器不得在守护群仍存活时
+# 以「界面退出」暗示整体退出。计数取 run/ 下非 supervisor 的活 socket。
+daemon_count() {
+    local _s _n=0
+    for _s in "$RUNTIME_DIR"/*.sock; do
+        [ -S "$_s" ] || continue
+        [ "${_s##*/}" = "supervisor.sock" ] && continue
+        _sock_alive "$_s" && _n=$((_n + 1))
+    done
+    printf '%s' "$_n"
+}
+
+# stdin 指向 /dev/null（非交互调用）判定：管道输入不在此列，仍交给 CLI。
+stdin_is_null() {
+    [ -t 0 ] && return 1
+    local _t
+    _t="$(readlink /proc/self/fd/0 2>/dev/null || true)"
+    [ "$_t" = "/dev/null" ] && return 0
+    [ -c /dev/stdin ]
+}
+
 launch_frontend() {
     log debug "TTY 检测: stdin=$([ -t 0 ] && echo tty || echo pipe) stdout=$([ -t 1 ] && echo tty || echo pipe)"
     if [ -d "$AIRY_HOME/tmp" ]; then
         find "$AIRY_HOME/tmp" -mindepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null
         log debug "tmp 清理: 已回收超过 24h 未修改的临时文件/目录"
     fi
+    # A-9 H3：无参数 + stdin=/dev/null 时 CLI 必然读到 EOF 后立即退出，
+    # 旧行为打印「交互界面退出」而 13 个 daemon 仍存活（误导）。此处
+    # 直接跳过前端，以 daemon count 为口径打印运行态。
+    if [ "${#CLI_ARGS[@]}" -eq 0 ] && stdin_is_null; then
+        _FRONTEND_SKIPPED=1
+        boot_line "守护进程群运行中（daemon count=$(daemon_count)）"
+        return 0
+    fi
     export AIRY_GATEWAY_URL="$GATEWAY_URL"
     export AIRY_AGENT_FILE="$AGENT_FILE"
+    # A-9 H4：标记启动来源，CLI 据此绑定父进程死亡联动（PDEATHSIG）。
+    export AIRY_LAUNCHED_BY="airymaxrt"
     if [ "$FRONTEND_TUI" = "1" ] && [ -t 0 ] && [ -t 1 ]; then
         if [ "${#CLI_ARGS[@]}" -eq 0 ]; then
             clear_front_screen
@@ -1891,13 +2278,13 @@ else
         fi
     done
     _LOG_KEEP_DAYS="${AIRYRT_LOG_KEEP_DAYS:-7}"
-    if command -v find >/dev/null 2>&1 && [ -d "$AIRY_HOME/logs" ]; then
+    if command -v find >/dev/null 2>&1 && [ -d "$LOG_DIR" ]; then
         _CUTOFF=$(( $(date +%s) - _LOG_KEEP_DAYS * 86400 ))
         while IFS= read -r _old; do
             [ -n "$_old" ] || continue
             rm -f "$_old"
             log debug "清理过期运行时日志: $_old"
-        done < <(find "$AIRY_HOME/logs" -maxdepth 1 -type f \
+        done < <(find "$LOG_DIR" -maxdepth 1 -type f \
                      \( -name 'agent_*.log' -o -name '*.out' -o -name '*.pid' \) \
                      ! -newermt "@$_CUTOFF" -print 2>/dev/null)
     fi
@@ -2000,13 +2387,13 @@ else
             log error "构建 daemons：cd \"$AIRYRT_HOME/agentrt\" && cmake -B build && cmake --build build -j"
             exit 1
         fi
-        log debug "执行: nohup \"$SUPERVISOR_BIN\" > \"$AIRY_HOME/logs/supervisor_d.out\" 2>&1 &"
-        nohup "$SUPERVISOR_BIN" >"$AIRY_HOME/logs/supervisor_d.out" 2>&1 &
-        log info "supervisor_d 已拉起（PID=$!），日志: $AIRY_HOME/logs/supervisor_d.out"
+        log debug "执行: nohup \"$SUPERVISOR_BIN\" > \"$LOG_DIR/supervisor_d.out\" 2>&1 &"
+        nohup "$SUPERVISOR_BIN" >"$LOG_DIR/supervisor_d.out" 2>&1 &
+        log info "supervisor_d 已拉起（PID=$!），日志: $LOG_DIR/supervisor_d.out"
         _sup_deadline=$((SECONDS + 10))
         until _sock_alive "$SUPERV_SOCK"; do
             if [ "$SECONDS" -ge "$_sup_deadline" ]; then
-                log error "supervisor 控制口未就绪（${SUPERV_SOCK}），查看日志: $AIRY_HOME/logs/supervisor_d.out"
+                log error "supervisor 控制口未就绪（${SUPERV_SOCK}），查看日志: $LOG_DIR/supervisor_d.out"
                 exit 1
             fi
             sleep 0.25
@@ -2053,7 +2440,7 @@ else
         log info "gateway 就绪（${GATEWAY_URL}）"
         boot_line "gateway 就绪（${GATEWAY_URL}）"
     else
-        log warn "gateway 未能就绪（${GATEWAY_URL}），查看日志: $AIRY_HOME/logs/gateway_d.out"
+        log warn "gateway 未能就绪（${GATEWAY_URL}），查看日志: $LOG_DIR/gateway_d.out"
         boot_line "gateway 未就绪（${GATEWAY_URL}），降级模式…"
         if [ -n "$CLI_BIN" ]; then
             log warn "降级：airy_cli 直连 daemon 群（不依赖 gateway）"
@@ -2065,7 +2452,12 @@ else
     fi
 fi
 
+_FRONTEND_SKIPPED=0
 launch_frontend
 rc=$?
-log info "交互界面退出（exit=${rc}）"
+if [ "$_FRONTEND_SKIPPED" = "1" ]; then
+    log info "交互界面已跳过（stdin=/dev/null），daemon count=$(daemon_count)"
+else
+    log info "交互界面退出（exit=${rc}），daemon count=$(daemon_count)"
+fi
 exit $rc
