@@ -95,7 +95,7 @@ impl App {
     /// 人工中止当前后台请求（Ctrl+X）：取消 tokio 任务并清理待办状态。
     ///
     /// 客户端侧取消 tokio 任务并恢复 UI（阶段按请求类型回退，交互不挂死）；
-    /// 服务端通过 gateway agent.cancel 中止运行中的 agent.run（资源释放）。
+    /// 服务端通过 gateway task.cancel 中止运行中的 task.submit（资源释放）。
     pub fn abort_task(&mut self) {
         let mut session_id = String::new();
         if let Some(p) = &mut self.pending {
@@ -122,7 +122,7 @@ impl App {
             tokio::spawn(async move {
                 if let Err(e) = gw.cancel_session(&session_id).await {
                     log::debug!(
-                        "agent.cancel request failed (session={}): {}",
+                        "task.cancel request failed (session={}): {}",
                         session_id,
                         e
                     );

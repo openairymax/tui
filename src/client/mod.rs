@@ -8,7 +8,7 @@
 // 0.1.18 按职责域分文件（文件行数纪律：单文件 ≤800 行）：同一个
 // `impl GatewayClient` 分散在子模块，子模块以 `use super::*` 继承本模块
 // 的类型与私有字段，外部路径仍为 crate::client。分层如下：
-//   - 本模块：连接构造、健康探针、同步 agent.run、取消、通用 rpc_call（传输骨架）
+//   - 本模块：连接构造、健康探针、同步 task.submit、取消、通用 rpc_call（传输骨架）
 //   - approval：tool.pending / tool.approve（尽力而为语义）
 //   - stream：agent.run_stream 事件消费 + SSE 缓冲边界
 //   - hall：hall.* 读侧 RPC + hall.watch 长连接
@@ -77,18 +77,18 @@ impl GatewayClient {
         serde_json::from_str(&body).context("Failed to parse health response")
     }
 
-    /// 发送对话/任务请求到 gateway（agent.run）。
+    /// 发送对话/任务请求到 gateway（task.submit，与 CLI 同一提交面）。
     ///
     /// `model` 为 None 或空串时省略 model 字段：gateway 回落到
     /// env AIRY_AGENT_MODEL → 用户覆盖 $AIRY_CONFIG_DIR/model.yaml →
     /// 内置默认；最终 llm_d 无模型时再回落其 global.default_model。
     ///
     /// `session_id` 为客户端预分配的会话 ID（`sess_` 前缀，用于 Ctrl+X
-    /// 调用 agent.cancel 中止运行中请求）；None 时由网关生成。
+    /// 调用 task.cancel 中止运行中请求）；None 时由网关生成。
     ///
     /// `agent` 为可选的 agent 编排 spec（JSON 对象，如 `{"role":"coding"}`）。
-    /// 携带时 gateway 走 agent_d 编排分支（spawn+invoke），否则维持纯 LLM
-    /// 工具循环——任务执行场景必须携带，否则编排分支永不触发。
+    /// task.submit 由服务端统一裁决编排与执行，spec 仅作提示透传；模式、
+    /// 计划与终态以返回的 task_id/plan_id/status 为准。
     ///
     /// `history` 为可选的完整对话历史（OpenAI messages 数组，user/assistant
     /// 交替，含当前输入作为末条 user 消息）。携带时 gateway 以整个数组作为
@@ -110,12 +110,14 @@ impl GatewayClient {
         history: Option<serde_json::Value>,
         gccp_answers: Option<&str>,
     ) -> Result<RunResponse> {
-        // gateway 采用 JSON-RPC（POST /），method=agent.run，params 透传 prompt/agent_file
+        // gateway 采用 JSON-RPC（POST /），method=task.submit：与 CLI 同一
+        // 提交面，任务身份与终态由服务端统一产生
         let url = format!("{}/", self.base_url);
         let mut params = serde_json::json!({
+            "goal": prompt,
             "prompt": prompt,
             "agent_file": agent_file,
-            "interactive": true,
+            "client": "tui",
         });
         if let Some(m) = model {
             if !m.is_empty() {
@@ -128,7 +130,7 @@ impl GatewayClient {
             }
         }
         if let Some(a) = agent {
-            // gateway 判定 params.agent（JSON 对象）存在才进入编排分支
+            // 编排 spec 仅作提示：执行分支由 task.submit 的服务端模式裁决决定
             params["agent"] = a;
         }
         if let Some(h) = history {
@@ -144,7 +146,7 @@ impl GatewayClient {
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "agent.run",
+            "method": "task.submit",
             "params": params,
         });
 
@@ -162,7 +164,7 @@ impl GatewayClient {
 
         if !status.is_success() {
             error!(
-                "← agent/run FAILED: HTTP {} ({}ms) → {}",
+                "← task/submit FAILED: HTTP {} ({}ms) → {}",
                 status.as_u16(),
                 elapsed.as_millis(),
                 body
@@ -241,10 +243,29 @@ impl GatewayClient {
         let rounds_used = result.get("rounds_used").and_then(|v| v.as_i64());
         let rounds_limit = result.get("rounds_limit").and_then(|v| v.as_i64());
 
+        // C-15/C-17：任务身份与门禁对象。同步面与流式面同源，界面只认
+        // 协议字段；needs_intent/needs_criteria 表示零引擎、零工具调用，
+        // 与 CLI 呈现同一张卡片。
+        let text_of = |k: &str| {
+            result
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        let task_id = text_of("task_id");
+        let plan_id = text_of("plan_id");
+        let mode = text_of("mode");
+        let mode_reason = text_of("mode_reason");
+        let plan_unavailable = text_of("plan_unavailable");
+        let needs_intent = result.get("needs_intent").cloned();
+        let needs_criteria = result.get("needs_criteria").cloned();
+        let verification = result.get("verification").cloned();
+
         info!(
-            "← agent/run OK ({}ms, {} tokens)",
+            "← task/submit OK ({}ms, {} tokens, task={})",
             elapsed.as_millis(),
-            tokens_used.unwrap_or(0)
+            tokens_used.unwrap_or(0),
+            task_id.as_deref().unwrap_or("-")
         );
         Ok(RunResponse {
             session_id,
@@ -260,11 +281,23 @@ impl GatewayClient {
             rounds_used,
             rounds_limit,
             usage,
+            task_id,
+            plan_id,
+            mode,
+            mode_reason,
+            needs_intent,
+            needs_criteria,
+            plan_unavailable,
+            verification,
             ..Default::default()
         })
     }
 
-    /// 中止运行中的 agent.run 请求（Ctrl+X 服务端配合）。
+    /// 中止运行中的 task.submit 请求（Ctrl+X 服务端配合）。
+    ///
+    /// 取消与提交同属一条会话时间线：agent.cancel 与 task.submit 共享
+    /// agent_d 的按会话注册表；task.* 生命周期的 task.cancel 在 L-9
+    /// 唯一任务协议收口时统一。
     ///
     /// gateway 侧运行中请求注册表置位 cancelled，工具循环轮次间检查后中断，
     /// 原请求返回 -32800 "Request cancelled by user"。
