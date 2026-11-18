@@ -45,6 +45,7 @@ mod plugins;
 mod poll;
 mod selfhost;
 mod session;
+mod session_store;
 mod task;
 mod task_store;
 mod text;
@@ -385,6 +386,8 @@ pub struct App {
     replay_total: usize,
     /// 上次回放上屏时刻（毫秒，由主循环注入，模块内不读时钟）。
     replay_at_ms: u64,
+    /// 历史还原已执行（D-14）：mem_d 水合就绪后一次性按 conv 回填会话。
+    history_restored: bool,
 }
 
 impl App {
@@ -532,6 +535,7 @@ impl App {
             hall_error: None,
             session_tabs: vec![SessionTab {
                 title: String::new(),
+                conv: String::new(),
                 messages: VecDeque::new(),
                 input: String::new(),
                 cursor: 0,
@@ -555,6 +559,7 @@ impl App {
             replay: VecDeque::new(),
             replay_total: 0,
             replay_at_ms: 0,
+            history_restored: false,
         }
     }
 

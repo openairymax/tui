@@ -4,61 +4,9 @@
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
 // 会话与多标签：项目上下文加载、历史会话恢复、向导接入、tab 槽位存取。
+// 布局落盘与经 mem_d 的历史还原在 session_store（D-14）。
 
 use super::*;
-
-/// 会话落盘文件：`$AIRY_HOME/data/agentrt/tui/sessions.json`。
-///
-/// 落盘口径与 tab 槽位一致（title + 对话消息），只存有内容的会话；
-/// 变更即存（新建/切换/关闭/重命名/退出），不依赖单一退出路径——
-/// F8 交还 CLI、Ctrl+C、进程崩溃三种出口都能保住已发生的会话。
-fn sessions_path() -> std::path::PathBuf {
-    crate::paths::airy_home_path(&["data", "agentrt", "tui", "sessions.json"])
-}
-
-/// 落盘上限：与 Alt+1..9 切换上限一致，超出丢最旧的非当前会话。
-const TABS_MAX: usize = 9;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SessionsFile {
-    /// 当前会话在 tabs 数组（已过滤空会话）中的下标，恢复时以其为活动 tab
-    current: usize,
-    tabs: Vec<TabDto>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct TabDto {
-    title: String,
-    messages: Vec<MsgDto>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct MsgDto {
-    role: String,
-    content: String,
-    timestamp: String,
-}
-
-fn role_to_str(r: MessageRole) -> &'static str {
-    match r {
-        MessageRole::User => "user",
-        MessageRole::Agent => "agent",
-        MessageRole::System => "system",
-        MessageRole::ToolCall => "tool_call",
-        MessageRole::ToolResult => "tool_result",
-    }
-}
-
-fn role_from_str(s: &str) -> Option<MessageRole> {
-    match s {
-        "user" => Some(MessageRole::User),
-        "agent" => Some(MessageRole::Agent),
-        "system" => Some(MessageRole::System),
-        "tool_call" => Some(MessageRole::ToolCall),
-        "tool_result" => Some(MessageRole::ToolResult),
-        _ => None,
-    }
-}
 
 impl App {
     /// 加载项目上下文文件（AGENTS.md / CLAUDE.md 等价物）。
@@ -264,6 +212,7 @@ impl App {
         }
         let tab = SessionTab {
             title: String::new(),
+            conv: super::session_store::new_conv(),
             messages: VecDeque::new(),
             input: String::new(),
             cursor: 0,
@@ -341,119 +290,6 @@ impl App {
         )
     }
 
-    /// 会话落盘：把全部 tab（当前会话取主字段实时内容）写入 sessions.json。
-    ///
-    /// 当前 tab 的槽位快照在切换时才回写，落盘时若直接用快照会把进行中的
-    /// 对话存成上一帧状态，故当前槽一律以主字段为准。空会话不落盘——
-    /// 重启后不该看到一排没有内容的标签。
-    pub fn persist_tabs(&mut self) {
-        let cur = self.current_tab_index();
-        // 当前槽的实时消息在主字段（切换时才回写快照），落盘前先以主字段
-        // 刷新当前槽——否则进行中的会话在文件里永远是上一帧。标题不回写：
-        // 显式标题（派生/重命名）本就直写槽位，把 tab_title 的展示回落
-        // （"会话 N"）实体化会堵死 submit_input 的首条消息派生路径。
-        if let Some(t) = self.session_tabs.get_mut(cur) {
-            t.messages = self.messages.clone();
-        }
-        let mut tabs: Vec<TabDto> = Vec::new();
-        let mut current = 0usize;
-        for (i, t) in self.session_tabs.iter().enumerate() {
-            if t.messages.is_empty() {
-                continue;
-            }
-            if i == cur {
-                current = tabs.len();
-            }
-            tabs.push(TabDto {
-                title: t.title.clone(),
-                messages: t
-                    .messages
-                    .iter()
-                    .map(|m| MsgDto {
-                        role: role_to_str(m.role).to_string(),
-                        content: m.content.clone(),
-                        timestamp: m.timestamp.clone(),
-                    })
-                    .collect(),
-            });
-        }
-        // 超上限丢最旧（当前会话除外），current 随之左移
-        while tabs.len() > TABS_MAX {
-            let drop_at = if current == 0 { 1 } else { 0 };
-            tabs.remove(drop_at);
-            if drop_at < current {
-                current -= 1;
-            }
-        }
-        let p = sessions_path();
-        if let Some(dir) = p.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                log::warn!("persist_tabs: mkdir {} failed: {}", dir.display(), e);
-                return;
-            }
-        }
-        let doc = SessionsFile { current, tabs };
-        match serde_json::to_string(&doc) {
-            Ok(s) => {
-                if let Err(e) = std::fs::write(&p, s) {
-                    log::warn!("persist_tabs: write {} failed: {}", p.display(), e);
-                }
-            }
-            Err(e) => log::warn!("persist_tabs: serialize failed: {}", e),
-        }
-    }
-
-    /// 会话恢复：从 sessions.json 还原 tab 列表（含当前会话内容）。
-    ///
-    /// 文件缺失/损坏时保持初始单 tab 并留日志——启动不因历史数据形态失败。
-    /// 消息 id 由 msg_seq 重新单调分配（落盘不存 id，id 只服务本进程虚拟滚动）。
-    pub fn restore_tabs(&mut self) {
-        let p = sessions_path();
-        let Ok(raw) = std::fs::read_to_string(&p) else {
-            return;
-        };
-        let doc: SessionsFile = match serde_json::from_str(&raw) {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("restore_tabs: parse {} failed: {}", p.display(), e);
-                return;
-            }
-        };
-        if doc.tabs.is_empty() {
-            return;
-        }
-        let current = doc.current.min(doc.tabs.len() - 1);
-        self.session_tabs.clear();
-        for t in doc.tabs.into_iter().take(TABS_MAX) {
-            let mut msgs: VecDeque<ChatMessage> = VecDeque::new();
-            for m in t.messages {
-                let Some(role) = role_from_str(&m.role) else {
-                    continue;
-                };
-                self.msg_seq += 1;
-                let original_bytes = m.content.len();
-                msgs.push_back(ChatMessage {
-                    role,
-                    content: m.content,
-                    timestamp: m.timestamp,
-                    id: self.msg_seq,
-                    original_bytes,
-                });
-            }
-            self.session_tabs.push(SessionTab {
-                title: t.title,
-                messages: msgs,
-                input: String::new(),
-                cursor: 0,
-                scroll_offset: 0,
-                pastes: Vec::new(),
-            });
-        }
-        // 退出时的活动会话即恢复后的当前会话：内容搬进主字段（与 load_tab 同口径）
-        self.load_tab(current);
-        log::info!("restore_tabs: {} 个会话", self.session_tabs.len());
-    }
-
     /// /close：关闭当前会话 tab。
     ///
     /// 只剩主会话时清空对话即关闭语义（主会话槽 0 不可删——删光所有槽
@@ -478,7 +314,10 @@ impl App {
                 t.messages.clear();
             }
             self.persist_tabs();
-            self.add_message(MessageRole::System, "当前会话已关闭（/new 新建）。".to_string());
+            self.add_message(
+                MessageRole::System,
+                "当前会话已关闭（/new 新建）。".to_string(),
+            );
             return;
         }
         let title = self.tab_title(cur);
@@ -500,10 +339,7 @@ impl App {
     pub fn rename_tab(&mut self, title: &str) {
         let title = title.trim().to_string();
         if title.is_empty() {
-            self.add_message(
-                MessageRole::System,
-                "用法：/rename <会话标题>".to_string(),
-            );
+            self.add_message(MessageRole::System, "用法：/rename <会话标题>".to_string());
             return;
         }
         let i = self.current_tab_index();
@@ -530,13 +366,7 @@ impl App {
                     t.messages.len()
                 };
                 let mark = if i == cur { "◂" } else { " " };
-                format!(
-                    "{} [{}] {}（{} 条）",
-                    mark,
-                    i + 1,
-                    self.tab_title(i),
-                    live
-                )
+                format!("{} [{}] {}（{} 条）", mark, i + 1, self.tab_title(i), live)
             })
             .collect::<Vec<_>>()
             .join("\n")

@@ -298,8 +298,9 @@ async fn run_tui(
     // Create app state
     let mut app = App::new(&cli.agent_file, gateway);
 
-    // 会话落盘恢复（0.1.20 TUI 缺口②）：tab 结构从 sessions.json 还原，
-    // 上次退出前的全部会话（标题+对话）重启即见；文件缺失/损坏保持单 tab。
+    // 会话布局恢复（0.1.21 D-14）：sessions.json 只存 tab 结构与标题，
+    // 消息正文的唯一权威在 mem_d；历史由主循环在水合就绪后按 conv 回填。
+    // 文件缺失/损坏保持单 tab（对话仍可从 mem_d 还原）。
     app.restore_tabs();
     // D-13-04：任务态从 task_state.json 独立恢复（阻断态才提示三选）。
     app.restore_task_state();
@@ -421,6 +422,10 @@ async fn run_app<B: Backend>(
         app.set_clock(now_ms);
         // 会话恢复回放（§6.1 #2）：100ms 节流逐条上屏，排空后落「已补账」。
         app.pump_replay(now_ms);
+        // 历史还原（D-14）：mem_d 水合就绪后一次性按 conv 回填各 tab。
+        if app.poll_history_restore() {
+            sched.push(Lane::Panel);
+        }
         let beats = sched.advance(now_ms);
 
         // 瞬态提示到期清退（0.1.19 L7 U7，TUI 方案 §6.3 #4）：队列只按
