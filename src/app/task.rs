@@ -589,6 +589,9 @@ impl App {
     /// 共享存储）。召回侧（MemoryHit::turn）透传标注，上下文注入时声明
     /// 归属轮次，为"按轮检索"铺路。
     pub(super) fn mem_push_tagged(&mut self, role: &str, content: &str, base: &str) {
+        // D-14：写入前绑定会话归属，sessions.json 删档后据此从 mem_d 还原
+        let conv = self.ensure_conv();
+        self.memory.set_conversation(&conv);
         if let Err(e) = self
             .memory
             .push(role, content, &format!("{},turn:{}", base, self.turn))

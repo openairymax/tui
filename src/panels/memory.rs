@@ -314,6 +314,7 @@ mod tests {
             timestamp: ts.to_string(),
             tags: tags.to_string(),
             reasoning: None,
+            conv: None,
         }
     }
 

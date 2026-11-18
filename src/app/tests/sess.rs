@@ -3,8 +3,9 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 会话落盘/删除/重命名回归：断言读回 sessions.json 与还原后的 tab 状态，
-// 不断言"面板提示了成功"——落盘类功能最容易出现"提示成功、文件没动"。
+// 会话布局/历史回归（0.1.21 D-14）：sessions.json 只存布局，正文经 mem_d
+// 还原。断言读回文件与还原后的 tab 状态，不断言"面板提示了成功"——落盘类
+// 功能最容易出现"提示成功、文件没动"。
 
 use super::*;
 
@@ -13,42 +14,99 @@ fn app() -> App {
     App::new("agents/main.agent.yaml", gw)
 }
 
-#[test]
-fn sess_persist_restore_roundtrip() {
-    let _home = crate::test_env::Home::new("sess-roundtrip");
+/// 以纯内存记忆后端构造（单测无 tokio 运行时，记忆不触网）。
+fn app_mem() -> App {
     let mut a = app();
-    a.add_message(MessageRole::User, "第一轮".to_string());
-    a.new_session_tab();
-    a.add_message(MessageRole::User, "第二轮".to_string());
-    a.persist_tabs();
+    a.memory = Box::new(crate::memory::GatewayMemory::volatile());
+    a
+}
 
-    let mut b = app();
-    b.restore_tabs();
-    assert_eq!(b.tab_count(), 2, "两个有内容的会话应全部还原");
-    let first: Vec<String> = b
-        .session_tabs
-        .get(0)
-        .map(|t| t.messages.iter().map(|m| m.content.clone()).collect())
-        .unwrap_or_default();
-    assert!(
-        first.iter().any(|c| c == "第一轮"),
-        "槽 0 应含主会话消息"
-    );
-    assert!(
-        b.messages.iter().any(|m| m.content == "第二轮"),
-        "当前会话（槽 1）内容应还原到主字段"
-    );
+fn seed(a: &mut App, conv: &str, turns: &[(&str, &str)]) {
+    a.memory.set_conversation(conv);
+    for (role, text) in turns {
+        a.memory.push(role, text, "chat").expect("push");
+    }
 }
 
 #[test]
-fn sess_empty_tab_not_persisted() {
+fn sess_layout_roundtrip_has_no_messages() {
+    let _home = crate::test_env::Home::new("sess-layout");
+    let mut a = app();
+    a.add_message(MessageRole::User, "第一轮".to_string());
+    a.new_session_tab();
+    a.rename_tab("部署排查");
+    a.persist_tabs();
+
+    let mut b = app();
+    b.restore_tabs();
+    assert_eq!(b.tab_count(), 2, "布局应整体还原");
+    assert_eq!(b.tab_title(1), "部署排查", "标题属于布局");
+    assert!(
+        b.session_tabs.iter().all(|t| t.messages.is_empty()),
+        "sessions.json 不得再存消息正文"
+    );
+    let raw = std::fs::read_to_string(crate::paths::airy_home_path(&[
+        "data",
+        "agentrt",
+        "tui",
+        "sessions.json",
+    ]))
+    .expect("sessions.json");
+    assert!(!raw.contains("第一轮"), "正文只存 mem_d，文件内不得出现");
+}
+
+#[test]
+fn sess_empty_tab_layout_persisted() {
     let _home = crate::test_env::Home::new("sess-empty");
     let mut a = app();
+    a.new_session_tab();
     a.persist_tabs();
     let mut b = app();
     b.restore_tabs();
-    assert_eq!(b.tab_count(), 1, "空会话不落盘，还原后保持初始单 tab");
+    assert_eq!(b.tab_count(), 2, "空会话的布局也应保留（内容在 mem_d）");
     assert!(b.messages.is_empty());
+}
+
+#[test]
+fn sess_history_restored_from_memory_by_conv() {
+    let _home = crate::test_env::Home::new("sess-history");
+    let mut a = app_mem();
+    let conv = a.ensure_conv();
+    seed(&mut a, &conv, &[("user", "第一轮"), ("assistant", "回应")]);
+    a.persist_tabs();
+
+    let mut b = app_mem();
+    b.restore_tabs();
+    assert!(b.messages.is_empty(), "布局恢复后内容需经 mem_d");
+    seed(&mut b, &conv, &[("user", "第一轮"), ("assistant", "回应")]);
+    assert!(b.poll_history_restore(), "水合就绪后应触发历史还原");
+    assert_eq!(b.messages.len(), 2);
+    assert_eq!(b.messages[0].content, "第一轮");
+    assert_eq!(b.messages[1].role, MessageRole::Agent);
+    assert!(!b.poll_history_restore(), "历史还原只执行一次");
+}
+
+#[test]
+fn sess_history_recovered_after_file_deleted() {
+    let _home = crate::test_env::Home::new("sess-deleted");
+    let mut a = app_mem();
+    let conv = crate::app::session_store::new_conv();
+    seed(
+        &mut a,
+        &conv,
+        &[("user", "删档也要在"), ("assistant", "收到")],
+    );
+    // 不落盘即模拟 sessions.json 丢失：布局没了，对话仍在 mem_d
+    let mut b = app_mem();
+    seed(
+        &mut b,
+        &conv,
+        &[("user", "删档也要在"), ("assistant", "收到")],
+    );
+    assert!(b.poll_history_restore());
+    assert_eq!(b.messages.len(), 2, "无布局时采用最近会话组");
+    assert_eq!(b.messages[0].content, "删档也要在");
+    assert_eq!(b.session_tabs[0].conv, conv, "会话标识随之接管");
 }
 
 #[test]

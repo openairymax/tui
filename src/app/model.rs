@@ -96,6 +96,8 @@ pub struct LogEntry {
 /// 时在快照与主字段间搬移，不触碰 GCCP/任务流等执行态（执行中不切换）。
 pub struct SessionTab {
     pub title: String,
+    /// 会话稳定标识（D-14）：落盘只存布局，正文经 mem_d 按此标识还原。
+    pub conv: String,
     pub messages: VecDeque<ChatMessage>,
     pub input: String,
     pub cursor: usize,
