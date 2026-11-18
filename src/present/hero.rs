@@ -115,7 +115,7 @@ pub(super) fn render_hero(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            format!("  {} tok · ${:.4}", app.tokens, app.cost),
+            format!("  {} tok · ${:.4}", app.tok_text(), app.cost),
             Style::default().fg(style::dim()),
         ));
         let (badge, badge_color) = phase_badge(app.flow_phase);

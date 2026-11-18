@@ -118,7 +118,7 @@ impl App {
             model,
             phase,
             self.turn,
-            self.tokens,
+            self.tok_text(),
             self.cost,
             self.elapsed_time(),
             self.memory.len(),

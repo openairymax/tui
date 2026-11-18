@@ -646,9 +646,7 @@ impl App {
                     return;
                 }
 
-                if let Some(t) = response.tokens_used {
-                    self.tokens += t;
-                }
+                self.acc_tokens(&response);
                 if let Some(c) = response.cost_usd {
                     self.cost += c;
                 }
@@ -690,12 +688,11 @@ impl App {
                     let show = total.min(MAX_VISIBLE_TOOL_TRACES);
                     for t in trace.iter().take(show) {
                         let ok = t.ok.unwrap_or(0) != 0;
-                        // B3（V3.4）：仅展示白名单动作短语，原始工具标识符
-                        // 不入用户面（未登记名称由 tool_action 兜底隐藏）
-                        let action = Self::tool_action(&t.tool);
+                        // D-11：以真实 tool_id + 参数摘要上屏（未登记工具
+                        // 由 toolcat 标注后照常显示，不做白名单隐藏）。
                         self.add_message(
                             MessageRole::ToolCall,
-                            format!("{}…{}", action, if ok { "" } else { "（失败）" }),
+                            crate::app::toolcat::event_line(&t.tool, &t.arguments, ok),
                         );
                         // 结果正文入对话历史（0.1.20 TUI 缺口③）：此前成功结果
                         // 整体丢弃、失败只留 120 字符——用户回看对话时工具做了

@@ -109,6 +109,41 @@ fn bind_parent_death() {
 #[cfg(not(target_os = "linux"))]
 fn bind_parent_death() {}
 
+/// D-11（0.1.21）：agent_file 一律以绝对路径下发，或把裸 agent id 交给
+/// gateway 解析。守护进程的 cwd 与客户端不同，相对路径跨进程会静默落到
+/// 另一份文件（甚至不存在）；显式给了路径却解析不到时必须失败——静默
+/// 降级会让调用方以为自己指定了角色，实际跑的是默认角色。
+fn resolve_agent_file(arg: &str) -> String {
+    let p = std::path::Path::new(arg);
+    if let Ok(abs) = p.canonicalize() {
+        return abs.to_string_lossy().to_string();
+    }
+    let home = crate::paths::airy_home();
+    if arg.contains('/') {
+        let alt = home.join(arg);
+        if let Ok(abs) = alt.canonicalize() {
+            return abs.to_string_lossy().to_string();
+        }
+        let code = engine::exit::Code::Usage;
+        error!("agent_file 无法解析：{}（AIRY_HOME={}）", arg, home.display());
+        eprintln!("❌ 找不到 agent 文件：{}", arg);
+        eprintln!("   已尝试：当前目录、{}", alt.display());
+        eprintln!("   请传入存在的绝对路径，或改用 agent id。");
+        eprintln!("❌ {}（退出码 {}）", code.human(), code.code());
+        std::process::exit(code.code());
+    }
+    // 裸 id：优先用 $AIRY_HOME/agents/<id>.json；不存在则交给 gateway
+    // 按 agent id 解析（D-11 允许的第二种形式）。
+    let alt = home.join("agents").join(format!("{arg}.json"));
+    match alt.canonicalize() {
+        Ok(abs) => abs.to_string_lossy().to_string(),
+        Err(_) => {
+            info!("agent_file '{}' 未在本地命中，按 agent id 交由 gateway 解析", arg);
+            arg.to_string()
+        }
+    }
+}
+
 #[tokio::main]
 pub async fn run() {
     bind_parent_death();
@@ -118,7 +153,7 @@ pub async fn run() {
     // 参数解析先于一切门禁：探针必须在 TTY 检查之前裁决——它存在的理由
     // 正是「非 TTY 环境（CI／容器／串口）也要能判定二进制存活」，排在门禁
     // 之后则永远走不到（0.1.20 P2-8）。
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     if cli.probe {
         let url = cli.gateway_url.clone().unwrap_or_else(default_gateway_url);
         std::process::exit(crate::probe::run(&url));
@@ -166,13 +201,9 @@ pub async fn run() {
     // ── Phase 1: Pre-flight checks ──
     let start_time = Instant::now();
 
-    // Check if agent file exists
-    if !std::path::Path::new(&cli.agent_file).exists() {
-        warn!(
-            "Agent file '{}' not found on disk, will pass name to gateway",
-            cli.agent_file
-        );
-    }
+    // Check if agent file exists（D-11：解析为绝对路径，解析不到即失败）
+    cli.agent_file = resolve_agent_file(&cli.agent_file);
+    info!("  agent_file resolved = {}", cli.agent_file);
 
     // ── Phase 2: Gateway client ──
     // 连接探测在 run_tui 内统一完成（health_check 2s 快速失败），

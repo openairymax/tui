@@ -551,6 +551,32 @@ impl App {
         Ok(())
     }
 
+    /// D-11：token 计数的界面唯一出口。usage.total 直接显示，不做换算；
+    /// 有任一来源为估算值时加 `~` 前缀，避免把估算当成精确账。
+    pub fn tok_text(&self) -> String {
+        if self.tokens_est {
+            format!("~{}", self.tokens)
+        } else {
+            self.tokens.to_string()
+        }
+    }
+
+    /// 单轮 token 入账（D-11）：优先 usage.total（provider 同源）；旧引擎
+    /// 无 usage 时回退 tokens_used（use_ticks），估算来源做粘滞标记。
+    pub fn acc_tokens(&mut self, r: &crate::client::RunResponse) {
+        match r.usage.as_ref() {
+            Some(u) => {
+                self.tokens += u.total;
+                self.tokens_est |= u.estimated();
+            }
+            None => {
+                if let Some(t) = r.tokens_used {
+                    self.tokens += t;
+                }
+            }
+        }
+    }
+
     /// Get elapsed time as formatted string.
     pub fn elapsed_time(&self) -> String {
         let elapsed = self.session_start.elapsed();

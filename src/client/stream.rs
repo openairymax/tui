@@ -167,6 +167,8 @@ impl GatewayClient {
         let mut text_acc = String::new();
         let mut err_msg: Option<String> = None;
         let mut tokens: Option<u64> = None;
+        // D-11：结构化 usage 账本（run_end.usage），界面直接显示 total。
+        let mut usage: Option<super::Usage> = None;
         // tool_end 只带 tool_id：以本地映射回填工具名（渲染需要动作短语）
         let mut tool_names: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
@@ -197,8 +199,9 @@ impl GatewayClient {
                         }
                     }
                 }
-                // tool_start / tool_end：工具进度行（克制：只显示动作名与
-                // 成败，不暴露参数与结果内容）
+                // tool_start / tool_end：工具进度行。D-11：可见性以
+                // tool.list 目录驱动，参数摘要随事件上屏，未登记工具回退
+                // 原始 tool_id，不再隐藏。
                 gen::AIRY_RS_TYPE_TOOL_START => {
                     let tool = ev
                         .data_str(gen::AIRY_RS_K_TOOL)
@@ -207,10 +210,16 @@ impl GatewayClient {
                     if let Some(tid) = ev.data_str(gen::AIRY_RS_K_TOOL_ID) {
                         tool_names.insert(tid.to_string(), tool.clone());
                     }
-                    let line = serde_json::json!({
+                    let mut line = serde_json::json!({
                         "__airy_evt": "tool_call",
                         "tool": tool,
                     });
+                    if let Some(a) = ev.data_str(gen::AIRY_RS_K_ARGS) {
+                        if !a.is_empty() {
+                            // 单行化与截断由 toolcat::event_line 统一裁决
+                            line["args"] = serde_json::Value::String(a.to_string());
+                        }
+                    }
                     on_tool(&line.to_string());
                 }
                 gen::AIRY_RS_TYPE_TOOL_END => {
@@ -337,23 +346,35 @@ impl GatewayClient {
                     });
                     on_tool(&line.to_string());
                 }
-                // error：结构化错误帧 → Err（UI 只呈现可读消息）
+                // error：结构化错误帧 → Err。D-10：daemon 已给出失败语义，
+                // 这里只翻成一行"原因 + 下一步"，不再让调用方猜 -31 是什么。
                 gen::AIRY_RS_TYPE_ERROR => {
-                    if let Some(m) = ev.data_str(gen::AIRY_RS_K_MSG) {
+                    let msg = ev.data_str(gen::AIRY_RS_K_MSG).unwrap_or("");
+                    let text = fail_text(ev.data.get(gen::AIRY_RS_K_FAILURE), msg);
+                    if !text.is_empty() {
                         if err_msg.is_none() {
-                            err_msg = Some(m.to_string());
+                            err_msg = Some(text.clone());
                         }
                         let line = serde_json::json!({
                             "__airy_evt": "error",
-                            "message": m,
+                            "message": text,
                         });
                         on_tool(&line.to_string());
                     }
                 }
                 // run_end：流收尾（completed/cancelled/failed）；
-                // use_ticks = 本 run token 消耗
+                // usage 为 provider 同源 token 账本，use_ticks 仅作旧引擎回退
                 gen::AIRY_RS_TYPE_RUN_END => {
-                    tokens = ev.data_i64(gen::AIRY_RS_K_USE_TICKS).map(|t| t as u64);
+                    if let Some(u) = ev.data.get(gen::AIRY_RS_K_USAGE) {
+                        usage = serde_json::from_value::<super::Usage>(u.clone()).ok();
+                    }
+                    // D-11：total 即 llm_d 增量，优先采用；缺失时才回退
+                    // use_ticks（旧引擎），不做任何换算或估算。
+                    tokens = usage
+                        .as_ref()
+                        .map(|u| u.total)
+                        .filter(|t| *t > 0)
+                        .or_else(|| ev.data_i64(gen::AIRY_RS_K_USE_TICKS).map(|t| t as u64));
                     let status = ev.data_str(gen::AIRY_RS_K_STATUS).unwrap_or("completed");
                     debug!("agent.run_stream: run_end (status={})", status);
                     run_status = Some(status.to_string());
@@ -433,6 +454,7 @@ impl GatewayClient {
             mode_reason,
             needs_intent,
             plan_unavailable,
+            usage,
         })
     }
 }
@@ -453,4 +475,50 @@ pub(super) fn sse_buf_extend(buf: &mut Vec<u8>, chunk: &[u8]) {
 /// 定位 SSE 帧结束位置（首个空行 "\n\n"，含末尾分隔符）。
 pub(super) fn sse_frame_end(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|w| w == b"\n\n").map(|p| p + 2)
+}
+
+/// D-10：失败载荷 → 一行用户可读结论。判据（origin/reason/next_action）
+/// 由 daemon 唯一给出，这里只做中文呈现；未知原因原样透出，避免新原因
+/// 上线后被吞掉。
+fn fail_text(fail: Option<&serde_json::Value>, msg: &str) -> String {
+    let Some(f) = fail else {
+        return msg.to_string();
+    };
+    let reason = f
+        .get(gen::AIRY_RS_K_REASON)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let name = match reason {
+        gen::AIRY_RS_REASON_BUDGET => "轮次预算耗尽",
+        gen::AIRY_RS_REASON_TOOL => "工具连续失败已熔断",
+        gen::AIRY_RS_REASON_DENIED => "操作未获审批",
+        gen::AIRY_RS_REASON_EMPTY => "模型返回空结果",
+        gen::AIRY_RS_REASON_PROVIDER => "模型服务不可达",
+        gen::AIRY_RS_REASON_AGENT => "执行失败",
+        "" => return msg.to_string(),
+        other => other,
+    };
+    let hint = match f
+        .get(gen::AIRY_RS_K_NEXT_ACTION)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+    {
+        gen::AIRY_RS_NEXT_RETRY => "可原样重试",
+        gen::AIRY_RS_NEXT_RESUME => "请用 continue 续跑，不要原样重发",
+        _ => "建议人工排查",
+    };
+    let mut out = format!("失败原因：{name}；下一步：{hint}");
+    let used = f.get(gen::AIRY_RS_K_BUDGET_USED).and_then(|v| v.as_u64());
+    let total = f.get(gen::AIRY_RS_K_BUDGET_TOTAL).and_then(|v| v.as_u64());
+    if let (Some(u), Some(t)) = (used, total) {
+        out.push_str(&format!("（预算 {u}/{t}）"));
+    }
+    if let Some(n) = f
+        .get(gen::AIRY_RS_K_NODE)
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.is_empty())
+    {
+        out.push_str(&format!("（影响节点 {n}）"));
+    }
+    out
 }

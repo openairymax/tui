@@ -97,7 +97,7 @@ fn input_status(app: &App, width: u16) -> Option<String> {
             mode,
             used,
             budget::MAX_CHAT_MESSAGES,
-            app.tokens
+            app.tok_text()
         )
     } else if width >= 56 {
         format!("{} · 上下文 {}/{} ", mode, used, budget::MAX_CHAT_MESSAGES)

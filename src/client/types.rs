@@ -75,6 +75,28 @@ pub struct RunResponse {
     /// 表示本轮按 ReAct 工具循环直接执行，界面如实告知降级。
     #[serde(default)]
     pub plan_unavailable: Option<String>,
+    /// D-11：run_end.usage 结构化 token 账本。引擎与 llm_d 同源计数，
+    /// 界面直接显示 total，不再按字符数或 use_ticks 换算。
+    #[serde(default)]
+    pub usage: Option<Usage>,
+}
+
+/// D-11：run_end.usage 的 wire 形态。TUI 只消费 total 与 source —— 界面
+/// 不做拆分换算；prompt/completion 由需要的调用方（SDK/审计）自行读取。
+/// source=estimated 表示引擎未能取得 provider 计数，界面以 `~` 标注。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub source: String,
+}
+
+impl Usage {
+    /// 估算来源：total 不是 provider 原生计数，展示时需与精确值区分。
+    pub fn estimated(&self) -> bool {
+        self.source == agentrt_rs::run_stream::gen::AIRY_RS_USAGE_ESTIMATE
+    }
 }
 
 /// GCCP 目标澄清问题（think.process 第一段回传，见 gccp.h airy_gccp_question_t）
@@ -265,5 +287,24 @@ mod tests {
         assert_eq!(e.file_id, "f1");
         assert_eq!(e.category, "result");
         assert_eq!(e.gseq, 3);
+    }
+
+    /// D-11：run_end.usage 按 wire 形态解析，total 直接采用；estimated
+    /// 来源必须可识别（界面加 `~`），旧 result 无 usage 时保持 None。
+    #[test]
+    fn usage_is_read_verbatim() {
+        let raw = r#"{"prompt":120,"completion":30,"total":150,"source":"provider"}"#;
+        let u: super::Usage = serde_json::from_str(raw).unwrap();
+        assert_eq!(u.total, 150);
+        assert!(!u.estimated());
+
+        let est: super::Usage =
+            serde_json::from_str(r#"{"prompt":0,"completion":0,"total":42,"source":"estimated"}"#)
+                .unwrap();
+        assert!(est.estimated());
+
+        let legacy: super::RunResponse =
+            serde_json::from_str(r#"{"session_id":"s","response":"ok"}"#).unwrap();
+        assert!(legacy.usage.is_none());
     }
 }
