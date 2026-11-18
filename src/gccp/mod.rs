@@ -36,4 +36,4 @@ pub use parse::{
     is_confirm, is_task_done_input, parse_answers, parse_questions, strip_task_done,
 };
 pub use prompt::{build_execute_prompt, build_grad_prompt, build_qn_prompt};
-pub use state::{FlowPhase, GccpState, NodeState, TaskControl, TaskState};
+pub use state::{task_state_of, FlowPhase, GccpState, NodeState, TaskControl, TaskState};

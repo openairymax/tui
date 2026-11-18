@@ -301,6 +301,8 @@ async fn run_tui(
     // 会话落盘恢复（0.1.20 TUI 缺口②）：tab 结构从 sessions.json 还原，
     // 上次退出前的全部会话（标题+对话）重启即见；文件缺失/损坏保持单 tab。
     app.restore_tabs();
+    // D-13-04：任务态从 task_state.json 独立恢复（阻断态才提示三选）。
+    app.restore_task_state();
 
     // ── Phase 3c: 项目上下文文件机制（AGENTS.md / CLAUDE.md 等价物，P1）──
     let project_dir = cli.project.as_ref().map(std::path::PathBuf::from);
