@@ -195,7 +195,16 @@ impl GatewayClient {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let tokens_used = result.get("tokens_used").and_then(|v| v.as_u64());
+        // D-11：result 同样携带 usage；界面 token 计数统一取 usage.total
+        // （与流式 run_end 同一语义），tokens_used 仅作旧引擎回退。
+        let usage = result
+            .get(agentrt_rs::run_stream::gen::AIRY_RS_K_USAGE)
+            .and_then(|v| serde_json::from_value::<Usage>(v.clone()).ok());
+        let tokens_used = usage
+            .as_ref()
+            .map(|u| u.total)
+            .filter(|t| *t > 0)
+            .or_else(|| result.get("tokens_used").and_then(|v| v.as_u64()));
         let cost_usd = result.get("cost_usd").and_then(|v| v.as_f64());
 
         // 双思考轨迹（可选）：gateway 回传 think.process 的
@@ -249,6 +258,7 @@ impl GatewayClient {
             resume_token,
             rounds_used,
             rounds_limit,
+            usage,
             ..Default::default()
         })
     }

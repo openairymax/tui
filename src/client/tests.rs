@@ -769,3 +769,84 @@ async fn task_turn_needs_intent_is_not_an_error() {
     // 门禁帧不进工具通道（不上屏为工具调用）
     assert!(tools.lock().unwrap().is_empty(), "needs_intent 不应产生工具事件");
 }
+
+#[tokio::test]
+async fn replay_run_end_usage_is_authoritative() {
+    // D-11：run_end.usage 是 token 计数的唯一来源——total 即 llm_d 增量，
+    // 优先于 use_ticks，界面不做换算；来源必须原样回传。
+    let body = [
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({}),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_MESSAGE,
+            1,
+            serde_json::json!({ gen::AIRY_RS_K_CONTENT: "完成" }),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_END,
+            2,
+            serde_json::json!({
+                gen::AIRY_RS_K_STATUS: "completed",
+                gen::AIRY_RS_K_USE_TICKS: 42,
+                gen::AIRY_RS_K_USAGE: {
+                    gen::AIRY_RS_K_USAGE_PROMPT: 100,
+                    gen::AIRY_RS_K_USAGE_COMP: 50,
+                    gen::AIRY_RS_K_USAGE_TOTAL: 150,
+                    gen::AIRY_RS_K_USAGE_SRC: gen::AIRY_RS_USAGE_PROVIDER,
+                },
+            }),
+        )),
+    ]
+    .concat();
+    let url = spawn_sse_server(vec![body]);
+    let (result, _text, _tool) = drive_turn(&url).await;
+    let resp = result.expect("携带 usage 的收尾应成功");
+    assert_eq!(resp.tokens_used, Some(150), "usage.total 优先于 use_ticks");
+    let u = resp.usage.expect("usage 应回传");
+    assert_eq!(u.total, 150);
+    assert!(!u.estimated(), "provider 来源不得标为估算");
+}
+
+#[tokio::test]
+async fn replay_failure_payload_becomes_readable_reason() {
+    // D-10：失败四类必须彼此可区分。预算耗尽帧带结构化 failure 时，
+    // 界面看到的是原因与下一步，而不是一个 -31/EOF。
+    let body = [
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_RUN_START,
+            0,
+            serde_json::json!({}),
+        )),
+        frame_bytes(&frame_envelope(
+            gen::AIRY_RS_TYPE_ERROR,
+            1,
+            serde_json::json!({
+                gen::AIRY_RS_K_CODE: -32603,
+                gen::AIRY_RS_K_MSG: "agent.run failed",
+                gen::AIRY_RS_K_FAILURE: {
+                    gen::AIRY_RS_K_ORIGIN: gen::AIRY_RS_ORIGIN_AGENT,
+                    gen::AIRY_RS_K_REASON: gen::AIRY_RS_REASON_BUDGET,
+                    gen::AIRY_RS_K_RETRYABLE: true,
+                    gen::AIRY_RS_K_BUDGET_USED: 8,
+                    gen::AIRY_RS_K_BUDGET_TOTAL: 8,
+                    gen::AIRY_RS_K_NEXT_ACTION: gen::AIRY_RS_NEXT_RESUME,
+                },
+            }),
+        )),
+    ]
+    .concat();
+    let url = spawn_sse_server(vec![body]);
+    let (result, _text, tool) = drive_turn(&url).await;
+    let err = result.expect_err("失败帧必须转 Err");
+    let msg = err.to_string();
+    assert!(msg.contains("轮次预算耗尽"), "原因可读: {msg}");
+    assert!(msg.contains("continue"), "下一步提示续跑: {msg}");
+    assert!(msg.contains("预算 8/8"), "预算明细可见: {msg}");
+    assert!(
+        tool.iter().any(|l| l.contains("失败原因")),
+        "错误事件同样进入工具通道: {tool:?}"
+    );
+}

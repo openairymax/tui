@@ -47,6 +47,7 @@ mod selfhost;
 mod session;
 mod task;
 mod text;
+pub(crate) mod toolcat;
 
 use config::*;
 pub(crate) use config::cfg_actions;
@@ -131,6 +132,8 @@ pub struct App {
     pub turn: u64,
     /// Total tokens used
     pub tokens: u64,
+    /// D-11：token 计数含估算来源（usage.source=estimated），展示加 `~`。
+    pub tokens_est: bool,
     /// Total cost in USD
     pub cost: f64,
     /// Elapsed time since session start
@@ -401,6 +404,8 @@ impl App {
             skills_backend.backend_name(),
             skills_backend.len()
         );
+        // D-11：工具可见性以 daemon 目录为准，后台拉一次（失败不阻塞会话）。
+        toolcat::start(gateway.clone());
         Self {
             agent_file: agent_file.to_string(),
             messages: VecDeque::with_capacity(MAX_CHAT_MESSAGES),
@@ -428,6 +433,7 @@ impl App {
             gateway_version: None,
             turn: 0,
             tokens: 0,
+            tokens_est: false,
             cost: 0.0,
             session_start: Instant::now(),
             exit_guard: ExitGuard::default(),

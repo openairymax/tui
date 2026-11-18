@@ -3,30 +3,19 @@
 
 use super::super::*;
 
-/// SSE 工具事件渲染：tool_call / tool_result JSON → 过程化状态行。
-/// 只展示动作名与成败，不暴露参数与返回内容（2026-08-17）。
-/// 0.1.18 B3（V3.4）：状态行不携带工具原始标识符；未登记工具显示
-/// "未知工具（已隐藏）"。
+/// SSE 工具事件渲染（D-11）：以真实 tool_id + 参数摘要上屏，未登记工具
+/// 照常显示（目录未加载也不隐藏）；成功结果正文仍不外泄。
 #[test]
 fn render_tool_event_parses_sse_json() {
-    let call = r#"{"__airy_evt":"tool_call","tool":"web_search","args":{"query":"hello"}}"#;
+    let call = r#"{"__airy_evt":"tool_call","tool":"web_search","args":"{\"query\":\"hello\"}"}"#;
     let line = App::render_tool_event(call).expect("tool_call renders");
-    assert!(line.contains("搜索网络"), "line={}", line);
-    assert!(
-        !line.contains("web_search"),
-        "标识符不得暴露: line={}",
-        line
-    );
-    assert!(!line.contains("hello"), "参数不得暴露: line={}", line);
+    assert!(line.contains("web_search"), "tool_id 须可见: line={}", line);
+    assert!(line.contains("hello"), "参数摘要须可见: line={}", line);
 
     let result = r#"{"__airy_evt":"tool_result","tool":"web_search","call_id":"c1","ok":1,"summary":"3 results"}"#;
     let line = App::render_tool_event(result).expect("tool_result renders");
     assert!(line.contains("完成"), "line={}", line);
-    assert!(
-        !line.contains("web_search"),
-        "标识符不得暴露: line={}",
-        line
-    );
+    assert!(line.contains("web_search"), "line={}", line);
     assert!(
         !line.contains("3 results"),
         "成功结果内容不得暴露: line={}",
@@ -38,11 +27,7 @@ fn render_tool_event_parses_sse_json() {
     let line = App::render_tool_event(fail).expect("failed tool_result renders");
     assert!(line.contains("失败"), "line={}", line);
     assert!(line.contains("boom"), "失败应附短错误: line={}", line);
-    assert!(
-        !line.contains("shell_run") && line.contains("未知工具"),
-        "未登记标识符须隐藏: line={}",
-        line
-    );
+    assert!(line.contains("shell_run"), "tool_id 须可见: line={}", line);
 
     // 非工具事件 / 非法 JSON → None（不污染对话）
     assert!(App::render_tool_event(r#"{"type":"ping"}"#).is_none());

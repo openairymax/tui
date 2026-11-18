@@ -42,7 +42,7 @@ pub(super) fn push_turn_separator(out: &mut Vec<Line<'static>>, app: &App) {
             let secs = started.elapsed().as_secs_f64();
             (
                 format!(" Worked for {:.1}s", secs),
-                format!(" · {} tok · ${:.4}", app.tokens, app.cost),
+                format!(" · {} tok · ${:.4}", app.tok_text(), app.cost),
             )
         }
         None => (String::new(), String::new()),
@@ -92,19 +92,17 @@ fn push_header(out: &mut Vec<Line<'static>>, msg: &ChatMessage) {
         MessageRole::Agent => ("[Super Agent]".to_string(), style::success()),
         MessageRole::System => ("[Dual Think]".to_string(), style::dim()),
         MessageRole::ToolCall | MessageRole::ToolResult => {
-            // [Sub <tag> Agent]：tag 取工具名（ToolCall 首 token）；ToolResult
-            // 是工具结果（JSON 等），无工具名可识别时回退 "exec"。
-            // 0.1.18 B3（V3.4）：白名单兜底——动作短语行（B3 后的工具状态行
-            // 格式）与未登记标识符一律回退无 tag 形式，内部名称零暴露。
+            // [Sub <tag> Agent]：tag 取工具 id（D-11 起工具行以原始 id 开头
+            // 并附参数摘要）。角色标签只表达"这是子代理/执行体"，不随目录
+            // 加载状态变化——否则同一条消息会在目录异步到达前后换标签。
             let first = msg.content.split_whitespace().next().unwrap_or("");
+            let first = first.split('（').next().unwrap_or(first);
             let is_jsonish =
                 first.starts_with('{') || first.starts_with('[') || first.starts_with('"');
             let name = if first.is_empty() || is_jsonish {
                 "[Sub exec Agent]".to_string()
-            } else if crate::app::App::tool_known(first) {
-                format!("[Sub {first} Agent]")
             } else {
-                "[Sub Agent]".to_string()
+                format!("[Sub {first} Agent]")
             };
             // 工具调用品红（调用侧）· 工具结果青（回传侧），Claude Code 风格
             let c = if msg.role == MessageRole::ToolCall {
@@ -284,10 +282,9 @@ mod tests {
         assert!(lines[0].to_string().starts_with("[Sub exec Agent]"));
     }
 
-    /// B3（V3.4）白名单兜底：未登记工具名回退 "[Sub Agent]"，原始
-    /// 标识符不进角色标签（替代旧版 12 字符截断语义）。
+    /// D-11：未登记工具不回退隐藏，仍以原始 tool_id 标注（[Sub <id> Agent]）。
     #[test]
-    fn sub_agent_tag_unknown_tool_hidden() {
+    fn tool_tag_keeps_raw_id() {
         let mut lines: Vec<Line<'static>> = Vec::new();
         let m = msg(
             MessageRole::ToolCall,
@@ -295,8 +292,11 @@ mod tests {
         );
         render(&mut lines, &m, 80, false, false);
         let head = lines[0].to_string();
-        assert!(head.starts_with("[Sub Agent]"), "head={}", head);
-        assert!(!head.contains("very_long"), "标识符不得出现: head={}", head);
+        assert!(
+            head.starts_with("[Sub very_long_tool_name_that_exceeds_budget Agent]"),
+            "head={}",
+            head
+        );
     }
 
     /// W2 宽度裁决：工具预览按显示宽度截断（列），全角首行不得越过 width；

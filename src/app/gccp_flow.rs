@@ -94,9 +94,7 @@ impl App {
     pub(super) fn apply_ask_gccp(&mut self, round: u8, res: Result<RunResponse>) {
         match res {
             Ok(r) => {
-                if let Some(t) = r.tokens_used {
-                    self.tokens += t;
-                }
+                self.acc_tokens(&r);
                 // 解析本轮问题并存入 GccpState
                 for (n, q) in gccp::parse_questions(&r.response) {
                     match n {
@@ -157,9 +155,7 @@ impl App {
     pub(super) fn apply_grad_plan(&mut self, res: Result<RunResponse>) {
         match res {
             Ok(r) => {
-                if let Some(t) = r.tokens_used {
-                    self.tokens += t;
-                }
+                self.acc_tokens(&r);
                 self.gccp.grad_plan = r.response.trim().to_string();
                 // 结构化 DAG 依赖图：解析 [DAG] 块（失败降级为纯文本流程图，不影响流程）
                 if let Some(dag) = gccp::parse_dag(&r.response) {
@@ -259,9 +255,7 @@ impl App {
         };
         match res {
             Ok(r) => {
-                if let Some(t) = r.tokens_used {
-                    self.tokens += t;
-                }
+                self.acc_tokens(&r);
                 if confirmed {
                     if let Some(c) = r.cost_usd {
                         self.cost += c;
@@ -360,9 +354,7 @@ impl App {
     pub(super) fn apply_distill_result(&mut self, res: Result<RunResponse>) {
         let distilled = match res {
             Ok(r) => {
-                if let Some(t) = r.tokens_used {
-                    self.tokens += t;
-                }
+                self.acc_tokens(&r);
                 match skills::parse_distilled_skill(&r.response) {
                     Some(skill) => match self.skills.save(skill.clone()) {
                         Ok(()) => {
