@@ -674,9 +674,29 @@ fn fail_text(fail: Option<&serde_json::Value>, msg: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_retry_ms, Unavailable};
+    use super::{fail_reason, fail_text, parse_retry_ms, Unavailable};
     use agentrt_rs::error::AgentOSError;
     use agentrt_rs::CODE_UNAVAILABLE;
+
+    /// 无模型配置的失败载荷必须渲染成「去配置」，不能让用户看到重试或
+    /// 未知错误——重试在无模型时永远不会成功。载荷字段按线上取值硬编码，
+    /// 防止机制层改键名/改枚举后渲染链静默失效。
+    #[test]
+    fn config_missing_payload_renders_config_hint() {
+        let fail = serde_json::json!({
+            "origin": "config",
+            "reason": "config_missing",
+            "code": 2,
+            "retryable": false,
+            "next_action": "inspect",
+        });
+        assert_eq!(fail_reason(Some(&fail)).as_deref(), Some("config_missing"));
+        let text = fail_text(Some(&fail), "no model configured");
+        assert!(text.contains("未配置可用模型"), "text={text}");
+        assert!(text.contains("建议人工排查"), "text={text}");
+        assert!(!text.contains("未知错误"), "text={text}");
+        assert!(!text.contains("重试"), "text={text}");
+    }
 
     #[test]
     fn retry_hint_is_parsed_from_gateway_body() {
