@@ -54,6 +54,24 @@ impl std::fmt::Display for Unavailable {
 
 impl std::error::Error for Unavailable {}
 
+/// 引擎侧失败事件的结构化归因。
+///
+/// `reason` 是机制层登记的稳定枚举，`text` 是人话摘要。摘要会随措辞与
+/// 本地化漂移，成因判定只能用 `reason`；保留 `text` 仅作展示。
+#[derive(Debug, Clone)]
+pub struct RunFail {
+    pub reason: String,
+    pub text: String,
+}
+
+impl std::fmt::Display for RunFail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for RunFail {}
+
 /// 从错误文本中提取 `retry_after_ms`（网关 503 应答体）。
 fn parse_retry_ms(s: &str) -> Option<u64> {
     const KEY: &str = "\"retry_after_ms\":";
@@ -206,6 +224,7 @@ impl GatewayClient {
         let mut final_content: Option<String> = None;
         let mut text_acc = String::new();
         let mut err_msg: Option<String> = None;
+        let mut err_reason: Option<String> = None;
         let mut tokens: Option<u64> = None;
         // D-11：结构化 usage 账本（run_end.usage），界面直接显示 total。
         let mut usage: Option<super::Usage> = None;
@@ -397,10 +416,12 @@ impl GatewayClient {
                 // 这里只翻成一行"原因 + 下一步"，不再让调用方猜 -31 是什么。
                 gen::AIRY_RS_TYPE_ERROR => {
                     let msg = ev.data_str(gen::AIRY_RS_K_MSG).unwrap_or("");
-                    let text = fail_text(ev.data.get(gen::AIRY_RS_K_FAILURE), msg);
+                    let fail = ev.data.get(gen::AIRY_RS_K_FAILURE);
+                    let text = fail_text(fail, msg);
                     if !text.is_empty() {
                         if err_msg.is_none() {
                             err_msg = Some(text.clone());
+                            err_reason = fail_reason(fail);
                         }
                         let line = serde_json::json!({
                             "__airy_evt": "error",
@@ -490,7 +511,12 @@ impl GatewayClient {
         let soft = paused || unverified;
         if let Some(m) = err_msg {
             if !soft {
-                return Err(anyhow::anyhow!("{}", m));
+                // 带结构化 reason 的失败以 RunFail 抛出：上层按载荷归类，
+                // 不依赖摘要措辞（摘要只用于展示）。
+                return Err(match err_reason {
+                    Some(r) if !r.is_empty() => anyhow::Error::new(RunFail { reason: r, text: m }),
+                    _ => anyhow::anyhow!("{}", m),
+                });
             }
             info!("agent.run_stream: 软终态（{}），以结果帧返回", m);
         }
@@ -586,6 +612,14 @@ fn unmet_items(f: &serde_json::Value) -> Option<String> {
     Some(out)
 }
 
+/// 失败载荷里的稳定原因码；摘要展示与成因归类共用这一处提取。
+fn fail_reason(fail: Option<&serde_json::Value>) -> Option<String> {
+    fail?
+        .get(gen::AIRY_RS_K_REASON)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 /// D-10：失败载荷 → 一行用户可读结论。判据（origin/reason/next_action）
 /// 由 daemon 唯一给出，这里只做中文呈现；未知原因原样透出，避免新原因
 /// 上线后被吞掉。
@@ -593,11 +627,8 @@ fn fail_text(fail: Option<&serde_json::Value>, msg: &str) -> String {
     let Some(f) = fail else {
         return msg.to_string();
     };
-    let reason = f
-        .get(gen::AIRY_RS_K_REASON)
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let name = match reason {
+    let reason = fail_reason(fail).unwrap_or_default();
+    let name = match reason.as_str() {
         gen::AIRY_RS_REASON_BUDGET => "轮次预算耗尽",
         gen::AIRY_RS_REASON_TOOL => "工具连续失败已熔断",
         gen::AIRY_RS_REASON_DENIED => "操作未获审批",

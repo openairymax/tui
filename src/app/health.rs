@@ -189,7 +189,9 @@ impl App {
     pub(crate) fn fail_card(&mut self, e: &anyhow::Error) {
         let raw = e.to_string();
         self.add_log("ERROR", format!("LLM 调用失败：{raw}"));
-        let cause = self.err_agg.record(&raw, self.clock_ms);
+        // 结构化失败优先按载荷 reason 归类；摘要只用于展示。
+        let wire = e.downcast_ref::<crate::client::RunFail>().map(|f| f.reason.as_str());
+        let cause = self.err_agg.record_wire(wire, &raw, self.clock_ms);
         let count = self
             .err_agg
             .entries()

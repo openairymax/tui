@@ -20,6 +20,8 @@
 // 脱敏导出（§6.13 #5）：报告结构只含依赖名、状态、计数、时长与错误码，
 // 不读取会话正文，也不携带原始错误串。
 
+use agentrt_rs::run_stream::gen;
+
 use crate::budget::{DEGRADED_BANNER_COOLDOWN_MS, MAX_ERROR_AGG_ENTRIES, MAX_HEALTH_PANEL_ITEMS};
 
 /// 判定时钟回拨的容差：小于该幅度的抖动视为正常调度误差。
@@ -316,10 +318,23 @@ const UNKNOWN: Cause = Cause {
     remedy: "airymaxrt doctor",
 };
 
+/// 失败载荷的稳定枚举 → 成因。
+///
+/// 机制层下发的 `failure.reason` 是归类的唯一权威：摘要文案可随措辞
+/// 调整甚至本地化，按文本关键词判成因必然漂移。只有载荷缺失或原因未
+/// 登记（旧引擎、未来的新原因）才回落到 `classify` 的关键词路径。
+pub(crate) fn from_wire(reason: &str) -> Option<Cause> {
+    match reason {
+        gen::AIRY_RS_REASON_CONFIG => Some(CONFIG),
+        gen::AIRY_RS_REASON_PROVIDER => Some(UNREACH),
+        gen::AIRY_RS_REASON_PROVIDER_ERR => Some(REJECT),
+        _ => None,
+    }
+}
+
 /// 把原始错误串归类为人话成因。顺序即优先级：先端点侧语义，后传输侧语义。
-/// daemon 侧失败载荷已带中文摘要（fail_text），因此中文关键词与英文
-/// 上游原文必须同时覆盖；否则结构化错误仍会落到 UNKNOWN（用户看到的
-/// 「未知错误」）。
+/// 本函数只作回落路径——调用方持有结构化 `reason` 时必须先用 `from_wire`；
+/// 否则中文摘要与英文原文的措辞差异会决定归类结果。
 pub(crate) fn classify(raw: &str) -> Cause {
     let s = raw.to_ascii_lowercase();
     if has_any(&s, &["未配置可用模型", "未配置模型", "config_missing", "no model configured"]) {
@@ -427,8 +442,14 @@ impl ErrAgg {
     }
 
     /// 记录一条原始错误，返回其归类（调用方用于错误卡片）。
+    /// 无结构化载荷的旧路径；判定规则见 `record_wire`。
     pub(crate) fn record(&mut self, raw: &str, now_ms: u64) -> Cause {
-        let cause = classify(raw);
+        self.record_wire(None, raw, now_ms)
+    }
+
+    /// 记录一条失败：载荷 `reason` 优先，缺失或未登记才按摘要归类。
+    pub(crate) fn record_wire(&mut self, wire: Option<&str>, raw: &str, now_ms: u64) -> Cause {
+        let cause = wire.and_then(from_wire).unwrap_or_else(|| classify(raw));
         self.record_cause(cause, now_ms);
         cause
     }
@@ -670,6 +691,20 @@ mod tests {
         let config = "no model configured: set $AIRY_CONFIG_DIR/model.yaml";
         assert_eq!(classify(config).code, "config");
         assert_eq!(classify("请求超时").code, "timeout");
+    }
+
+    #[test]
+    fn wire_reason_outranks_summary() {
+        // 摘要文案会被改写/本地化，归类只认载荷 reason（机制层权威）。
+        let mut agg = ErrAgg::new();
+        let c = agg.record_wire(Some(gen::AIRY_RS_REASON_PROVIDER_ERR), "请求超时", 1_000);
+        assert_eq!(c.code, "rejected");
+        // 未登记的原因回落关键词归类，新原因上线不被吞掉。
+        let c = agg.record_wire(Some("vendor_new_reason"), "connection refused", 2_000);
+        assert_eq!(c.code, "unreachable");
+        // 旧引擎无载荷、或载荷 reason 为空串：与 record 的关键词路径一致。
+        let c = agg.record_wire(Some(""), "未配置可用模型", 3_000);
+        assert_eq!(c.code, "config");
     }
 
     #[test]
