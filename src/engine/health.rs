@@ -285,6 +285,16 @@ const MODEL: Cause = Cause {
     label: "模型不存在或未安装",
     remedy: "airymaxrt doctor",
 };
+const CONFIG: Cause = Cause {
+    code: "config",
+    label: "未配置可用模型，请先完成模型配置",
+    remedy: "airymaxrt doctor",
+};
+const REJECT: Cause = Cause {
+    code: "rejected",
+    label: "模型服务拒绝了请求（API Key / 模型名 / 配额）",
+    remedy: "airymaxrt doctor",
+};
 const TIMEOUT: Cause = Cause {
     code: "timeout",
     label: "请求超时，后端未响应",
@@ -307,9 +317,21 @@ const UNKNOWN: Cause = Cause {
 };
 
 /// 把原始错误串归类为人话成因。顺序即优先级：先端点侧语义，后传输侧语义。
+/// daemon 侧失败载荷已带中文摘要（fail_text），因此中文关键词与英文
+/// 上游原文必须同时覆盖；否则结构化错误仍会落到 UNKNOWN（用户看到的
+/// 「未知错误」）。
 pub(crate) fn classify(raw: &str) -> Cause {
     let s = raw.to_ascii_lowercase();
-    if has_any(&s, &["429", "rate limit", "quota", "too many requests"]) {
+    if has_any(&s, &["未配置可用模型", "未配置模型", "config_missing", "no model configured"]) {
+        return CONFIG;
+    }
+    if has_any(&s, &["拒绝了请求", "provider_error"]) {
+        return REJECT;
+    }
+    if has_any(
+        &s,
+        &["429", "rate limit", "quota", "too many requests", "限流", "配额"],
+    ) {
         return QUOTA;
     }
     if has_any(
@@ -320,6 +342,8 @@ pub(crate) fn classify(raw: &str) -> Cause {
             "invalid api key",
             "api key",
             "authentication",
+            "鉴权",
+            "未授权",
         ],
     ) {
         return AUTH;
@@ -331,11 +355,13 @@ pub(crate) fn classify(raw: &str) -> Cause {
             "no such model",
             "unknown model",
             "target not found",
+            "模型不存在",
+            "模型未安装",
         ],
     ) {
         return MODEL;
     }
-    if has_any(&s, &["timed out", "timeout", "deadline exceeded"]) {
+    if has_any(&s, &["timed out", "timeout", "deadline exceeded", "超时"]) {
         return TIMEOUT;
     }
     if has_any(
@@ -349,6 +375,8 @@ pub(crate) fn classify(raw: &str) -> Cause {
             "unexpected eof",
             "connection closed",
             "unreachable",
+            "不可达",
+            "无法连接",
         ],
     ) {
         return UNREACH;
@@ -363,6 +391,7 @@ pub(crate) fn classify(raw: &str) -> Cause {
             "internal server error",
             "bad gateway",
             "service unavailable",
+            "后端服务内部错误",
         ],
     ) {
         return BACKEND;
@@ -628,6 +657,19 @@ mod tests {
         assert_eq!(t.observe("extra", false, 99), Change::Same);
         assert_eq!(t.deps().len(), MAX_HEALTH_PANEL_ITEMS);
         assert!(t.get("extra").is_none());
+    }
+
+    #[test]
+    fn classify_handles_daemon_chinese_digest() {
+        // daemon 侧 fail_text 下发中文摘要，若分类只认英文字面量，用户看到的
+        // 就是「未知错误」。这三条是 0.1.21 生产反馈的原始场景。
+        let unreachable = "失败原因：模型服务不可达；下一步：可原样重试";
+        assert_eq!(classify(unreachable).code, "unreachable");
+        let rejected = "失败原因：模型服务拒绝了请求（检查 API Key / 模型名 / 配额）";
+        assert_eq!(classify(rejected).code, "rejected");
+        let config = "no model configured: set $AIRY_CONFIG_DIR/model.yaml";
+        assert_eq!(classify(config).code, "config");
+        assert_eq!(classify("请求超时").code, "timeout");
     }
 
     #[test]

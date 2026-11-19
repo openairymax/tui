@@ -603,6 +603,8 @@ fn fail_text(fail: Option<&serde_json::Value>, msg: &str) -> String {
         gen::AIRY_RS_REASON_DENIED => "操作未获审批",
         gen::AIRY_RS_REASON_EMPTY => "模型返回空结果",
         gen::AIRY_RS_REASON_PROVIDER => "模型服务不可达",
+        gen::AIRY_RS_REASON_PROVIDER_ERR => "模型服务拒绝了请求（检查 API Key / 模型名 / 配额）",
+        gen::AIRY_RS_REASON_CONFIG => "未配置可用模型",
         gen::AIRY_RS_REASON_UNMET => "完成判据未达成",
         gen::AIRY_RS_REASON_UNVERIFIED => "完成判据无法取证",
         gen::AIRY_RS_REASON_AGENT => "执行失败",
