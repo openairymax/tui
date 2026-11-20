@@ -3,16 +3,16 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 记忆模块单测：镜像顺序、隐私（思考链不入召回）、CLI 整轮还原、
-// 会话归属（D-14）与模式标记解析。
+// 记忆模块单测：镜像顺序、召回语义、CLI 整轮还原、会话归属（D-14）与
+// 模式标记解析。TUI 侧只读（X1-28a：写入口 = 0），夹具经 seed 注入。
 
 use super::*;
 
 #[test]
-fn push_recent_returns_newest_first() {
+fn seed_recent_returns_newest_first() {
     let mut m = GatewayMemory::volatile();
-    m.push("user", "我的名字是小明", "chat").expect("push");
-    m.push("assistant", "你好，小明！", "chat").expect("push");
+    m.seed("user", "我的名字是小明", "chat", None);
+    m.seed("assistant", "你好，小明！", "chat", None);
     assert_eq!(m.len(), 2);
     let recent = m.recent(2);
     assert_eq!(recent.len(), 2);
@@ -21,27 +21,12 @@ fn push_recent_returns_newest_first() {
 }
 
 #[test]
-fn push_never_records_reasoning() {
-    // 0.1.18 B4（隐私）：思考链不得落长期会话记忆——写入路径不提供
-    // reasoning 入参，落库记录的 reasoning 恒为 None（防止后续轮次召回
-    // 把模型内部推理回灌进上下文）。
+fn seed_keeps_conversation() {
+    // D-14：记录携带会话归属，供 sessions.json 删档后按 conv 还原。
     let mut m = GatewayMemory::volatile();
-    m.push("assistant", "最终回答", "chat").expect("push");
-    m.push("user", "无思考链", "chat").expect("push");
-    assert!(
-        m.recent(2).iter().all(|r| r.reasoning.is_none()),
-        "TUI 写入的记忆不得携带思考链"
-    );
-}
-
-#[test]
-fn push_records_conversation() {
-    // D-14：写入记录携带会话归属，供 sessions.json 删档后按 conv 还原。
-    let mut m = GatewayMemory::volatile();
-    m.push("user", "无归属", "chat").expect("push");
-    assert_eq!(m.recent(1)[0].conv, None, "未绑定会话时不伪造归属");
-    m.set_conversation("conv_test");
-    m.push("user", "有归属", "chat").expect("push");
+    m.seed("user", "无归属", "chat", None);
+    assert_eq!(m.recent(1)[0].conv, None, "无归属记录不得伪造会话");
+    m.seed("user", "有归属", "chat", Some("conv_test"));
     assert_eq!(m.recent(1)[0].conv.as_deref(), Some("conv_test"));
 }
 
@@ -55,8 +40,8 @@ fn volatile_backend_is_ready() {
 #[test]
 fn recall_finds_related_by_keyword() {
     let mut m = GatewayMemory::volatile();
-    m.push("user", "我在做性能监控优化", "chat").expect("push");
-    m.push("user", "今天天气不错", "chat").expect("push");
+    m.seed("user", "我在做性能监控优化", "chat", None);
+    m.seed("user", "今天天气不错", "chat", None);
     let hits = m.recall("性能监控", 3);
     assert!(!hits.is_empty());
     assert!(hits[0].content.contains("性能监控"));
@@ -65,19 +50,19 @@ fn recall_finds_related_by_keyword() {
 #[test]
 fn recall_ignores_system_role() {
     let mut m = GatewayMemory::volatile();
-    m.push("system", "请判断模式", "meta").expect("push");
-    m.push("user", "帮我写代码", "chat").expect("push");
+    m.seed("system", "请判断模式", "meta", None);
+    m.seed("user", "帮我写代码", "chat", None);
     let hits = m.recall("判断模式", 3);
     assert!(hits.iter().all(|h| h.role != "system"));
 }
 
 #[test]
 fn recall_excludes_self_feed() {
-    // 防自我回灌（2026-08-26）：当前输入刚 push 后 recall 同 query，
+    // 防自我回灌（2026-08-26）：运行侧记下当前输入后 recall 同 query，
     // 不得把该输入自身作为"相关记忆"回灌（与 CLI cli_chat_memory.c 同语义）。
     let mut m = GatewayMemory::volatile();
-    m.push("user", "性能监控优化方案", "chat").expect("push"); // 旧记录
-    m.push("user", "性能监控", "chat").expect("push"); // 当前输入（应被排除）
+    m.seed("user", "性能监控优化方案", "chat", None); // 旧记录
+    m.seed("user", "性能监控", "chat", None); // 当前输入（应被排除）
     let hits = m.recall("性能监控", 5);
     assert!(
         !hits.iter().any(|h| h.content == "性能监控"),

@@ -57,10 +57,9 @@ fn resume_session_restores_history() {
     // 显式注入纯内存镜像后端（volatile：不触网、不落盘），隔离验证恢复
     // 逻辑本身——TUI 记忆统一走网关 mem.*，此处不依赖任何本地文件。
     let mut mem = GatewayMemory::volatile();
-    mem.push("user", "上次的问题", "chat").expect("push");
-    mem.push("assistant", "上次的回答", "chat").expect("push");
-    mem.push("system", "不应恢复的系统消息", "chat")
-        .expect("push");
+    mem.seed("user", "上次的问题", "chat", None);
+    mem.seed("assistant", "上次的回答", "chat", None);
+    mem.seed("system", "不应恢复的系统消息", "chat", None);
     app.memory = Box::new(mem);
     let n = app.resume_session();
     // user + assistant 共 2 条恢复；system 跳过
@@ -205,8 +204,7 @@ fn b1_prompt_declares_turn_boundary_and_marks_memory_turn() {
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
     let mut mem = GatewayMemory::volatile();
-    mem.push("assistant", "阶跃函数是不连续的函数", "chat,turn:1")
-        .expect("push");
+    mem.seed("assistant", "阶跃函数是不连续的函数", "chat,turn:1", None);
     app.memory = Box::new(mem);
 
     // 带分隔符的查询可命中关键词（recall 分词规则）
@@ -237,10 +235,8 @@ fn b1_memory_hit_carries_turn_annotation() {
     let mut mem = GatewayMemory::volatile();
     // 词对无子串包含关系：recall 为子串匹配，"quicksort"/"sort" 这类
     // 包含词对会双命中，无法验证"仅一条命中"。
-    mem.push("assistant", "the sky is blue", "chat,turn:3")
-        .expect("push");
-    mem.push("assistant", "grass is green", "task")
-        .expect("push");
+    mem.seed("assistant", "the sky is blue", "chat,turn:3", None);
+    mem.seed("assistant", "grass is green", "task", None);
     let hits = mem.recall("sky blue", 5);
     assert_eq!(hits.len(), 1, "仅命中带关键词记录: {:?}", hits);
     assert_eq!(hits[0].turn, Some(3), "turn:N 应被解析");

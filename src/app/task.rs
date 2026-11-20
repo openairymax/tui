@@ -500,8 +500,7 @@ impl App {
 
         // 回合计时开始（结果消费时结算，回合分隔线展示 Worked for Ns）
         self.turn_started = Instant::now();
-        // 0.1.18 B1：轮次自增统一前移到 submit_input（此前在 chat_round）——
-        // 本轮全部记忆写入（user/assistant/task）共用同一轮号标注。
+        // 0.1.18 B1：轮次自增（会话标识与命令台账用；记忆写入已归运行侧）
         self.turn += 1;
 
         // Add user message
@@ -509,9 +508,6 @@ impl App {
 
         // 多会话：首条用户消息派生会话标题（tab 栏展示）
         self.seed_tab_title(&input);
-
-        // 记忆：持久化用户输入（普通对话与任务均记录），带轮次标注（B1）
-        self.mem_push_tagged("user", &input, "chat");
 
         if input.eq_ignore_ascii_case("exit") {
             self.add_message(MessageRole::System, "Type Ctrl+C to quit.".to_string());
@@ -573,21 +569,6 @@ impl App {
             return false;
         }
         true
-    }
-
-    /// 0.1.18 B1：记忆写入统一带轮次标注（tags 内 "turn:N"，与 CLI 记录
-    /// 共享存储）。召回侧（MemoryHit::turn）透传标注，上下文注入时声明
-    /// 归属轮次，为"按轮检索"铺路。
-    pub(super) fn mem_push_tagged(&mut self, role: &str, content: &str, base: &str) {
-        // D-14：写入前绑定会话归属，sessions.json 删档后据此从 mem_d 还原
-        let conv = self.ensure_conv();
-        self.memory.set_conversation(&conv);
-        if let Err(e) = self
-            .memory
-            .push(role, content, &format!("{},turn:{}", base, self.turn))
-        {
-            log::warn!("memory push({}) failed: {}", role, e);
-        }
     }
 
     /// C-15：任务目标门禁（needs_intent）呈现——展示服务端裁决依据与缺失
@@ -870,18 +851,13 @@ impl App {
                         "（未产生回复：模型可能仅生成了思考内容，请重试）".to_string(),
                     );
                 } else {
-                    // §6.12 #5：降级路径完成的回复附角标（记忆只存正文，
-                    // 角标是瞬时呈现态，不得污染长期记忆）。
+                    // §6.12 #5：降级路径完成的回复附角标（瞬时呈现态）。
                     let body = if fallback {
                         format!("{}\n\n· via fallback", cleaned)
                     } else {
                         cleaned.clone()
                     };
                     self.add_message(MessageRole::Agent, body);
-                    // 记忆：持久化助手响应。0.1.18 B4：思考链不再随记录落盘
-                    // （长期记忆不得出现模型推理原文）；空回复不写记忆——空记录
-                    // 是记忆污染源（无内容可召回，却混入 recent() 蒸馏/上下文）。
-                    self.mem_push_tagged("assistant", &cleaned, "chat");
                 }
 
                 // C-17：判据复核结果上屏（通过给条数，未通过给逐项差异）。

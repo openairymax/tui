@@ -49,8 +49,7 @@ fn replay_progress_counts_down() {
     for i in 0..3 {
         fx.app
             .memory
-            .push("user", &format!("历史消息 {i}"), "")
-            .expect("写入记忆");
+            .seed("user", &format!("历史消息 {i}"), "", None);
     }
     assert_eq!(fx.app.resume_session(), 3);
     let s = fx.draw();
@@ -61,7 +60,7 @@ fn replay_progress_counts_down() {
 #[test]
 fn replay_drains_and_records_ledger() {
     let mut fx = Fixture::new("boot-drain");
-    fx.app.memory.push("user", "旧消息", "").expect("写入记忆");
+    fx.app.memory.seed("user", "旧消息", "", None);
     fx.app.resume_session();
     let mut now = 0;
     while fx.app.session_view().replay_left() > 0 {

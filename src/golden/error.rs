@@ -106,12 +106,8 @@ fn exit_codes_map_to_human_text() {
 #[test]
 fn replay_reuses_original_stamps() {
     let mut fx = Fixture::new("error-replay");
-    assert!(fx.app.memory.push("user", "上次的问题", "chat").is_ok());
-    assert!(fx
-        .app
-        .memory
-        .push("assistant", "上次的答复", "chat")
-        .is_ok());
+    fx.app.memory.seed("user", "上次的问题", "chat", None);
+    fx.app.memory.seed("assistant", "上次的答复", "chat", None);
     let recs = fx.app.memory.recent(2);
     assert_eq!(recs.len(), 2);
 
