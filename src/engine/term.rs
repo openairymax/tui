@@ -368,8 +368,11 @@ fn explicit_theme() -> bool {
 }
 
 /// 探测线程主体：先写出四问查询帧，再按短片轮询原始输入。
+///
+/// 查询写失败（已在 probe::send_query 内整帧重试一次）说明终端通道不可
+/// 用：立刻回空结论，让启动继续走默认能力，不占用探测窗口。
 fn probe_loop(stop: &AtomicBool, tx: &mpsc::Sender<Caps>) {
-    if !emit_seq(probe::QUERY) {
+    if probe::send_query(io::stdout()).is_err() {
         let _ = tx.send(Caps::default());
         return;
     }
