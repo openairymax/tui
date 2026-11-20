@@ -323,7 +323,9 @@ mod tests {
         let st = c.stats();
         assert_eq!(st.applied, 3, "心跳 + 开跑 + 收口各折一条");
         assert_eq!(st.watermark, 3, "水位按帧号推进");
-        assert_eq!((st.bad, st.rejects, st.gaps, st.unknown), (0, 0, 0, 0));
+        // 子进程是本测试二进制的 libtest 宿主，用例开跑前的横幅行必然先于首帧
+        // 抵达，按语法过滤掉它们正是 Frames 的约定；此处只断言语义层零丢弃。
+        assert_eq!((st.rejects, st.gaps, st.unknown), (0, 0, 0));
         let snap = c.snapshot();
         assert_eq!(snap.phase(), Phase::Closed);
         assert_eq!(snap.tasks().len(), 1, "任务身份随 run_start 入表");
