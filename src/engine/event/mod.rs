@@ -12,4 +12,5 @@
 
 pub(crate) mod frame;
 pub(crate) mod lines;
+pub(crate) mod model;
 pub(crate) mod pipe;
