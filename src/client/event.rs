@@ -135,8 +135,16 @@ impl EventClient {
     }
 
     /// 下发一轮输入。CLI 侧以 `kind` 分派，帧格式只在本模块构造。
-    pub(crate) fn prompt(&self, text: &str) -> io::Result<()> {
-        self.write(&json!({"type": "input", "kind": "prompt", "text": text}))
+    ///
+    /// `opts` 是该轮运行侧选项（history / model / gccp_answers / resume_token
+    /// 等），CLI 将其并入 task.submit_stream 的 params；goal/mode/client 仍由
+    /// CLI 权威赋值。None 表示纯文本轮。
+    pub(crate) fn prompt(&self, text: &str, opts: Option<&Value>) -> io::Result<()> {
+        let mut frame = json!({"type": "input", "kind": "prompt", "text": text});
+        if let Some(o) = opts {
+            frame["opts"] = o.clone();
+        }
+        self.write(&frame)
     }
 
     /// 粘贴输入：与 prompt 同语义，只为保留终端侧的粘贴来源。
@@ -320,7 +328,7 @@ mod tests {
         let c = EventClient::start(&spec("session")).expect("事件客户端可起");
         assert!(c.pid() > 0, "子进程标识可读");
         until("心跳入表", || c.stats().applied >= 1);
-        c.prompt("你好").expect("prompt 帧可写");
+        c.prompt("你好", None).expect("prompt 帧可写");
         until("运行收口", || c.stats().ended);
 
         let st = c.stats();
@@ -374,7 +382,7 @@ mod tests {
         let c = EventClient::start(&spec("hang")).expect("事件客户端可起");
         c.stop(Duration::from_millis(50)).expect("停止可完成");
         let errs = [
-            c.prompt("x").expect_err("prompt 写端已关"),
+            c.prompt("x", None).expect_err("prompt 写端已关"),
             c.paste("y").expect_err("paste 写端已关"),
             c.cancel().expect_err("cancel 写端已关"),
             c.confirm("c1", true).expect_err("confirm 写端已关"),

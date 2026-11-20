@@ -144,7 +144,11 @@ pub(crate) enum Execution {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Outcome {
     /// 正常终态（含暂停/未验证等非失败收尾）。
-    End { status: String },
+    ///
+    /// `data` 是服务端终态载荷原文（紧凑 JSON）：会话号、模式、令牌用量、
+    /// 断点令牌、判据结论等语义字段随终态一次到位，避免渲染层再向网关补问
+    /// （§23.8 #5 唯一数据入口）。空串表示该帧没有载荷。
+    End { status: String, data: String },
     /// 失败三件套：机器可读原因 + 一句人话 + 下一步动作。
     Err {
         reason: String,
@@ -182,6 +186,7 @@ mod tests {
         }));
         let out = ev(Body::Outcome(Outcome::End {
             status: "completed".into(),
+            data: String::new(),
         }));
         assert_eq!(ctl.domain(), Domain::Control);
         assert_eq!(cog.domain(), Domain::Cognition);

@@ -173,6 +173,7 @@ mod tests {
                 4,
                 Body::Outcome(Outcome::End {
                     status: "completed".into(),
+                    data: "{\"status\":\"completed\",\"rounds_used\":2}".into(),
                 }),
             ),
         ]

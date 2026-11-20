@@ -56,6 +56,7 @@ pub(crate) struct Projection {
     tools: Tools,
     approvals: Approvals,
     dirty: Dirty,
+    terminal: Option<String>,
 }
 
 impl Projection {
@@ -71,6 +72,7 @@ impl Projection {
             tools: Tools::new(),
             approvals: Approvals::new(),
             dirty: Dirty::new(),
+            terminal: None,
         }
     }
 
@@ -84,6 +86,19 @@ impl Projection {
         let slot = slot(ev.domain());
         self.counts[slot] = self.counts[slot].saturating_add(1);
         self.phase = next_phase(self.phase, &ev.body);
+        match &ev.body {
+            Body::Control(Control::State { name, .. }) if name == "running" => {
+                self.terminal = None;
+            }
+            Body::Outcome(Outcome::End { data, .. }) => {
+                self.terminal = if data.is_empty() {
+                    None
+                } else {
+                    Some(data.clone())
+                };
+            }
+            _ => {}
+        }
         self.tasks.apply(ev);
         self.tools.apply(ev);
         self.approvals.apply(ev);
@@ -105,6 +120,11 @@ impl Projection {
     /// 当前运行相位。
     pub(crate) fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// 本轮终态载荷原文（服务端 run_end 的 data 段）；未收口或未带载荷为空。
+    pub(crate) fn terminal(&self) -> Option<&str> {
+        self.terminal.as_deref()
     }
 
     /// 某域已折叠的事件数（状态栏与诊断直接读）。
@@ -211,6 +231,7 @@ mod tests {
             seq,
             Body::Outcome(Outcome::End {
                 status: "completed".into(),
+                data: "{\"status\":\"completed\"}".into(),
             }),
         )
     }
@@ -234,6 +255,18 @@ mod tests {
         assert_eq!(p.phase(), Phase::Closed);
         assert_eq!(p.seq(), 3);
         assert_eq!(p.applied(), 3);
+    }
+
+    /// 终态载荷随收口落地，并在下一次开跑时清空（不跨轮串用）。
+    #[test]
+    fn terminal_payload_follows_run_boundary() {
+        let mut p = Projection::new();
+        assert_eq!(p.terminal(), None);
+        p.apply(&start(1));
+        p.apply(&end(2));
+        assert_eq!(p.terminal(), Some("{\"status\":\"completed\"}"));
+        p.apply(&start(3));
+        assert_eq!(p.terminal(), None);
     }
 
     /// 收口是稳定终态：收口后的杂项事件不把它改回运行中。
