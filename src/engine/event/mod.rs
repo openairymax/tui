@@ -10,6 +10,7 @@
 // 本模块只承载「怎么把事件拿进来」，不承载任何业务语义；事件解码、序列
 // 断言、投影分别在后续子模块落位，避免一个文件同时背管道、解析与状态。
 
+pub(crate) mod envelope;
 pub(crate) mod frame;
 pub(crate) mod lines;
 pub(crate) mod model;
