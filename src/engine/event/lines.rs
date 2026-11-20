@@ -3,7 +3,7 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// NDJSON 行读取器（0.1.21 X1-02a/X1-03a，§23.1.5 事件入口的读侧）。
+// NDJSON 行读取器（0.1.21 X1-02a/X1-03a/X1-03b，§23.1.5 事件入口的读侧）。
 //
 // D-15 约定 stdout 一行一帧，但管道读到的字节块与行边界无关：一次 read 可能
 // 只拿到半行，也可能一口气带回多行。本模块把字节流切成整行——残行保存在
@@ -11,9 +11,9 @@
 // 行尾 CR 一律剥掉：CLI 只写 LF，但 Windows 侧若经文本模式中转会出现 CRLF，
 // 剥除对合法帧无损，对非法帧的判断留给 X1-04。
 //
-// 单行上界 1 MiB（对齐 D-15 帧预算）：超出部分不存储，只把整行标记为
-// `truncated`，交由 X1-04 当坏帧处置。逐块扫描而非 `read_until` 正是为了
-// 这个上界——后者无界，遇恶意长行会一路吃到 OOM。
+// 单行上界 1 MiB（对齐 D-15 帧预算）：超出部分丢弃并累计计数，整行照常在真实
+// 换行处收尾并标记 `truncated`，交由 X1-04 当坏帧处置。逐块扫描而非
+// `read_until` 正是为了这个上界——后者无界，遇恶意长行会一路吃到 OOM。
 //
 // 编码处置见 `Line::text`。
 
@@ -50,6 +50,7 @@ pub(crate) struct Lines<R> {
     src: R,
     pend: Vec<u8>,
     over: bool,
+    lost: u64,
 }
 
 impl<R: BufRead> Lines<R> {
@@ -58,7 +59,14 @@ impl<R: BufRead> Lines<R> {
             src,
             pend: Vec::new(),
             over: false,
+            lost: 0,
         }
+    }
+
+    /// 累计丢弃的字节数（超界部分），跨行只增不减。诊断与背压统计读取；
+    /// 不影响切分结果——超界行同样按真实换行收尾。
+    pub(crate) fn dropped(&self) -> u64 {
+        self.lost
     }
 
     /// 产出下一整行；上游结束且无残行时返回 `None`。
@@ -77,13 +85,15 @@ impl<R: BufRead> Lines<R> {
             }
             match chunk.iter().position(|b| *b == b'\n') {
                 Some(at) => {
-                    push(&mut self.pend, &mut self.over, &chunk[..at]);
+                    let lost = push(&mut self.pend, &mut self.over, &chunk[..at]);
+                    self.lost = self.lost.saturating_add(lost);
                     self.src.consume(at + 1);
                     return Ok(Some(self.take()));
                 }
                 None => {
                     let len = chunk.len();
-                    push(&mut self.pend, &mut self.over, chunk);
+                    let lost = push(&mut self.pend, &mut self.over, chunk);
+                    self.lost = self.lost.saturating_add(lost);
                     self.src.consume(len);
                 }
             }
@@ -99,13 +109,14 @@ impl<R: BufRead> Lines<R> {
     }
 }
 
-/// 追加一段字节；超出上界的部分只置标记、不存储。
-fn push(pend: &mut Vec<u8>, over: &mut bool, data: &[u8]) {
+/// 追加一段字节并返回丢弃字节数；超出上界的部分不存储。
+fn push(pend: &mut Vec<u8>, over: &mut bool, data: &[u8]) -> u64 {
     let kept = &data[..data.len().min(MAX_LINE.saturating_sub(pend.len()))];
     if kept.len() < data.len() {
         *over = true;
     }
     pend.extend_from_slice(kept);
+    (data.len() - kept.len()) as u64
 }
 
 /// 剥掉行尾的 CR（CRLF 归一为 LF 语义）。
@@ -135,6 +146,43 @@ mod tests {
             buf[0] = self.data[self.pos];
             self.pos += 1;
             Ok(1)
+        }
+    }
+
+    /// 先灌 `left` 个 `q`、再交尾巴的源：整行不落在任何 `Vec` 里，用例本身
+    /// 就不会替被测代码吃掉那份内存。
+    struct Flood {
+        left: usize,
+        tail: Vec<u8>,
+        pos: usize,
+    }
+
+    impl Flood {
+        fn new(left: usize, tail: &[u8]) -> Self {
+            Self {
+                left,
+                tail: tail.to_vec(),
+                pos: 0,
+            }
+        }
+    }
+
+    impl Read for Flood {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            if self.left > 0 {
+                let n = self.left.min(buf.len());
+                buf[..n].fill(b'q');
+                self.left -= n;
+                return Ok(n);
+            }
+            let rest = &self.tail[self.pos..];
+            let n = rest.len().min(buf.len());
+            buf[..n].copy_from_slice(&rest[..n]);
+            self.pos += n;
+            Ok(n)
         }
     }
 
@@ -296,5 +344,55 @@ mod tests {
         let line = src.next().expect("可读").expect("有一行");
         assert_eq!(line.bytes.len(), MAX_LINE);
         assert!(line.truncated);
+    }
+
+    /// 超界字节被丢弃且计数：丢多少、留多少，两边对得上。
+    #[test]
+    fn overlong_line_reports_dropped() {
+        let mut data = vec![b'a'; MAX_LINE + 4096];
+        data.push(b'\n');
+        let mut src = Lines::new(Cursor::new(data));
+        let line = src.next().expect("可读").expect("有一行");
+        assert_eq!(line.bytes.len(), MAX_LINE);
+        assert!(line.truncated);
+        assert_eq!(src.dropped(), 4096);
+        assert_eq!(src.next().expect("可读"), None);
+    }
+
+    /// 超大行不 OOM：16 MiB 由生成器吐出，内存只到上界，后续行照常解析。
+    #[test]
+    fn stream_survives_flood() {
+        let flood = 16 * MAX_LINE;
+        let mut src = Lines::new(BufReader::new(Flood::new(flood, b"\nok\n")));
+        let line = src.next().expect("可读").expect("超长行仍按换行收尾");
+        assert_eq!(line.bytes.len(), MAX_LINE);
+        assert!(line.truncated);
+        assert_eq!(src.dropped(), (flood - MAX_LINE) as u64);
+
+        let next = src.next().expect("可读").expect("后续行不受影响");
+        assert_eq!(next.bytes, b"ok".to_vec());
+        assert!(!next.truncated);
+        assert_eq!(src.next().expect("可读"), None);
+    }
+
+    /// 丢弃计数跨行累计，正常行不增加计数。
+    #[test]
+    fn dropped_accumulates_across_lines() {
+        let mut data = Vec::new();
+        for _ in 0..2 {
+            data.resize(data.len() + MAX_LINE + 1024, b'x');
+            data.push(b'\n');
+        }
+        data.extend_from_slice(b"tail\n");
+        let mut src = Lines::new(Cursor::new(data));
+        for _ in 0..2 {
+            let line = src.next().expect("可读").expect("有一行");
+            assert_eq!(line.bytes.len(), MAX_LINE);
+            assert!(line.truncated);
+        }
+        let tail = src.next().expect("可读").expect("尾行可读");
+        assert_eq!(tail.bytes, b"tail".to_vec());
+        assert!(!tail.truncated);
+        assert_eq!(src.dropped(), 2048);
     }
 }
