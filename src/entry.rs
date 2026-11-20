@@ -534,11 +534,14 @@ async fn run_app<B: Backend>(
         // 渲染故障（§5A.3 W10）在合成层收敛，此处**不冒泡**：事件循环与 daemon
         // 会话照常推进，降级态回写 App 由状态条示警（自愈后自动消隐）。
         let started = Instant::now();
-        let mut layout_us = 0_u64;
+        let mut costs = engine::frame::Costs::new();
         let outcome = compose.frame(terminal, |f| {
             let laid = Instant::now();
             present::render(f, app);
-            layout_us = laid.elapsed().as_micros() as u64;
+            costs.set(
+                engine::frame::Stage::Compose,
+                laid.elapsed().as_micros() as u64,
+            );
         });
         // §5.5 #6：终端已消失（SSH 断开/窗口关闭）时立即退出，不在死终端
         // 上重试或补帧；终端已不可写，故走静默正常退出而非错误上报。
@@ -559,7 +562,14 @@ async fn run_app<B: Backend>(
                 }
             }
             let total_us = started.elapsed().as_micros() as u64;
-            sched.note_frame(layout_us, total_us.saturating_sub(layout_us));
+            let layout_us = costs
+                .get(engine::frame::Stage::Compose)
+                .unwrap_or(0);
+            costs.set(
+                engine::frame::Stage::Present,
+                total_us.saturating_sub(layout_us),
+            );
+            sched.note_frame(&costs);
         }
         app.render_degraded = compose.degraded();
 
