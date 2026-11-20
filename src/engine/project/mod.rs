@@ -18,6 +18,9 @@
 
 use super::event::model::{Body, Control, Domain, Event, Outcome};
 
+#[cfg(test)]
+mod support;
+
 /// 运行态：由事件驱动，不由渲染层自己判断。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
