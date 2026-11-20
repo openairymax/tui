@@ -9,16 +9,17 @@
 // 定，采样开销与运行时长无关，长期驻留不会把指标本身变成内存泄漏。容量取
 // 2 的幂，下标由写入计数按位与导出，写入路径无分支、无分配。
 //
-// 槽内序号是「这一格当前装的是第几帧」，读侧据此判断哪些格子已写过、哪些
-// 已被覆盖；写侧不读它，故本卡只落写入路径与覆盖语义，快照 API 归 X8-05b，
-// 分位聚合归 X8-06a，落盘归 X8-06b。
+// 读侧（X8-05b）以快照迭代器暴露最近窗口，从最旧到最新逐帧交出 `Costs`：
+// 迭代器借用环本身、按下标推进，不复制缓冲、不分配内存，调用频率与帧率无关
+// 地保持零增长。槽内序号是「这一格当前装的是第几帧」，供读侧区分已写槽与
+// 空槽并验证窗口连续。
 //
 // 序号与下标不随覆盖回退：计数只增（到 u64 上界后饱和，60fps 下约 97 亿年，
 // 不作为可运行边界），覆盖只改槽内容，不改槽数量——这正是「不增长内存」
 // 的结构前提。
 //
-// 读侧尚未落地，槽内序号与长度查询在非测试构建下暂无消费者；按 exit.rs 与
-// frame.rs 的同例放宽 dead_code，快照 API 接线后此注记随之删除。
+// 分位聚合归 X8-06a，落盘归 X8-06b；在聚合器接线前，长度查询与写入计数在
+// 非测试构建下暂无消费者，按 exit.rs 与 frame.rs 的同例放宽 dead_code。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -79,12 +80,32 @@ impl Ring {
     pub(crate) fn written(&self) -> u64 {
         self.written
     }
+
+    /// 最近窗口快照：最旧在前、最新在后，至多 [`CAP`] 帧。
+    ///
+    /// 迭代器只借用槽位、按下标推进，不复制缓冲也不分配；重复取快照不会
+    /// 改变环内容，随时可与 `len()` 对照（两者恒一致）。
+    pub(crate) fn snapshot(&self) -> impl Iterator<Item = Costs> + '_ {
+        let count = self.len();
+        let first = self.written.saturating_sub(count as u64);
+        (0..count).map(move |i| {
+            let idx = ((first + i as u64) as usize) & (CAP - 1);
+            self.slots[idx].costs
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Ring, CAP};
     use crate::engine::frame::{Costs, Stage};
+
+    /// 快照按帧号取出 compose 段，便于断言窗口内容。
+    fn marks(ring: &Ring) -> Vec<u64> {
+        ring.snapshot()
+            .map(|costs| costs.get(Stage::Compose).unwrap_or(0))
+            .collect()
+    }
 
     /// 构造可区分的单帧耗时：把帧号编进 compose 段。
     fn cost(mark: u64) -> Costs {
@@ -172,5 +193,71 @@ mod tests {
         assert_eq!(ring.capacity(), CAP);
         assert_eq!(ring.len(), CAP);
         assert_eq!(ring.slots.len(), CAP);
+    }
+
+    /// 未写入时快照为空：读侧不必为「还没成帧」准备特例。
+    #[test]
+    fn snapshot_is_empty_before_first_frame() {
+        let ring = Ring::new();
+        assert_eq!(ring.snapshot().count(), 0);
+    }
+
+    /// 快照从最旧到最新：聚合器与落盘按时间顺序消费，无需自行排序。
+    #[test]
+    fn snapshot_reads_oldest_first() {
+        let mut ring = Ring::new();
+        for i in 1..=5 {
+            ring.push(cost(i));
+        }
+        assert_eq!(marks(&ring), [1, 2, 3, 4, 5]);
+    }
+
+    /// 溢出后窗口整体前移：长度封顶，首帧为最早一帧，末帧为最新一帧。
+    #[test]
+    fn snapshot_window_slides_after_overflow() {
+        let mut ring = Ring::new();
+        let total = CAP as u64 + 3;
+        for i in 1..=total {
+            ring.push(cost(i));
+        }
+        let marks = marks(&ring);
+        assert_eq!(marks.len(), CAP);
+        assert_eq!(marks.first().copied(), Some(total - CAP as u64 + 1));
+        assert_eq!(marks.last().copied(), Some(total));
+        assert!(
+            marks.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "窗口须严格递增，覆盖不得造成乱序"
+        );
+    }
+
+    /// 读快照是只读操作：反复读取不改写计数、不改槽区字节数。
+    #[test]
+    fn snapshot_is_read_only() {
+        let mut ring = Ring::new();
+        for i in 1..=CAP as u64 * 4 {
+            ring.push(cost(i));
+        }
+        let footprint = std::mem::size_of_val(&*ring.slots);
+        let written = ring.written();
+        for _ in 0..32 {
+            let samples: Vec<Costs> = ring.snapshot().collect();
+            assert_eq!(samples.len(), ring.len());
+        }
+        assert_eq!(ring.written(), written);
+        assert_eq!(std::mem::size_of_val(&*ring.slots), footprint);
+    }
+
+    /// 不增长内存：写满百万帧后槽区字节数仍与首帧时相同，快照长度恒为容量。
+    #[test]
+    fn footprint_stays_fixed_over_million_frames() {
+        let mut ring = Ring::new();
+        ring.push(cost(1));
+        let base = std::mem::size_of_val(&*ring.slots);
+        for i in 2..=1_000_000 {
+            ring.push(cost(i));
+        }
+        assert_eq!(std::mem::size_of_val(&*ring.slots), base, "槽区不得扩张");
+        assert_eq!(ring.snapshot().count(), CAP, "快照长度恒为容量");
+        assert_eq!(ring.len(), CAP);
     }
 }
