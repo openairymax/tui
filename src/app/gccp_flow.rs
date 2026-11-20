@@ -3,7 +3,7 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// GCCP 任务事实确认与 GRAD 双思考：澄清、计划、确认、收尾与技能沉淀。
+// GCCP 任务事实确认与 GRAD 双思考：澄清、计划、确认与收尾。
 
 use super::context::HistoryPolicy;
 use super::*;
@@ -316,33 +316,20 @@ impl App {
         }
     }
 
-    /// 任务成功收尾：自动提炼经验 → 沉淀为共享技能 → 回到对话模式。
+    /// 任务成功收尾：DAG 收尾并回到对话模式。
     ///
-    /// 这是 Skills 共享技能库的核心闭环：任务成功后不"用过即忘"，
-    /// 而是将本次执行过程交给 LLM 提炼为可复用技能（经网关 mem.* 持久化，
-    /// 与 CLI 同源），后续任务在 build_context_prompt 中召回匹配技能，越用越强。
+    /// 技能蒸馏与落盘归运行侧机制（0.1.21 X1-28b）：TUI 不为沉淀技能另发
+    /// LLM 轮次，也不写 mem_d；收尾只剩呈现面的状态迁移，后续任务在
+    /// build_context_prompt 中召回的仍是运行侧写入的共享技能库。
     pub(super) fn complete_task(&mut self) {
-        log::info!("complete_task: 任务完成信号触发，开始经验蒸馏");
+        log::info!("complete_task: 任务完成信号触发，进入收尾");
         // DAG 节点全部完成（P2-C 过程可视化收尾）
         self.gccp.mark_all_done();
-        let recent = self.memory.recent(40);
-        let conv: Vec<String> = recent
-            .iter()
-            .rev()
-            .map(|r| format!("{}: {}", r.role, r.content))
-            .collect();
-        let conv_text = conv.join("\n");
-
-        if conv_text.trim().is_empty() {
-            self.finish_task(false);
-        } else {
-            let prompt = skills::build_distill_prompt(&conv_text);
-            self.dispatch(PendingKind::Distill, &prompt);
-        }
+        self.finish_task();
     }
 
-    /// 任务收尾（技能蒸馏结果应用后）。
-    pub(super) fn finish_task(&mut self, distilled: bool) {
+    /// 任务收尾：状态迁移回对话模式。
+    pub(super) fn finish_task(&mut self) {
         self.task_mode = false;
         self.set_flow_phase(FlowPhase::Chat);
         self.set_task_control(TaskControl::Running);
@@ -350,51 +337,8 @@ impl App {
         self.set_task_state(crate::gccp::TaskState::Completed);
         self.resume_token = None;
         self.gccp.dag = None;
-        log::info!("finish_task: 任务收尾完成（distilled={}）", distilled);
-        if !distilled {
-            self.add_message(
-                MessageRole::System,
-                "任务已完成（技能沉淀跳过或失败，详见日志）。".to_string(),
-            );
-        }
-    }
-
-    /// 应用技能蒸馏轮的 LLM 结果。
-    pub(super) fn apply_distill_result(&mut self, res: Result<RunResponse>) {
-        let distilled = match res {
-            Ok(r) => {
-                self.acc_tokens(&r);
-                match skills::parse_distilled_skill(&r.response) {
-                    Some(skill) => match self.skills.save(skill.clone()) {
-                        Ok(()) => {
-                            self.add_message(
-                                MessageRole::System,
-                                format!(
-                                    "任务完成。经验已自动沉淀为可复用技能「{}」，\
-                                     共享技能库现有 {} 条（Agent 可用能力 +1，与 CLI 同源）。",
-                                    skill.name,
-                                    self.skills.len()
-                                ),
-                            );
-                            true
-                        }
-                        Err(e) => {
-                            log::warn!("skills: save failed: {}", e);
-                            false
-                        }
-                    },
-                    None => {
-                        log::warn!("skills: distill output not parseable");
-                        false
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("skills: distill call failed: {}", e);
-                false
-            }
-        };
-        self.finish_task(distilled);
+        log::info!("finish_task: 任务收尾完成");
+        self.add_message(MessageRole::System, "任务已完成。".to_string());
     }
 
     /* ==================== 后台 LLM 请求机制 ==================== */

@@ -100,7 +100,7 @@ pub fn is_confirm(input: &str) -> bool {
     )
 }
 
-/// 用户输入是否为任务完成指令（触发技能沉淀）
+/// 用户输入是否为任务完成指令（触发任务收尾）
 pub fn is_task_done_input(input: &str) -> bool {
     let t = input.trim().to_lowercase();
     let t = t.trim_matches(['！', '!', '。', '.', ' ', '，', ',']);

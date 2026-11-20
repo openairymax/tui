@@ -6,22 +6,24 @@
 // 可复用技能库（程序性记忆）。
 //
 // 设计原则（50 工程标准 E-3 资源确定性 / A-1 极简主义；0.1.16 架构改造，
-// 用户决策 2026-09-13「CLI 是核心，TUI 是可选的增强」）：
+// 用户决策 2026-09-13「CLI 是核心，TUI 是可选的增强」；0.1.21 X1-28b）：
 //   - 技能即"程序性记忆"：TUI 不持有任何独立技能存储。唯一权威后端是网关
-//     记忆服务 mem_d，经 `mem.*` RPC 写入/读取——与 CLI 同一后端、同一存储、
+//     记忆服务 mem_d，经 `mem.*` RPC 读取——与 CLI 同一后端、同一存储、
 //     同一 schema，二者共享同一记忆库。TUI 只是渲染层。
 //   - 技能记录以 `metadata.kind="skill"` 作为分区标识：与对话记忆（kind 缺省）
 //     同库同流但语义隔离——记忆面板按 kind 过滤只渲染对话轮次，技能库面板按
 //     kind 过滤只渲染技能（见 memory.rs / 本模块 hydrate）。由此实现"TUI 与
 //     CLI 使用一套记忆"，且零新增 gateway 服务面。
-//   - 进程内 mirror 仅作渲染/召回的**同步读缓存**：启动时经 `mem.recent` 水合，
-//     写入经 `mem.write` 异步回投网关。网关不可达时降级为纯内存（volatile），
-//     不落任何本地文件。
+//   - 技能写入（经验蒸馏、复用计数累加）归运行侧机制（CLI / daemon），TUI
+//     侧**只读**：本模块不提供任何写入口。进程内 mirror 仅作渲染/召回的
+//     **同步读缓存**：启动与面板打开时经 `mem.recent` 水合；网关不可达时降级
+//     为纯内存（volatile），不落任何本地文件。
 //
 // 历史：0.1.15 及以前 TUI 使用独立本地 JSONL 库
 // （$AIRY_HOME/data/agentrt/tui/skills.jsonl），与网关记忆库互不相通——这正是
 // "CLI 核心 / TUI 增强"决策下必须消除的存储分叉。本模块随 0.1.16 架构改造收敛
-// 为网关单后端（与 memory.rs 同构，依据 0.1.9 §7 W4「记忆面板统一为 gateway」）。
+// 为网关单后端（与 memory.rs 同构，依据 0.1.9 §7 W4「记忆面板统一为 gateway」）；
+// 0.1.21 X1-28b 摘除 TUI 侧写入口（IS-12：本地写入与服务端事实分叉）。
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -87,10 +89,12 @@ impl SkillRecord {
         }
     }
 
-    /// 序列化为 `mem.write` 的 metadata（kind=skill + 全部索引字段）。
+    /// 构造 `mem.write` 的 metadata 夹具（kind=skill + 全部索引字段）。
     ///
     /// 技能正文（procedure）作为 `data` 单独承载；其余字段进 metadata，使
     /// 记录在 mem_d 中自描述、可被任何 `mem.*` 消费端（CLI 等）无损还原。
+    /// 生产写入在运行侧（0.1.21 X1-28b），此处仅钉住读写两侧共用的 schema。
+    #[cfg(test)]
     fn to_metadata(&self) -> serde_json::Value {
         serde_json::json!({
             "source": "tui",
@@ -134,10 +138,12 @@ impl SkillRecord {
     }
 }
 
-/// 技能库后端 trait（E-4 跨平台一致性：Linux/macOS/Windows 路径统一）
+/// 技能库后端 trait（E-4 跨平台一致性：Linux/macOS/Windows 路径统一）。
+///
+/// 只读契约（0.1.21 X1-28b）：TUI 不写技能，trait 不设任何写方法；技能由
+/// 运行侧机制（CLI / daemon）经 mem.write 写入 mem_d，TUI 只做水合、召回与
+/// 渲染。
 pub trait SkillStore: Send + Sync {
-    /// 保存一条技能（同名技能视为再次沉淀，累加复用次数）
-    fn save(&mut self, skill: SkillRecord) -> std::io::Result<()>;
     /// 按触发关键词/摘要召回相关技能（按相关度倒序）
     fn find(&self, query: &str, limit: usize) -> Vec<SkillRecord>;
     /// 列出全部技能（按沉淀时间倒序）
@@ -151,21 +157,22 @@ pub trait SkillStore: Send + Sync {
     fn backend_name(&self) -> &'static str {
         "gateway"
     }
+    /// 单测夹具：向镜像注入技能（生产无写入口，读取行为仍需可测）。
+    #[cfg(test)]
+    fn seed(&mut self, skill: SkillRecord);
 }
 
 /// 网关技能后端（TUI 唯一后端）。
 ///
 /// 权威存储为网关记忆服务 mem_d（`mem.*` RPC，与 CLI 同一后端，技能以
 /// `metadata.kind="skill"` 与对话记忆分区共存）；本结构持有的 mirror 是渲染/
-/// 召回的同步读缓存：启动水合 + 写入回投 + 面板打开时再水合。无 tokio 运行时
-/// （单测）时降级为纯内存 volatile。
+/// 召回的同步读缓存：启动水合 + 面板打开时再水合。无 tokio 运行时（单测）
+/// 时降级为纯内存 volatile。写入不在本结构职责内（0.1.21 X1-28b：TUI 只读）。
 pub struct GatewaySkillStore {
     /// 网关客户端（refresh 用水合；None = volatile 降级）
     client: Option<GatewayClient>,
     /// 同步读缓存（旧→新有序，list 时反向取）
     mirror: Arc<Mutex<Vec<SkillRecord>>>,
-    /// 写投递通道：save 立即入队，后台任务串行投递 `mem.write`
-    tx: Option<tokio::sync::mpsc::UnboundedSender<SkillRecord>>,
     /// 后端名（"gateway" / "volatile"），面板展示用
     backend: &'static str,
 }
@@ -184,13 +191,10 @@ impl GatewaySkillStore {
             }
         };
         let mirror: Arc<Mutex<Vec<SkillRecord>>> = Arc::new(Mutex::new(Vec::new()));
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        handle.spawn(writer(client.clone(), rx));
         handle.spawn(hydrate(client.clone(), mirror.clone()));
         Self {
             client: Some(client),
             mirror,
-            tx: Some(tx),
             backend: "gateway",
         }
     }
@@ -200,55 +204,12 @@ impl GatewaySkillStore {
         Self {
             client: None,
             mirror: Arc::new(Mutex::new(Vec::new())),
-            tx: None,
             backend: "volatile",
         }
     }
 }
 
 impl SkillStore for GatewaySkillStore {
-    fn save(&mut self, skill: SkillRecord) -> std::io::Result<()> {
-        // 同名技能视为再次沉淀：在镜像内合并并累加复用次数。mem_d 只提供插入
-        // 语义，故采用 append-only：新记录携带**累计后**的 success_count，水合
-        // 时按 name 去重取最新记录即为权威计数（见 hydrate）。
-        let merged = {
-            let mut guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.iter().position(|s| s.name == skill.name) {
-                Some(pos) => {
-                    let mut m = guard[pos].clone();
-                    m.success_count = m.success_count.saturating_add(1);
-                    if !skill.procedure.trim().is_empty() {
-                        m.procedure = skill.procedure.clone();
-                    }
-                    if !skill.lessons.trim().is_empty() {
-                        m.lessons = skill.lessons.clone();
-                    }
-                    m.trigger = skill.trigger.clone();
-                    m.summary = skill.summary.clone();
-                    m.tags = skill.tags.clone();
-                    guard[pos] = m.clone();
-                    m
-                }
-                None => {
-                    guard.push(skill.clone());
-                    if guard.len() > MAX_SKILLS {
-                        let drain = guard.len() - MAX_SKILLS;
-                        guard.drain(..drain);
-                    }
-                    skill
-                }
-            }
-        };
-        // 权威存储在网关：入队后台投递 `mem.write`。投递失败（运行时已退出）
-        // 仅记日志——镜像已乐观更新，用户交互不因此中断。
-        if let Some(tx) = &self.tx {
-            if tx.send(merged).is_err() {
-                log::warn!("skills: 网关写投递通道已关闭，技能仅在镜像");
-            }
-        }
-        Ok(())
-    }
-
     fn find(&self, query: &str, limit: usize) -> Vec<SkillRecord> {
         let tokens: Vec<String> = query
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
@@ -311,28 +272,14 @@ impl SkillStore for GatewaySkillStore {
     fn backend_name(&self) -> &'static str {
         self.backend
     }
-}
 
-/// 后台写投递：把技能记录逐条经 `mem.write` 持久化到网关记忆服务。
-///
-/// 记录 schema（与 CLI 共享同一存储的唯一约定）：
-///   data     = procedure（可复用执行步骤，技能正文）
-///   metadata = { source:"tui", kind:"skill", name, category, trigger,
-///                summary, lessons, tags, success_count, created_at }
-async fn writer(client: GatewayClient, mut rx: tokio::sync::mpsc::UnboundedReceiver<SkillRecord>) {
-    while let Some(rec) = rx.recv().await {
-        // 技能正文以 procedure 为准；其后备为 summary，保证 data 非空。
-        let data = if rec.procedure.trim().is_empty() {
-            rec.summary.clone()
-        } else {
-            rec.procedure.clone()
-        };
-        let params = serde_json::json!({
-            "data": data,
-            "metadata": rec.to_metadata(),
-        });
-        if let Err(e) = client.rpc_call("mem.write", params).await {
-            log::warn!("skills: mem.write 失败（技能仅在镜像，待下次水合）: {}", e);
+    #[cfg(test)]
+    fn seed(&mut self, skill: SkillRecord) {
+        let mut guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        guard.push(skill);
+        if guard.len() > MAX_SKILLS {
+            let drain = guard.len() - MAX_SKILLS;
+            guard.drain(..drain);
         }
     }
 }
@@ -389,103 +336,6 @@ pub fn build_skill_store(gateway: &GatewayClient) -> Box<dyn SkillStore> {
     Box::new(GatewaySkillStore::new(gateway.clone()))
 }
 
-/// 构建经验提炼提示词。
-///
-/// 任务成功后，将最近一段对话（目标 + 步骤 + 结果）交给 LLM，
-/// 要求其输出一条结构化技能（JSON），格式与 `SkillRecord` 对齐。
-pub fn build_distill_prompt(conversation: &str) -> String {
-    format!(
-        "你是技能提炼器。请根据以下任务执行过程，提炼一条可复用的技能，\
-         避免后续任务'用过即忘'。\n\
-         只输出一个 JSON 对象，字段严格为：\n\
-         {{\"name\":\"snake_case技能名\",\"category\":\"分类\",\
-         \"trigger\":\"触发关键词，逗号分隔\",\"summary\":\"一句话摘要\",\
-         \"procedure\":\"可复用执行步骤，含要点与顺序\",\"lessons\":\"经验与教训\",\
-         \"tags\":\"标签，逗号分隔\"}}\n\
-         不要输出 JSON 以外的任何内容。\n\n\
-         【任务执行过程】\n{}\n",
-        conversation
-    )
-}
-
-/// 解析 LLM 提炼结果（JSON）为 SkillRecord。
-///
-/// 容错处理：剥离可能的 Markdown 代码围栏与前后空白，再尝试解析；
-/// 解析失败或缺少必填字段（name/trigger/procedure）时返回 None。
-pub fn parse_distilled_skill(raw: &str) -> Option<SkillRecord> {
-    let t = raw.trim();
-    let json = if t.starts_with("```") {
-        let start = t.find('\n').unwrap_or(0) + 1;
-        let end = t.rfind("```").unwrap_or(t.len());
-        t[start..end].trim()
-    } else {
-        // 可能包含 "JSON:" 前缀等，取第一个 '{' 到最后一个 '}'
-        let s = t.find('{')?;
-        let e = t.rfind('}')?;
-        if e > s {
-            &t[s..=e]
-        } else {
-            t
-        }
-    };
-
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    let name = v.get("name")?.as_str()?.trim().to_string();
-    if name.is_empty() {
-        return None;
-    }
-    let trigger = v
-        .get("trigger")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if trigger.is_empty() {
-        return None;
-    }
-    let procedure = v
-        .get("procedure")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if procedure.is_empty() {
-        return None;
-    }
-
-    Some(SkillRecord {
-        name,
-        category: v
-            .get("category")
-            .and_then(|x| x.as_str())
-            .unwrap_or("general")
-            .trim()
-            .to_string(),
-        trigger,
-        summary: v
-            .get("summary")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        procedure,
-        lessons: v
-            .get("lessons")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        tags: v
-            .get("tags")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        created_at: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-        success_count: 0,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn save_and_find_roundtrip() {
+    fn seeded_skill_is_findable() {
         let mut store = store();
         let skill = SkillRecord::new(
             "debug_http_timeout",
@@ -506,7 +356,7 @@ mod tests {
             "超时多为代理而非目标服务器",
             "debug,http",
         );
-        store.save(skill).unwrap();
+        store.seed(skill);
         assert_eq!(store.len(), 1);
 
         let hits = store.find("http timeout 超时", 5);
@@ -515,24 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn same_name_merges_and_counts() {
-        let mut store = store();
-        let s1 = SkillRecord::new("s", "dev", "a,b", "sum", "step1", "lesson", "t");
-        let s2 = SkillRecord::new("s", "dev", "a,b", "sum2", "step2", "lesson2", "t");
-        store.save(s1).unwrap();
-        store.save(s2).unwrap();
-        assert_eq!(store.len(), 1);
-        assert_eq!(store.list()[0].success_count, 1);
-        // 最新 procedure 生效（非空覆盖）
-        assert_eq!(store.list()[0].procedure, "step2");
-    }
-
-    #[test]
     fn find_empty_query_returns_nothing() {
         let mut store = store();
-        store
-            .save(SkillRecord::new("x", "dev", "k1", "d", "p", "l", "t"))
-            .unwrap();
+        store.seed(SkillRecord::new("x", "dev", "k1", "d", "p", "l", "t"));
         assert!(store.find("", 5).is_empty());
     }
 
@@ -578,37 +413,5 @@ mod tests {
         // kind=skill 但缺 name → 丢弃
         let no_name = serde_json::json!({ "kind": KIND_SKILL });
         assert!(SkillRecord::from_mem_record(1, "hello", &no_name).is_none());
-    }
-
-    #[test]
-    fn parse_distilled_skill_plain_json() {
-        let raw = r#"{"name":"fix_dns_timeout","category":"ops","trigger":"dns,timeout","summary":"DNS 解析超时处理","procedure":"1. 检查 resolv.conf; 2. 改用系统 DNS","lessons":"优先系统 DNS","tags":"dns"}"#;
-        let s = parse_distilled_skill(raw).expect("parse");
-        assert_eq!(s.name, "fix_dns_timeout");
-        assert_eq!(s.category, "ops");
-        assert_eq!(s.success_count, 0);
-    }
-
-    #[test]
-    fn parse_distilled_skill_with_fence() {
-        let raw = "```json\n{\"name\":\"a_b\",\"trigger\":\"t1,t2\",\"procedure\":\"p\"}\n```";
-        let s = parse_distilled_skill(raw).expect("parse");
-        assert_eq!(s.name, "a_b");
-        assert_eq!(s.procedure, "p");
-    }
-
-    #[test]
-    fn parse_distilled_skill_invalid_returns_none() {
-        assert!(parse_distilled_skill("不认识的回复").is_none());
-        assert!(parse_distilled_skill(r#"{"name":"x"}"#).is_none());
-    }
-
-    #[test]
-    fn build_distill_prompt_contains_json_fields() {
-        let p = build_distill_prompt("用户: 帮我修超时\n助手: 已修复");
-        assert!(p.contains("name"));
-        assert!(p.contains("procedure"));
-        assert!(p.contains("任务执行过程"));
-        assert!(p.contains("用户: 帮我修超时"));
     }
 }

@@ -53,8 +53,6 @@ pub(super) enum PendingKind {
     GradPlan,
     /// GRAD 确认（confirmed=true，开始执行）或修订（confirmed=false）
     GradConfirm { confirmed: bool },
-    /// 任务完成经验蒸馏（原 complete_task 网络部分）
-    Distill,
     /// D-12：向 agent.turns 取回重启后仍暂停的回合令牌
     TurnState,
     /// 未连接时的连接检查：通过后继续执行 kind/prompt 的真实请求
