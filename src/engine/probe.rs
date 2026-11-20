@@ -379,6 +379,42 @@ mod tests {
         assert_eq!(parse_sync(b"\x1b[?2026;x\x1b[?2026;2$y"), Some(false));
     }
 
+    /// 四分支表驱动：不支持 / 支持且开 / 支持但关 / 窗口结束无应答。
+    ///
+    /// 无应答必须停在「未知」，不得被压成「不支持」——两者对上层是不同
+    /// 的事实，混同会让健康面板谎报终端的真实能力。
+    #[test]
+    fn decrqm_2026_four_branch_table() {
+        let cases: [(&[u8], Option<bool>); 4] = [
+            (b"\x1b[?2026;0$y", Some(false)),
+            (b"\x1b[?2026;1$y", Some(true)),
+            (b"\x1b[?2026;2$y", Some(false)),
+            (b"", None),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(parse_sync(raw), want, "回包 {raw:?}");
+        }
+    }
+
+    /// 整个探测窗口无任何回包时，逐字段停在未知（真彩除外，它来自环境）。
+    ///
+    /// 这里直接喂空窗口给三个解析器而不经 `caps`，避免把宿主环境里的
+    /// 覆盖变量误当成被测行为。
+    #[test]
+    fn silent_window_keeps_probe_fields_unknown() {
+        let empty: &[u8] = b"";
+        assert_eq!(scheme_of(empty), None, "明暗不得凭默认猜测");
+        assert_eq!(parse_sync(empty), None, "同步输出不得当作不支持");
+        assert_eq!(parse_kitty(empty), None, "键盘协议不得当作不支持");
+        let unknown = Caps {
+            scheme: None,
+            sync_output: None,
+            kitty: None,
+            truecolor: false,
+        };
+        assert_eq!(unknown.dark(), None, "布尔投影须保持未知");
+    }
+
     #[test]
     fn kitty_flags_reply_marks_support() {
         assert_eq!(parse_kitty(b"\x1b[?1u"), Some(true));
