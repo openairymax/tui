@@ -199,10 +199,10 @@ impl ImeEngine {
             }
         }
         candidates.push(PathBuf::from("share/agentrt/ime/airy_ime.dat"));
-        // 开发布局：agentrt 源码树内联词典（伞仓 sdk/tui → agent-workload/agentrt）
+        // 开发布局：词典随 TUI 宿主落在 CLI 源码树（伞仓 sdk/tui → agent-workload/agentrt）
         candidates.push(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../agentrt/commons/utils/ime/data/airy_ime.dat"),
+                .join("../../agentrt/tools/airy_cli/src/tui/ime/data/airy_ime.dat"),
         );
         candidates.into_iter().find(|p| p.is_file())
     }
