@@ -25,6 +25,8 @@ pub(crate) enum Scheme {
 pub(crate) enum Src {
     Osc11,
     Dec997,
+    /// 环境覆盖（AIRY_TUI_CAPS_DARK），优先级最高但只在显式设置时出现。
+    Env,
 }
 
 /// 探测窗口内收集到的能力结论。
@@ -47,6 +49,45 @@ impl Caps {
     /// 明暗结论的布尔投影；未探明时 `None`（调用方不得猜）。
     pub(crate) fn dark(&self) -> Option<bool> {
         self.scheme.map(|(s, _)| s == Scheme::Dark)
+    }
+
+    /// 应用 `AIRY_TUI_CAPS_*` 覆盖：SYNC_OUTPUT / TRUECOLOR / KITTY / DARK。
+    ///
+    /// 取值 1/0、true/false、on/off（大小写不敏感）；缺失或非法时保留探测
+    /// 结论，不把「写错环境变量」降级成「能力缺失」。
+    pub(crate) fn override_env(mut self, var: impl Fn(&str) -> Option<String>) -> Self {
+        self.sync_output = flag_of(var("AIRY_TUI_CAPS_SYNC_OUTPUT")).or(self.sync_output);
+        if let Some(on) = flag_of(var("AIRY_TUI_CAPS_TRUECOLOR")) {
+            self.truecolor = on;
+        }
+        self.kitty = flag_of(var("AIRY_TUI_CAPS_KITTY")).or(self.kitty);
+        if let Some(scheme) = theme_of(var("AIRY_TUI_CAPS_DARK")) {
+            self.scheme = Some((scheme, Src::Env));
+        }
+        self
+    }
+}
+
+/// 布尔环境值解析：无法识别返回 None。
+fn flag_of(val: Option<String>) -> Option<bool> {
+    let low = val?.trim().to_ascii_lowercase();
+    match low.as_str() {
+        "1" | "true" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// 明暗环境值解析：除布尔取值外还接受 dark/light 直书语义。
+///
+/// DARK 的取值域比纯开关宽——写 `light` 的人表达的是明暗语义而非布尔
+/// 取反，两者都须识别；其余取值同样保留探测结论。
+fn theme_of(val: Option<String>) -> Option<Scheme> {
+    let low = val?.trim().to_ascii_lowercase();
+    match low.as_str() {
+        "1" | "true" | "on" | "dark" => Some(Scheme::Dark),
+        "0" | "false" | "off" | "light" => Some(Scheme::Light),
+        _ => None,
     }
 }
 
@@ -116,6 +157,7 @@ pub(crate) fn caps(buf: &[u8]) -> Caps {
         kitty: parse_kitty(buf),
         truecolor: env_truecolor(|k| std::env::var(k).ok()),
     }
+    .override_env(|k| std::env::var(k).ok())
 }
 
 fn scheme_of(buf: &[u8]) -> Option<(Scheme, Src)> {
@@ -341,5 +383,56 @@ mod tests {
         assert_eq!(got.scheme, Some((Scheme::Dark, Src::Osc11)));
         assert_eq!(got.sync_output, Some(true));
         assert_eq!(got.kitty, Some(true));
+    }
+
+    #[test]
+    fn default_caps_keep_every_field_unknown() {
+        let got = Caps::default();
+        assert_eq!(got.scheme, None);
+        assert_eq!(got.sync_output, None);
+        assert_eq!(got.kitty, None);
+        assert!(!got.truecolor);
+        assert_eq!(got.dark(), None);
+    }
+
+    #[test]
+    fn env_override_wins_over_probe() {
+        let vars = |k: &str| {
+            Some(
+                match k {
+                    "AIRY_TUI_CAPS_SYNC_OUTPUT" => "1",
+                    "AIRY_TUI_CAPS_TRUECOLOR" => "ON",
+                    "AIRY_TUI_CAPS_KITTY" => "0",
+                    "AIRY_TUI_CAPS_DARK" => "light",
+                    _ => return None,
+                }
+                .to_string(),
+            )
+        };
+        let base = Caps {
+            scheme: Some((Scheme::Dark, Src::Osc11)),
+            sync_output: Some(false),
+            kitty: Some(true),
+            truecolor: false,
+        };
+        let got = base.override_env(vars);
+        assert_eq!(got.sync_output, Some(true), "显式覆盖必须压过探测结论");
+        assert_eq!(got.kitty, Some(false));
+        assert!(got.truecolor);
+        assert_eq!(got.scheme, Some((Scheme::Light, Src::Env)));
+        assert_eq!(got.dark(), Some(false));
+    }
+
+    #[test]
+    fn env_override_is_partial_and_lenient() {
+        let vars = |k: &str| (k == "AIRY_TUI_CAPS_KITTY").then(|| "yes".to_string());
+        let base = Caps {
+            sync_output: Some(true),
+            ..Caps::default()
+        };
+        let got = base.override_env(vars);
+        assert_eq!(got.sync_output, Some(true), "缺失的覆盖项保持原值");
+        assert_eq!(got.kitty, None, "非法取值不得当作关闭");
+        assert_eq!(got.scheme, None);
     }
 }
