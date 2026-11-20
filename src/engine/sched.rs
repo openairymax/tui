@@ -40,6 +40,7 @@ use std::collections::VecDeque;
 
 use super::frame::{Costs, Stage};
 use super::ring::Ring;
+use super::stats::{aggregate, FrameStats};
 use crate::budget::{
     FRAME_BUDGET_US, FRAME_QUEUE_CAP, IDLE_WAIT_MS, MAX_FPS, MIN_RENDER_INTERVAL_MS,
 };
@@ -373,6 +374,13 @@ impl Sched {
         self.report();
     }
 
+    /// 最近窗口的六段与整帧分位汇总（X8-06a）。
+    ///
+    /// 样本即环内原始单帧记录，聚合口径为最近秩，故同一批样本可离线复算。
+    pub(crate) fn stats(&self) -> FrameStats {
+        aggregate(self.ring.snapshot())
+    }
+
     /// 溢出丢弃：在最低优先级档位中丢弃最靠中间的条目（保首尾）。
     fn drop_lowest(&mut self) -> bool {
         let worst = self.queue.iter().map(|(lane, _)| *lane).max();
@@ -418,9 +426,14 @@ impl Sched {
         let span_ms = self.now_ms.saturating_sub(self.rate_ms);
         self.rate_ms = self.now_ms;
         let fps = Self::fps_in(METRIC_EVERY, span_ms);
+        let (p50, p95, peak) = self
+            .stats()
+            .whole()
+            .map_or((0, 0, 0), |s| (s.p50, s.p95, s.peak));
         log::info!(
             "engine/sched: 帧 {} 帧率 {}/s（窗口 {}ms）排版 均 {}us/峰 {}us \
-             差异+合成 均 {}us/峰 {}us 超预算 {} 合并 {} 最长合帧等待 {}us 背压丢弃 {}",
+             差异+合成 均 {}us/峰 {}us 整帧 p50 {}us/p95 {}us/峰 {}us \
+             超预算 {} 合并 {} 最长合帧等待 {}us 背压丢弃 {}",
             self.frames,
             fps,
             span_ms,
@@ -428,6 +441,9 @@ impl Sched {
             self.layout_max_us,
             present_avg,
             self.present_max_us,
+            p50,
+            p95,
+            peak,
             self.over,
             self.merges,
             self.wait_max_us,
@@ -667,6 +683,27 @@ mod tests {
         assert_eq!(sched.ring.len(), 2);
         assert_eq!(sched.ring.written(), 2);
         assert_eq!(sched.frames, 2);
+    }
+
+    /// 分位汇总取自环内窗口：未写满时报全部样本，写满后只报最近一个窗口。
+    #[test]
+    fn stats_follow_the_retained_window() {
+        let mut sched = fixture();
+        for i in 1..=100u64 {
+            sched.note_frame(&cost(i, 0));
+        }
+        let compose = sched.stats().stage(Stage::Compose).expect("有样本");
+        assert_eq!((compose.p50, compose.p95, compose.peak), (50, 95, 100));
+        assert_eq!(sched.stats().whole().expect("整帧").n, 100);
+
+        let mut sched = fixture();
+        let total = crate::engine::ring::CAP as u64 + 5;
+        for i in 1..=total {
+            sched.note_frame(&cost(i, 0));
+        }
+        let compose = sched.stats().stage(Stage::Compose).expect("有样本");
+        assert_eq!(compose.n, crate::engine::ring::CAP, "样本数封顶于容量");
+        assert_eq!(compose.peak, total, "峰值即最新一帧");
     }
 
     /// 帧度量：按帧数节拍自计数，不因跳帧漂移。
