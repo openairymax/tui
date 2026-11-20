@@ -151,6 +151,7 @@ impl Default for Gaps {
 mod tests {
     use super::{Gaps, MAX_GAPS};
     use crate::engine::event::seq::{Tracker, Verdict};
+    use crate::engine::logfile::LineLog;
 
     fn gap(from: u64, to: u64) -> Verdict {
         Verdict::Gap { from, to }
