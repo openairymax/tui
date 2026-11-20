@@ -3,12 +3,13 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 后台请求派发：pending 任务启动、连接后回调、工具事件渲染。
+// 后台请求派发：运行轮参数装配、工具事件渲染。
 
+use super::lane::TurnArgs;
 use super::*;
 
 impl App {
-    /// 分派一个后台 LLM 请求：已连接直接发起；未连接先检查连接，通过后继续。
+    /// 分派一个后台 LLM 请求（统一走事件管道）。
     pub(super) fn dispatch(&mut self, kind: PendingKind, prompt: &str) {
         self.dispatch_with_agent(kind, prompt, None, None, None);
     }
@@ -36,74 +37,20 @@ impl App {
             history.is_some(),
             gccp_answers.is_some()
         );
-        if self.connected {
-            self.start_pending(kind, prompt, agent, history, gccp_answers);
-        } else {
-            self.start_connect_then(kind, prompt, agent, history, gccp_answers);
-        }
-    }
-
-    /// 发起后台 LLM 请求（网关调用在 tokio 任务中执行，不阻塞事件循环渲染）。
-    ///
-    /// `agent`：携带时请求经 agent_d 编排执行（spawn+invoke），否则纯 LLM 对话。
-    /// `history`：完整对话历史（OpenAI messages 数组），随请求透传 gateway。
-    /// `gccp_answers`：GCCP 两段式交互第二段答案 JSON（可 None，透传 think.process）。
-    pub(super) fn start_pending(
-        &mut self,
-        kind: PendingKind,
-        prompt: &str,
-        agent: Option<serde_json::Value>,
-        history: Option<serde_json::Value>,
-        gccp_answers: Option<String>,
-    ) {
-        let gateway = self.gateway.clone();
-        let agent_file = self.agent_file.clone();
-        let prompt = prompt.to_string();
-        // 当前模型（/model 设置）随请求下发；空则不携带，由网关/llm_d 回落默认
-        let model = if self.model.is_empty() {
-            None
-        } else {
-            Some(self.model.clone())
-        };
-        // 客户端预分配会话 ID：Ctrl+X 中止时凭此调用 gateway task.cancel
-        let session_id = self.new_session_id();
-        let sid_for_task = session_id.clone();
-        let prompt_len = prompt.len();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let r = gateway
-                .send_message(
-                    &prompt,
-                    &agent_file,
-                    model.as_deref(),
-                    Some(&sid_for_task),
-                    agent,
-                    history,
-                    gccp_answers.as_deref(),
-                )
-                .await;
-            let _ = tx.send(PendingOutcome::Run(r));
-        });
-        log::info!(
-            "start_pending: 后台请求已发起（session={}，prompt_len={}，kind={:?}）",
-            session_id,
-            prompt_len,
-            kind
-        );
-        self.begin_busy();
-        self.set_task_control(TaskControl::Running);
-        self.pending = Some(PendingTurn {
-            rx,
+        self.start_turn(
             kind,
-            task: Some(task),
-            session_id,
-            stream_rx: None,
-            tool_rx: None,
-        });
+            prompt,
+            TurnArgs {
+                messages: history,
+                gccp_answers,
+                agent,
+                ..TurnArgs::default()
+            },
+        );
     }
 
-    /// 发起流式对话轮请求（统一任务编排入口，C-15）：所有普通对话轮走
-    /// task.submit_stream（服务端裁决 chat/task），与 CLI 同源。对话不再由
+    /// 发起流式对话轮请求（统一任务编排入口，C-15）：所有普通对话轮经
+    /// 事件管道下发（服务端裁决 chat/task），与 CLI 同源。对话不再由
     /// 客户端预判链路；长任务在门禁处得到 needs_intent，由 apply 侧进入
     /// 目标确认后带确认重新提交。
     ///
@@ -118,14 +65,6 @@ impl App {
         messages: Option<serde_json::Value>,
         resume: Option<String>,
     ) {
-        let gateway = self.gateway.clone();
-        let agent_file = self.agent_file.clone();
-        let model = if self.model.is_empty() {
-            None
-        } else {
-            Some(self.model.clone())
-        };
-        let session_id = self.new_session_id();
         // prompt：末条 user 消息文本（chat_round 构造的增强 prompt）；
         // 续跑时不带历史，prompt 为空，上下文全部来自令牌
         let prompt = messages
@@ -139,83 +78,19 @@ impl App {
             .and_then(|m| m.get("content").and_then(|c| c.as_str()))
             .unwrap_or("")
             .to_string();
-        // 事件管道优先（X1-26c）：同一 turn 语义经 CLI 事件流下发；管道不可用
-        // 才走网关直连（原因记入 lane_err，不静默）。
-        if self.ev.is_some() {
-            let mut opts = serde_json::Map::new();
-            opts.insert("agent_file".into(), serde_json::json!(&agent_file));
-            opts.insert("interactive".into(), serde_json::json!(true));
-            opts.insert("session_id".into(), serde_json::json!(&session_id));
-            if let Some(m) = &model {
-                opts.insert("model".into(), serde_json::json!(m));
-            }
-            if let Some(msgs) = &messages {
-                opts.insert("messages".into(), msgs.clone());
-            }
-            if let Some(tok) = &resume {
-                // 续跑=已确认任务的继续执行：与网关直连入口同一语义
-                opts.insert("resume_token".into(), serde_json::json!(tok));
-                opts.insert("gccp_confirmed".into(), serde_json::json!(true));
-                opts.insert("mode".into(), serde_json::json!("task"));
-            }
-            let opts = serde_json::Value::Object(opts);
-            if self.start_lane_turn(kind.clone(), &prompt, opts) {
-                self.clear_stream();
-                log::info!("start_stream_pending: 经事件管道发起（session={session_id}）");
-                return;
-            }
-        }
-        // 续跑是已确认任务的继续执行；新对话轮不带 gccp_confirmed
-        let confirmed = resume.is_some();
-        // 流式通道：tokio 任务把事件帧转译后的文本增量送进 mpsc，主循环
-        // poll_pending 消费；工具/思考/错误事件走独立通道渲染
-        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let sid_for_task = session_id.clone();
-        let task = tokio::spawn(async move {
-            let result = gateway
-                .run_task_stream_turn(
-                    &prompt,
-                    &agent_file,
-                    model.as_deref(),
-                    &sid_for_task,
-                    None,
-                    messages,
-                    None,
-                    resume.as_deref(),
-                    resume.as_deref().map(|_| "task"),
-                    confirmed,
-                    |chunk| {
-                        let _ = stream_tx.send(chunk.to_string());
-                    },
-                    |evt| {
-                        let _ = tool_tx.send(evt.to_string());
-                    },
-                )
-                .await;
-            let _ = tx.send(PendingOutcome::Run(result));
-        });
-        log::info!(
-            "start_stream_pending: task.submit_stream 已发起（session={}）",
-            session_id
-        );
-        self.begin_busy();
-        self.set_task_control(TaskControl::Running);
-        self.pending = Some(PendingTurn {
-            rx,
+        self.start_turn(
             kind,
-            task: Some(task),
-            session_id,
-            stream_rx: Some(stream_rx),
-            tool_rx: Some(tool_rx),
-        });
-        // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
-        self.clear_stream();
+            &prompt,
+            TurnArgs {
+                messages,
+                resume,
+                ..TurnArgs::default()
+            },
+        );
     }
 
     /// 流式渲染态归零：新轮开始前清空上一轮的增量、工具行与思考链残留。
-    fn clear_stream(&mut self) {
+    pub(super) fn clear_stream(&mut self) {
         self.streaming_text.clear();
         self.stream_sanitizer.reset();
         self.stream_reasoning.clear();
@@ -247,52 +122,9 @@ impl App {
         });
     }
 
-    /// 未连接时的连接检查：后台执行健康检查，通过后继续真实请求。
-    pub(super) fn start_connect_then(
-        &mut self,
-        kind: PendingKind,
-        prompt: &str,
-        agent: Option<serde_json::Value>,
-        history: Option<serde_json::Value>,
-        gccp_answers: Option<String>,
-    ) {
-        log::debug!(
-            "start_connect_then: 未连接，先做健康检查后继续（kind={:?}）",
-            kind
-        );
-        let gateway = self.gateway.clone();
-        let prompt = prompt.to_string();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let ok = match gateway.health_check().await {
-                Ok(h) => h.status == "healthy" || h.status == "ok",
-                Err(_) => false,
-            };
-            let _ = tx.send(PendingOutcome::Connect(ok));
-        });
-        self.begin_busy();
-        self.set_task_control(TaskControl::Running);
-        self.pending = Some(PendingTurn {
-            rx,
-            kind: PendingKind::CheckConnect {
-                kind: Box::new(kind),
-                prompt,
-                agent,
-                history,
-                gccp_answers,
-            },
-            task: Some(task),
-            session_id: String::new(),
-            stream_rx: None,
-            tool_rx: None,
-        });
-    }
-
-    /// 发起任务执行轮事件流请求（C-15 统一入口：task.submit_stream）。
-    ///
-    /// 用户在 GRAD 阶段确认后进入执行：携带 `mode="task"` 与
-    /// `gccp_confirmed=true` 通过服务端目标门禁，计划/子目标/状态迁移经
-    /// plan/step/task_state 事件渲染（不再依赖正文 [MODE:TASK] 标记）。
+    /// 发起任务执行轮（C-15 统一入口）：GRAD 确认后带 `mode="task"` 与
+    /// `gccp_confirmed=true` 通过服务端目标门禁；计划/子目标/状态迁移由
+    /// 事件投影上屏，不再依赖正文 [MODE:TASK] 标记。
     pub(super) fn start_run_stream_pending(
         &mut self,
         kind: PendingKind,
@@ -300,66 +132,17 @@ impl App {
         history: Option<serde_json::Value>,
         gccp_answers: Option<String>,
     ) {
-        let gateway = self.gateway.clone();
-        let agent_file = self.agent_file.clone();
-        let prompt = prompt.to_string();
-        let model = if self.model.is_empty() {
-            None
-        } else {
-            Some(self.model.clone())
-        };
-        let session_id = self.new_session_id();
-        let sid_for_task = session_id.clone();
-        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let result = gateway
-                .run_task_stream_turn(
-                    &prompt,
-                    &agent_file,
-                    model.as_deref(),
-                    &sid_for_task,
-                    None,
-                    history,
-                    gccp_answers.as_deref(),
-                    None,
-                    Some("task"),
-                    true,
-                    |chunk| {
-                        let _ = stream_tx.send(chunk.to_string());
-                    },
-                    |evt| {
-                        let _ = tool_tx.send(evt.to_string());
-                    },
-                )
-                .await;
-            let _ = tx.send(PendingOutcome::Run(result));
-        });
-        log::info!(
-            "start_run_stream_pending: task.submit_stream 已发起（session={}，kind={:?}）",
-            session_id,
-            kind
-        );
-        self.begin_busy();
-        self.set_task_control(TaskControl::Running);
-        self.pending = Some(PendingTurn {
-            rx,
+        self.start_turn(
             kind,
-            task: Some(task),
-            session_id,
-            stream_rx: Some(stream_rx),
-            tool_rx: Some(tool_rx),
-        });
-        // 占位清场：思考链/工具行本轮从零开始（B3：净化器状态同步复位）
-        self.streaming_text.clear();
-        self.stream_sanitizer.reset();
-        self.stream_reasoning.clear();
-        self.stream_reasoning_model.clear();
-        self.stream_reasoning_start = None;
-        self.last_reasoning = None;
-        self.stream_tool_events.clear();
-        self.stream_error = None;
+            prompt,
+            TurnArgs {
+                messages: history,
+                gccp_answers,
+                confirmed: true,
+                mode: Some("task"),
+                ..TurnArgs::default()
+            },
+        );
     }
 
     /// 将 SSE 工具事件（__airy_evt JSON）渲染为对话内的工具状态行。

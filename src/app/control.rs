@@ -3,7 +3,7 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 运行控制与视图滚动：审批、中止、连接检查、退出。
+// 运行控制与视图滚动：审批、中止、启动探测、退出。
 
 use super::*;
 
@@ -92,10 +92,10 @@ impl App {
         self.abort_task();
     }
 
-    /// 人工中止当前后台请求（Ctrl+X）：取消 tokio 任务并清理待办状态。
+    /// 人工中止当前后台请求（Ctrl+X）：取消事件管道在途轮并清理待办状态。
     ///
-    /// 客户端侧取消 tokio 任务并恢复 UI（阶段按请求类型回退，交互不挂死）；
-    /// 服务端通过 gateway task.cancel 中止运行中的 task.submit（资源释放）。
+    /// 取消帧直达 CLI，引擎侧随 SSE 断流释放运行资源；本地游标与 pending
+    /// 立即释放，UI 按请求类型回退阶段，交互不挂死。
     pub fn abort_task(&mut self) {
         // 事件管道在途轮：取消帧直达 CLI 收口，本地游标立即释放，避免
         // 取消后的迟到终态被下一轮误当成本轮结果。
@@ -125,20 +125,6 @@ impl App {
         // 中止后保持中止态（状态徽章显示「已中止」）；新交互发起时复位 Running
         self.set_task_control(TaskControl::Aborted);
         log::info!("abort_task: 人工中止（session={}）", session_id);
-
-        // 服务端取消：凭预分配 session_id 中止 gateway 运行中请求（尽力而为）
-        if !session_id.is_empty() {
-            let gw = self.gateway.clone();
-            tokio::spawn(async move {
-                if let Err(e) = gw.cancel_session(&session_id).await {
-                    log::debug!(
-                        "task.cancel request failed (session={}): {}",
-                        session_id,
-                        e
-                    );
-                }
-            });
-        }
 
         // 按请求类型回退阶段，避免停留在等待状态
         match kind {
@@ -179,9 +165,6 @@ impl App {
                     "任务事实确认已中止，任务放弃。".to_string(),
                 );
                 self.task_mode = false;
-            }
-            PendingKind::CheckConnect { .. } => {
-                self.add_message(MessageRole::System, "已中止连接等待。".to_string());
             }
             PendingKind::TurnState => {
                 self.add_message(MessageRole::System, "已中止断点查询。".to_string());
