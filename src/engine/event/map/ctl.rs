@@ -22,6 +22,9 @@
 // 载荷，客户端不拿会话号或运行号去冒充。快照帧通常没有身份——它描述的是
 // 「这次运行」，身份缺席即留空，由投影决定用不用。
 //
+// control_response 是上行帧，不会出现在本映射里；用户的裁决由动作层造
+// Control::Answer 入事件流，审批表才可能有「谁批的、批得对不对」这条线。
+//
 // 取消单列而不并进普通状态：cancelled 携带「谁、为什么」的追溯，界面要能
 // 说清中断来源，与 submitted→executing 这类推进不是同一类呈现。
 // 通知无级别字段，一律 Info：错误另有 error 帧，按文本猜级别只会误导。
@@ -78,6 +81,7 @@ fn cfg(p: &Value, key: &str) -> Option<Control> {
 }
 
 /// 审批请求：request_id 是与 control_response 对上的唯一凭据，缺了就不能收。
+/// 等待上限随帧带出，缺失按 0（不限时）——不替服务端编一个默认时限。
 fn ask(p: &Value) -> Option<Control> {
     let id = field(p, "request_id")?;
     if id.is_empty() {
@@ -87,6 +91,7 @@ fn ask(p: &Value) -> Option<Control> {
         id,
         tool: field(p, "tool").unwrap_or_default(),
         target: field(p, "input").unwrap_or_default(),
+        timeout_ms: at(p, "timeout_ms").and_then(Value::as_u64).unwrap_or(0),
     })
 }
 
@@ -153,7 +158,22 @@ mod tests {
                 id: "c7".into(),
                 tool: "shell".into(),
                 target: "rm -rf build".into(),
+                timeout_ms: 30_000,
             })
+        );
+        assert_eq!(
+            read(
+                "control_request",
+                &json!({"request_id": "c8", "tool": "read"}),
+                SEQ
+            ),
+            Some(Control::Ask {
+                id: "c8".into(),
+                tool: "read".into(),
+                target: String::new(),
+                timeout_ms: 0,
+            }),
+            "缺等待上限按不限时"
         );
     }
 

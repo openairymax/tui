@@ -18,6 +18,7 @@
 
 use super::event::model::{Body, Control, Domain, Event, Outcome};
 
+pub(crate) mod approvals;
 pub(crate) mod dirty;
 pub(crate) mod msgs;
 pub(crate) mod tasks;
@@ -26,6 +27,7 @@ pub(crate) mod tools;
 #[cfg(test)]
 mod support;
 
+use self::approvals::Approvals;
 use self::dirty::{Dirty, Span};
 use self::msgs::Msgs;
 use self::tasks::Tasks;
@@ -42,7 +44,7 @@ pub(crate) enum Phase {
     Closed,
 }
 
-/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息/任务/工具表 + 待刷新行。
+/// 折叠结果：水位 + 计数 + 相位 + 消息/任务/工具/审批表 + 待刷新行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Projection {
     applied: u64,
@@ -52,6 +54,7 @@ pub(crate) struct Projection {
     msgs: Msgs,
     tasks: Tasks,
     tools: Tools,
+    approvals: Approvals,
     dirty: Dirty,
 }
 
@@ -66,6 +69,7 @@ impl Projection {
             msgs: Msgs::new(),
             tasks: Tasks::new(),
             tools: Tools::new(),
+            approvals: Approvals::new(),
             dirty: Dirty::new(),
         }
     }
@@ -82,6 +86,7 @@ impl Projection {
         self.phase = next_phase(self.phase, &ev.body);
         self.tasks.apply(ev);
         self.tools.apply(ev);
+        self.approvals.apply(ev);
         if let Some(row) = self.msgs.push(ev) {
             self.dirty.mark(row);
         }
@@ -120,6 +125,11 @@ impl Projection {
     /// 工具表只读视图。
     pub(crate) fn tools(&self) -> &Tools {
         &self.tools
+    }
+
+    /// 审批表只读视图。
+    pub(crate) fn approvals(&self) -> &Approvals {
+        &self.approvals
     }
 
     /// 待刷新行只读视图（自检与诊断用）。
@@ -347,5 +357,46 @@ mod tests {
         assert_eq!(p.tools().rows()[0].status, Status::Ok);
         assert!(p.msgs().is_empty(), "执行帧不进消息表");
         assert_eq!(p.count(Domain::Execution), 3);
+    }
+
+    /// 审批表随控制面事件推进：请求与裁决合成一行，超时由后续帧收口。
+    #[test]
+    fn approvals_follow_control_frames() {
+        use crate::engine::project::approvals::Verdict;
+
+        let ask = |seq: u64, ts: u64, wait: u64| Event {
+            seq,
+            ts,
+            body: Body::Control(Control::Ask {
+                id: "a1".into(),
+                tool: "shell".into(),
+                target: "rm -rf build".into(),
+                timeout_ms: wait,
+            }),
+        };
+
+        let mut p = Projection::new();
+        p.apply(&ask(1, 1_000, 200));
+        assert_eq!(p.approvals().pending().count(), 1);
+        assert!(p.msgs().is_empty());
+
+        p.apply(&ev(
+            2,
+            Body::Control(Control::Answer {
+                id: "a1".into(),
+                ok: true,
+            }),
+        ));
+        assert_eq!(
+            p.approvals().get("a1").map(|r| r.verdict),
+            Some(Verdict::Approved)
+        );
+
+        p.apply(&ask(3, 2_000, 50));
+        assert_eq!(
+            p.approvals().get("a1").map(|r| r.verdict),
+            Some(Verdict::Approved)
+        );
+        assert_eq!(p.approvals().len(), 1, "同号请求不重复建行");
     }
 }

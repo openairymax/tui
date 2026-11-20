@@ -84,11 +84,20 @@ pub(crate) enum Body {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Control {
     /// 审批请求：TUI 须以 control_response 回应，超时按拒绝处理。
+    ///
+    /// `timeout_ms` 是服务端给的等待上限，0 表示不限时；判定以事件自带的
+    /// `ts` 为准，投影不读本地时钟。
     Ask {
         id: String,
         tool: String,
         target: String,
+        timeout_ms: u64,
     },
+    /// 本地裁决：用户对某条审批点了允许或拒绝。
+    ///
+    /// 该帧只存在于本地事件流（control_response 是上行帧，不会回灌），
+    /// 但也必须成事件入流，否则回放看不出当时批过什么。
+    Answer { id: String, ok: bool },
     /// 取消：本地或对端发起的中断。
     Cancel { id: String, reason: String },
     /// 运行状态迁移（idle/running/done/…）；`id` 是任务身份，缺席时为空。
@@ -184,7 +193,7 @@ mod tests {
         );
     }
 
-    /// 控制面全部子类可构造（审批/取消/状态/配置/通知/心跳）。
+    /// 控制面全部子类可构造（审批/裁决/取消/状态/配置/通知/心跳）。
     #[test]
     fn control_variants_construct() {
         let cases = [
@@ -192,6 +201,11 @@ mod tests {
                 id: "a1".into(),
                 tool: "shell".into(),
                 target: "rm -rf build".into(),
+                timeout_ms: 30_000,
+            },
+            Control::Answer {
+                id: "a1".into(),
+                ok: true,
             },
             Control::Cancel {
                 id: "t1".into(),
