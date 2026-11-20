@@ -9,26 +9,33 @@
 // 定型载荷，不再各自按字符串猜语义。映射按域分文件，域内再按子类展开，
 // 使「新增一种帧」只改一处、只测一处。
 //
-// 未识别的类型返回 None 而不是猜一个域：CLI 的类型是白名单（[a-z0-9_.]），
+// 未识别的类型不产出事件而不是猜一个域：CLI 的类型是白名单（[a-z0-9_.]），
 // 新类型在旧渲染层上必然没有对应呈现，宁可计数丢弃，也不要把配置帧塞进
 // 正文。字段缺失同理——少了 request_id 的审批帧无法回应，收下只会让界面
 // 卡在一个点不动的按钮上。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+mod cog;
 pub(crate) mod ctl;
+mod exe;
 
 use serde_json::Value;
 
 use super::envelope::Envelope;
 use super::model::{Body, Event};
 
-/// 类型 + 载荷 + 帧序号 → 归域载荷；未识别返回 None。
-pub(crate) fn body(kind: &str, payload: &Value, seq: u64) -> Option<Body> {
+/// 类型 + 载荷 + 帧序号 → 归域载荷（一帧可派生多条）；未识别返回空。
+pub(crate) fn bodies(kind: &str, payload: &Value, seq: u64) -> Vec<Body> {
+    let mut out = Vec::new();
     if ctl::known(kind) {
-        return ctl::read(kind, payload, seq).map(Body::Control);
+        out.extend(ctl::read(kind, payload, seq).map(Body::Control));
+    } else if cog::known(kind) {
+        out.extend(cog::read(kind, payload).into_iter().map(Body::Cognition));
+    } else if exe::known(kind) {
+        out.extend(exe::read(kind, payload).map(Body::Execution));
     }
-    None
+    out
 }
 
 /// 信封 → 事件序列：主载荷一条，run_start 另按配置键逐条展开。
@@ -36,15 +43,13 @@ pub(crate) fn body(kind: &str, payload: &Value, seq: u64) -> Option<Body> {
 /// 同一帧派生的多条事件共用帧序号：序号标识的是「CLI 写出的第几帧」，
 /// 不是渲染层自己编的序号，派生事件不得另造序号。
 pub(crate) fn events(env: Envelope) -> Vec<Event> {
-    let mk = |body: Body| Event {
-        seq: env.seq,
-        ts: env.ts,
-        body,
-    };
-    let mut out = Vec::new();
-    if let Some(b) = body(&env.kind, &env.payload, env.seq) {
-        out.push(mk(b));
-    }
+    let seq = env.seq;
+    let ts = env.ts;
+    let mk = |body: Body| Event { seq, ts, body };
+    let mut out: Vec<Event> = bodies(&env.kind, &env.payload, seq)
+        .into_iter()
+        .map(mk)
+        .collect();
     if env.kind == "run_start" {
         out.extend(
             ctl::cfgs(&env.payload)
@@ -55,11 +60,27 @@ pub(crate) fn events(env: Envelope) -> Vec<Event> {
     out
 }
 
+/// 取字符串字段：先 data 段（服务端事件），再顶层（CLI 本地帧）。
+///
+/// 两种放法都读是链路事实而非容错：同一状态不许因链路不同落到不同分支。
+pub(super) fn field(p: &Value, key: &str) -> Option<String> {
+    at(p, key)?
+        .as_str()
+        .map(str::to_owned)
+        .filter(|s| !s.is_empty())
+}
+
+/// 取原始值，层级规则同 `field`：服务端事件的值落在 data 段。
+pub(super) fn at<'a>(p: &'a Value, key: &str) -> Option<&'a Value> {
+    let path = format!("/data/{key}");
+    p.pointer(&path).or_else(|| p.get(key))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{body, events};
+    use super::{bodies, events};
     use crate::engine::event::envelope::Envelope;
-    use crate::engine::event::model::{Body, Control, Domain};
+    use crate::engine::event::model::{Body, Cognition, Control, Domain, Execution};
     use serde_json::{json, Value};
 
     const SEQ: u64 = 11;
@@ -101,6 +122,53 @@ mod tests {
         }
     }
 
+    /// 认知与执行面按各自载荷归域；message 一帧派生思考链与定稿两条。
+    #[test]
+    fn routes_cog_and_exec() {
+        let plan = events(env(
+            "plan",
+            json!({"data": {"plan": "先读依赖", "step_count": 3}}),
+        ));
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].domain(), Domain::Cognition);
+        assert_eq!(
+            plan[0].body,
+            Body::Cognition(Cognition::Plan {
+                text: "先读依赖".into()
+            })
+        );
+
+        let msg = events(env(
+            "message",
+            json!({"data": {"reasoning": "想一想", "content": "答案"}}),
+        ));
+        assert_eq!(msg.len(), 2);
+        assert!(msg
+            .iter()
+            .all(|e| e.domain() == Domain::Cognition && e.seq == SEQ));
+        assert_eq!(
+            msg[1].body,
+            Body::Cognition(Cognition::Final {
+                text: "答案".into()
+            })
+        );
+
+        let call = events(env(
+            "tool_start",
+            json!({"data": {"tool": "shell", "tool_id": "t1", "args_preview": "ls"}}),
+        ));
+        assert_eq!(call.len(), 1);
+        assert_eq!(call[0].domain(), Domain::Execution);
+        assert_eq!(
+            call[0].body,
+            Body::Execution(Execution::Call {
+                id: "t1".into(),
+                name: "shell".into(),
+                args: json!("ls"),
+            })
+        );
+    }
+
     /// run_start 把服务端裁决配置逐键展开，与状态事件共用帧序号。
     #[test]
     fn run_start_expands_config() {
@@ -136,28 +204,25 @@ mod tests {
     /// 未识别的类型不猜域：原样丢弃，交给上层计数。
     #[test]
     fn ignores_unknown_kind() {
-        assert_eq!(body("blueprint", &json!({"steps": []}), SEQ), None);
-        assert_eq!(body("", &json!({}), 0), None);
+        assert!(bodies("blueprint", &json!({"steps": []}), SEQ).is_empty());
+        assert!(bodies("", &json!({}), 0).is_empty());
         assert!(events(env("brand_new_type", json!({"a": 1}))).is_empty());
     }
 
     /// 字段不全的控制帧同样丢弃，而不是收下半条。
     #[test]
     fn ignores_incomplete_control() {
-        assert_eq!(
-            body("control_request", &json!({"tool": "shell"}), SEQ),
-            None
-        );
-        assert_eq!(body("snapshot", &json!({"last_seq": 3}), SEQ), None);
-        assert_eq!(body("notice", &json!({}), SEQ), None);
-        let ask = body("control_request", &json!({"request_id": "c2"}), SEQ).expect("最小审批帧");
+        assert!(bodies("control_request", &json!({"tool": "shell"}), SEQ).is_empty());
+        assert!(bodies("snapshot", &json!({"last_seq": 3}), SEQ).is_empty());
+        assert!(bodies("notice", &json!({}), SEQ).is_empty());
+        let ask = bodies("control_request", &json!({"request_id": "c2"}), SEQ);
         assert_eq!(
             ask,
-            Body::Control(Control::Ask {
+            vec![Body::Control(Control::Ask {
                 id: "c2".into(),
                 tool: String::new(),
                 target: String::new(),
-            })
+            })]
         );
     }
 

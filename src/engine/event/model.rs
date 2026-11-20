@@ -9,7 +9,7 @@
 // 若在两个组件里被归成不同类别，状态栏与主区就会各说各话。归域只在本模块
 // 做一次，下游只认四域：
 //   control   —— 需要人或对端裁决、确认的状态（审批/取消/状态/配置/通知/心跳）
-//   cognition —— 思考的中间态（思维链/计划/正文增量/评审）
+//   cognition —— 思考的中间态（思维链/计划/正文增量与定稿/评审）
 //   execution —— 对系统产生的动作（工具目录/调用/结果）
 //   outcome   —— 一轮运行的收口（终态/失败/失败详情）
 //
@@ -107,6 +107,8 @@ pub(crate) enum Cognition {
     Plan { text: String },
     /// 正文增量。
     Delta { text: String },
+    /// 正文定稿：一轮回答的权威全文，替换流式增量在界面上的占位。
+    Final { text: String },
     /// 评审意见（对已产出内容的裁定）。
     Review { text: String },
 }
@@ -218,6 +220,9 @@ mod tests {
             },
             Cognition::Delta {
                 text: "输出片段".into(),
+            },
+            Cognition::Final {
+                text: "整段回答".into(),
             },
             Cognition::Review {
                 text: "评审通过".into(),

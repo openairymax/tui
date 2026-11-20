@@ -27,6 +27,7 @@
 use serde_json::Value;
 
 use super::super::model::{Control, Level};
+use super::{at, field};
 
 /// task_state 的取消取值（agent_task_contract.h）。
 const CANCEL: &str = "cancelled";
@@ -109,20 +110,6 @@ fn note(p: &Value) -> Option<Control> {
         level: Level::Info,
         text: field(p, "message")?,
     })
-}
-
-/// 取字符串字段：先 data 段（服务端事件），再顶层（CLI 本地帧）。
-fn field(p: &Value, key: &str) -> Option<String> {
-    at(p, key)?
-        .as_str()
-        .map(str::to_owned)
-        .filter(|s| !s.is_empty())
-}
-
-/// 取原始值，层级规则同 `field`：服务端事件的值落在 data 段。
-fn at<'a>(p: &'a Value, key: &str) -> Option<&'a Value> {
-    let path = format!("/data/{key}");
-    p.pointer(&path).or_else(|| p.get(key))
 }
 
 #[cfg(test)]
