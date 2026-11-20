@@ -97,6 +97,16 @@ impl App {
     /// 客户端侧取消 tokio 任务并恢复 UI（阶段按请求类型回退，交互不挂死）；
     /// 服务端通过 gateway task.cancel 中止运行中的 task.submit（资源释放）。
     pub fn abort_task(&mut self) {
+        // 事件管道在途轮：取消帧直达 CLI 收口，本地游标立即释放，避免
+        // 取消后的迟到终态被下一轮误当成本轮结果。
+        if self.lane.take().is_some() {
+            self.lane_tx = None;
+            if let Some(ev) = &self.ev {
+                if let Err(e) = ev.cancel() {
+                    log::warn!("事件管道取消失败：{e}");
+                }
+            }
+        }
         let mut session_id = String::new();
         if let Some(p) = &mut self.pending {
             if let Some(t) = p.task.take() {

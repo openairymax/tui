@@ -41,7 +41,7 @@ pub(super) const OPS_DAEMON_NS: [&str; 14] = [
 ];
 
 /// 后台 LLM 请求的类型（决定结果如何应用）。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum PendingKind {
     /// 普通对话 / 任务执行轮（原 chat_round）
     ChatRound { input: String },

@@ -297,6 +297,11 @@ async fn run_tui(
 
     // Create app state
     let mut app = App::new(&cli.agent_file, gateway);
+    // 事件管道（X1-26c）：运行轮经 airy_cli 事件流下发。挂接失败不拦启动，
+    // 保留网关直连并记录原因（诊断面板可读）。
+    if !app.attach_lane() {
+        info!("Event pipe unavailable; falling back to gateway RPC for turns");
+    }
 
     // 会话布局恢复（0.1.21 D-14）：sessions.json 只存 tab 结构与标题，
     // 消息正文的唯一权威在 mem_d；历史由主循环在水合就绪后按 conv 回填。
@@ -488,6 +493,8 @@ async fn run_app<B: Backend>(
         app.poll_slots();
         // 在途请求结果消费（流式增量 / 结果落定 / 审批待决议）。空闲期内部早退
         // 无开销；busy 期它是唯一的流式与落定入口——等待期不再有独立内层循环。
+        // 事件管道投影消费（X1-26c）：增量上屏与终态落定都经此，空闲期早退。
+        app.poll_lane();
         app.poll_pending(beats.has(Beat::Approvals));
         // 会话完成通知（§5.5 #5、§6.7 #4）：App 只生产语义，写出归终端层。
         // 仅支持 BEL 或写入失败（非 TTY）时用状态条兜底，保证完成反馈

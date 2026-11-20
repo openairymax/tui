@@ -37,6 +37,7 @@ mod evolution;
 mod gccp_flow;
 mod health;
 mod input;
+mod lane;
 mod mode;
 mod model;
 mod panel;
@@ -265,6 +266,14 @@ pub struct App {
     pub wizard: wizard::WizardState,
     /// 进行中的后台 LLM 请求（主循环每 100ms 轮询 + 渲染，驱动 thinking 动效）
     pending: Option<PendingTurn>,
+    /// 事件管道（X1-26c）：会话级唯一事件源，运行轮经它下发；None = 未挂接。
+    ev: Option<crate::client::event::EventClient>,
+    /// 事件管道在途轮（增量游标；终态并入 pending 落定通道）。
+    lane: Option<lane::LaneTurn>,
+    /// 在途轮的结果回传端（与 pending.rx 配对）。
+    lane_tx: Option<tokio::sync::oneshot::Sender<PendingOutcome>>,
+    /// 事件管道挂接失败原因（诊断用；None = 已挂接或从未尝试）。
+    pub lane_err: Option<String>,
     /// 任务集执行控制状态（人工中止，默认运行中；暂停只由 task_state 驱动）
     pub task_control: TaskControl,
     /// 任务集生命周期状态（C-14-07）：由协议终态驱动，阻断态必须三选。
@@ -504,6 +513,10 @@ impl App {
             skills: skills_backend,
             wizard: wizard::WizardState::new(),
             pending: None,
+            ev: None,
+            lane: None,
+            lane_tx: None,
+            lane_err: None,
             task_control: TaskControl::Running,
             task_state: TaskState::Executing,
             resume_token: None,
