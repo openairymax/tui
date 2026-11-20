@@ -1,0 +1,7 @@
+{"schema":1,"seq":1,"ts":1767225617040,"type":"run_start","payload":{"v":1,"type":"run_start","id":"run-17-e1","run_id":"run-17","session_id":"sess-17","ts":1767225617040,"epoch":1,"data":{"prompt":"等待上游响应","model":"airy-default","task_id":"task-0001","mode":"direct","mode_reason":"single-shot","gccp_confirmed":false}}}
+{"schema":1,"seq":2,"ts":1767225617080,"type":"heartbeat","payload":{"state":"running"}}
+{"schema":1,"seq":3,"ts":1767225617120,"type":"notice","payload":{"message":"上游响应较慢，正在重试"}}
+{"schema":1,"seq":4,"ts":1767225617160,"type":"token_delta","payload":{"v":1,"type":"token_delta","id":"run-17-e4","run_id":"run-17","session_id":"sess-17","ts":1767225617160,"epoch":1,"data":{"delta":"已恢复。"}}}
+{"schema":1,"seq":5,"ts":1767225617200,"type":"heartbeat","payload":{"state":"running"}}
+{"schema":1,"seq":6,"ts":1767225617240,"type":"message","payload":{"v":1,"type":"message","id":"run-17-e6","run_id":"run-17","session_id":"sess-17","ts":1767225617240,"epoch":1,"data":{"role":"assistant","content":"已恢复。"}}}
+{"schema":1,"seq":7,"ts":1767225617280,"type":"run_end","payload":{"v":1,"type":"run_end","id":"run-17-e7","run_id":"run-17","session_id":"sess-17","ts":1767225617280,"epoch":1,"data":{"status":"completed","duration_ms":1840,"think_ms":120,"llm_ms":1420,"tool_ms":300,"use_ticks":268,"rounds_used":2,"rounds_limit":8,"usage":{"prompt_tokens":64,"completion_tokens":204,"total_tokens":268}}}}
