@@ -168,13 +168,23 @@ pub(crate) fn classify((r, g, b): (u8, u8, u8)) -> Scheme {
 
 /// 汇总一个探测窗口的原始回包：OSC11 优先，其次 DEC2031。
 pub(crate) fn caps(buf: &[u8]) -> Caps {
+    let mut merged = merge(buf);
+    merged.truecolor = truecolor_ev(buf, |k| std::env::var(k).ok());
+    merged.override_env(|k| std::env::var(k).ok())
+}
+
+/// 把三类回包合并为一份结论，环境证据在合并之后单独叠加。
+///
+/// 合并只读回包字节，不碰进程环境：使「终端说了什么」可独立断言，
+/// 不被构建机上的 COLORTERM 或 `AIRY_TUI_CAPS_*` 干扰。真彩的 OSC11
+/// 证据同属回包，故在合并内落定。
+fn merge(buf: &[u8]) -> Caps {
     Caps {
         scheme: scheme_of(buf),
         sync_output: parse_sync(buf),
         kitty: parse_kitty(buf),
-        truecolor: truecolor_ev(buf, |k| std::env::var(k).ok()),
+        truecolor: parse_osc11(buf).is_some(),
     }
-    .override_env(|k| std::env::var(k).ok())
 }
 
 /// 真彩判定：环境证据与 OSC11 回包任一成立即为真。
@@ -459,7 +469,7 @@ mod tests {
         let mut sink = Sink::default();
         assert!(send_query(&mut sink).is_ok());
         let sent = &sink.writes[0];
-        assert!(sent.windows(OSC11.len()).any(|w| w == OSC11), "OSC11 问");
+        assert!(sent.windows(6).any(|w| w == b"\x1b]11;?"), "OSC11 问");
         assert!(sent.windows(4).any(|w| w == b"\x1b[?u"), "kitty 问");
     }
 
@@ -472,6 +482,26 @@ mod tests {
         assert_eq!(got.kitty, Some(true));
         assert_eq!(got.dark(), Some(true));
         assert_eq!(Caps::default().dark(), None, "未探明时不得猜测明暗");
+    }
+
+    /// dark 是背景色的布尔投影：亮底为浅色，暗底为深色。
+    #[test]
+    fn background_colour_derives_dark_flag() {
+        let light = merge(b"\x1b]11;rgb:ffff/ffff/ffff\x07");
+        assert_eq!(light.dark(), Some(false), "亮底应为浅色");
+        let dark = merge(b"\x1b]11;rgb:0000/0000/0000\x07");
+        assert_eq!(dark.dark(), Some(true), "暗底应为深色");
+    }
+
+    /// 同帧三项回包合并为一份结论：各字段独立落位，互不覆盖。
+    #[test]
+    fn three_probes_merge_into_one_caps() {
+        let raw = b"\x1b]11;rgb:1414/1414/1313\x07\x1b[?997;2n\x1b[?2026;1$y\x1b[?1u";
+        let got = merge(raw);
+        assert_eq!(got.scheme, Some((Scheme::Dark, Src::Osc11)), "OSC11 优先");
+        assert_eq!(got.sync_output, Some(true));
+        assert_eq!(got.kitty, Some(true));
+        assert!(got.truecolor, "OSC11 回包即真彩证据");
     }
 
     #[test]
