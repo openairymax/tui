@@ -315,7 +315,37 @@ pub(crate) struct Probe {
     rx: mpsc::Receiver<Caps>,
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
-    deadline: Instant,
+    window: CapsWindow,
+}
+
+/// 探测窗口：固定预算 + 单调起点 + 外部取消。
+///
+/// 截止判定独立成器，使「窗口何时关」可由合成时刻直接驱动——超时边界
+/// 无需真睡满 250ms 即可覆盖；生产期由探测线程与回收路径共用同一窗口，
+/// 避免两处各算一个截止时刻而漂移。
+#[derive(Clone, Copy)]
+struct CapsWindow {
+    started: Instant,
+    budget: Duration,
+}
+
+impl CapsWindow {
+    fn new(budget: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            budget,
+        }
+    }
+
+    /// 距关闭的剩余时间；已过期返回零，供阻塞等待直接使用。
+    fn left_at(&self, now: Instant) -> Duration {
+        self.budget.saturating_sub(now.saturating_duration_since(self.started))
+    }
+
+    /// 窗口是否关闭：取消优先于超时，两者任一成立即关。
+    fn closed_at(&self, now: Instant, stop: &AtomicBool) -> bool {
+        stop.load(Ordering::Relaxed) || self.left_at(now).is_zero()
+    }
 }
 
 impl Probe {
@@ -327,21 +357,22 @@ impl Probe {
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
+        let window = CapsWindow::new(Duration::from_millis(CAP_PROBE_TIMEOUT_MS));
         let handle = std::thread::Builder::new()
             .name("caps-probe".into())
-            .spawn(move || probe_loop(&flag, &tx))
+            .spawn(move || probe_loop(&flag, &tx, window))
             .ok()?;
         Some(Self {
             rx,
             stop,
             handle: Some(handle),
-            deadline: Instant::now() + Duration::from_millis(CAP_PROBE_TIMEOUT_MS),
+            window,
         })
     }
 
     /// 等待探测结论并回收线程；窗口内无应答时返回空结论。
     pub(crate) fn collect(&mut self) -> Caps {
-        let left = self.deadline.saturating_duration_since(Instant::now());
+        let left = self.window.left_at(Instant::now());
         let caps = self.rx.recv_timeout(left).unwrap_or_default();
         self.shutdown();
         caps
@@ -371,14 +402,13 @@ fn explicit_theme() -> bool {
 ///
 /// 查询写失败（已在 probe::send_query 内整帧重试一次）说明终端通道不可
 /// 用：立刻回空结论，让启动继续走默认能力，不占用探测窗口。
-fn probe_loop(stop: &AtomicBool, tx: &mpsc::Sender<Caps>) {
+fn probe_loop(stop: &AtomicBool, tx: &mpsc::Sender<Caps>, window: CapsWindow) {
     if probe::send_query(io::stdout()).is_err() {
         let _ = tx.send(Caps::default());
         return;
     }
-    let end = Instant::now() + Duration::from_millis(CAP_PROBE_TIMEOUT_MS);
     let mut buf = Vec::with_capacity(256);
-    while Instant::now() < end && !stop.load(Ordering::Relaxed) {
+    while !window.closed_at(Instant::now(), stop) {
         if !read_some(&mut buf) {
             std::thread::sleep(Duration::from_millis(10));
             continue;
@@ -514,5 +544,35 @@ mod tests {
     #[test]
     fn notify_without_tty_reports_failure() {
         assert!(notify("Airymax", "回合完成").is_none());
+    }
+
+    /// 窗口边界：预算前后 1ms 必须精确落在两侧，且不允许负剩余。
+    #[test]
+    fn caps_window_edges_are_exact() {
+        let w = CapsWindow {
+            started: Instant::now(),
+            budget: Duration::from_millis(250),
+        };
+        let at = |ms| w.started + Duration::from_millis(ms);
+        assert!(!w.closed_at(at(0), &AtomicBool::new(false)), "起点未关");
+        assert!(!w.closed_at(at(249), &AtomicBool::new(false)), "差 1ms 未关");
+        assert!(w.closed_at(at(250), &AtomicBool::new(false)), "到点即关");
+        assert!(w.closed_at(at(251), &AtomicBool::new(false)), "过点仍关");
+        assert_eq!(w.left_at(at(0)), Duration::from_millis(250));
+        assert_eq!(w.left_at(at(100)), Duration::from_millis(150));
+        assert_eq!(w.left_at(at(9_999)), Duration::ZERO, "剩余不得为负");
+    }
+
+    /// 取消路径：不等到期，取消标志一到窗口立即关闭。
+    #[test]
+    fn caps_window_cancel_closes_early() {
+        let w = CapsWindow {
+            started: Instant::now(),
+            budget: Duration::from_millis(250),
+        };
+        let stop = AtomicBool::new(false);
+        assert!(!w.closed_at(w.started, &stop));
+        stop.store(true, Ordering::Relaxed);
+        assert!(w.closed_at(w.started, &stop), "取消须先于超时生效");
     }
 }
