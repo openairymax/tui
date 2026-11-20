@@ -12,8 +12,9 @@
 // gap 报一次后立即对齐到当前帧：若每帧都报同一个 gap，日志会被同一事实
 // 淹没，真正的新断点反而看不见（一次不连续只算一次事故）。
 //
-// 本卡只回答「有没有断」，不保存断点历史（X1-09a 的 gap 队列）也不向外
-// 上报（X1-08b 的上报接口）：判定与处置分开，测试才能只断言判定。
+// 本模块只做判定与上报：不保存断点历史（X1-09a 的 gap 队列）——明细留给
+// 队列，这里只给状态栏一个总数。顺序帧不占用上报通道：`Watch::feed` 只在
+// 断点处给出事实。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -76,9 +77,75 @@ impl Default for Tracker {
     }
 }
 
+/// 断点上报接口：逐帧喂入，只在断点处给出事实并累计。
+///
+/// 与 `Tracker` 的分工：`Tracker` 只判「该来的号来了没有」，`Watch` 负责
+/// 把异常从正常的逐帧流里挑出来，供状态栏读取总数。明细不在本层留存。
+pub(crate) struct Watch {
+    tracker: Tracker,
+    gaps: u64,
+    repeats: u64,
+}
+
+impl Watch {
+    /// 从流首开始计。
+    pub(crate) fn new() -> Self {
+        Self::from_tracker(Tracker::new())
+    }
+
+    /// 重连续收：断点前的帧不计入本次上报。
+    pub(crate) fn resume(last_seq: u64) -> Self {
+        Self::from_tracker(Tracker::resume(last_seq))
+    }
+
+    /// 喂一帧：断点返回事实，顺序帧返回 `None`。
+    pub(crate) fn feed(&mut self, seq: u64) -> Option<Verdict> {
+        match self.tracker.accept(seq) {
+            Verdict::Ok => None,
+            v @ Verdict::Gap { .. } => {
+                self.gaps = self.gaps.saturating_add(1);
+                Some(v)
+            }
+            v @ Verdict::Repeat { .. } => {
+                self.repeats = self.repeats.saturating_add(1);
+                Some(v)
+            }
+        }
+    }
+
+    /// 缺帧次数。
+    pub(crate) fn gaps(&self) -> u64 {
+        self.gaps
+    }
+
+    /// 重复次数。
+    pub(crate) fn repeats(&self) -> u64 {
+        self.repeats
+    }
+
+    /// 断点总数（状态栏直读）。
+    pub(crate) fn breaks(&self) -> u64 {
+        self.gaps.saturating_add(self.repeats)
+    }
+
+    fn from_tracker(tracker: Tracker) -> Self {
+        Self {
+            tracker,
+            gaps: 0,
+            repeats: 0,
+        }
+    }
+}
+
+impl Default for Watch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Tracker, Verdict};
+    use super::{Tracker, Verdict, Watch};
 
     /// 顺序到达逐帧放行，期望随之前移。
     #[test]
@@ -121,5 +188,25 @@ mod tests {
         let mut edge = Tracker::resume(u64::MAX);
         assert_eq!(edge.accept(u64::MAX), Verdict::Ok);
         assert_eq!(edge.next(), u64::MAX);
+    }
+
+    /// 断点可检出：缺帧与重复都以事实上报，顺序帧不打扰。
+    #[test]
+    fn break_surfaces_once() {
+        let mut w = Watch::new();
+        assert_eq!(w.feed(1), None);
+        assert_eq!(w.feed(4), Some(Verdict::Gap { from: 2, to: 3 }));
+        assert_eq!(w.feed(5), None, "对齐后同一断点不再上报");
+        assert_eq!(w.feed(4), Some(Verdict::Repeat { seq: 4 }));
+        assert_eq!((w.gaps(), w.repeats(), w.breaks()), (1, 1, 2));
+    }
+
+    /// 重连续收：断点之前的帧不计入本次上报。
+    #[test]
+    fn watch_resumes() {
+        let mut w = Watch::resume(9);
+        assert_eq!(w.feed(10), None);
+        assert_eq!(w.feed(12), Some(Verdict::Gap { from: 11, to: 11 }));
+        assert_eq!((w.gaps(), w.repeats()), (1, 0));
     }
 }
