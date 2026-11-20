@@ -29,17 +29,14 @@ mod types;
 
 pub use types::*;
 
-/// Gateway API client for the TUI application.
+/// Gateway 读侧客户端（观察面与审批）。
 ///
-/// reqwest::Client 内部为 Arc 连接池，Clone 成本低；后台任务需要
-/// 独立的 client 副本发起 LLM 请求（与主循环渲染解耦）。
+/// reqwest::Client 内部为 Arc 连接池，Clone 成本低；后台探测任务使用
+/// 独立副本，与主循环渲染解耦。
 #[derive(Clone)]
 pub struct GatewayClient {
     base_url: String,
     http: HttpClient,
-    /// 协议客户端（agentrt-rs）：流式执行轮的传输与事件解码唯一通道，
-    /// TUI 不自带 wire 常量与 SSE 解码实现。
-    rs: agentrt_rs::Client,
 }
 
 impl GatewayClient {
@@ -48,15 +45,11 @@ impl GatewayClient {
         let ua = format!("agentrt-tui/{}", env!("AIRY_RT_VERSION"));
         let http = HttpClient::builder()
             .timeout(Duration::from_secs(60))
-            .user_agent(ua.clone())
+            .user_agent(ua)
             .build()
             .context("Failed to create HTTP client")?;
-        let rs = agentrt_rs::client::ClientBuilder::new(&base_url)
-            .user_agent(&ua)
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create protocol client: {e}"))?;
 
-        Ok(Self { base_url, http, rs })
+        Ok(Self { base_url, http })
     }
 
     pub async fn health_check(&self) -> Result<HealthResponse> {
