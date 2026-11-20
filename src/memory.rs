@@ -6,13 +6,14 @@
 // 对话记忆模块。
 //
 // 设计原则（50 工程标准 E-3 资源确定性 / A-1 极简主义；0.1.16 架构改造，
-// 用户决策 2026-09-13「CLI 是核心，TUI 是可选的增强」）：
+// 用户决策 2026-09-13「CLI 是核心，TUI 是可选的增强」；0.1.21 X1-28a）：
 //   - TUI 不持有任何独立记忆存储。唯一权威后端是网关记忆服务 mem_d，
 //     经 gateway `mem.*` RPC 访问——与 CLI（cli_chat_memory.c）同一后端、
 //     同一存储、同一 schema，二者共享同一记忆库。TUI 只是渲染层。
-//   - 进程内 GatewayMemory.mirror 仅作渲染/召回的**同步读缓存**：启动时经
-//     `mem.recent` 水合，写入经 `mem.write` 异步回投网关，打开记忆面板时
-//     再水合一次。网关不可达时降级为纯内存（volatile），不落任何本地文件。
+//   - 记忆写入归运行侧机制（CLI / daemon），TUI 侧**只读**：本模块不提供
+//     任何写入口（无 `mem.write`，无 push/save 接口）。进程内 mirror 仅作
+//     渲染/召回的同步读缓存，启动与面板打开时经 `mem.recent` 水合；网关
+//     不可达时降级为纯内存（volatile），不落任何本地文件。
 //   - 平台级长期记忆（分层、遗忘衰减、语义检索等）一律由 mem_d 提供；TUI
 //     绝不经 FFI 直连 daemon 或运行时库（0.1.15 铁律 / T-09）。
 //
@@ -47,7 +48,7 @@ pub struct MemoryRecord {
     /// 存于网关记录的 metadata.reasoning 字段。
     #[serde(default)]
     pub reasoning: Option<String>,
-    /// D-14：所属会话标识（写入侧 metadata.conv）。CLI 旧记录无此字段。
+    /// D-14：所属会话标识（网关记录 metadata.conv）。CLI 旧记录无此字段。
     #[serde(default)]
     pub conv: Option<String>,
 }
@@ -58,54 +59,48 @@ pub struct MemoryHit {
     pub content: String,
     pub role: String,
     pub score: f32,
-    /// 0.1.18 B1：归属轮次（写入侧 tags 内 "turn:N" 标注；旧记录无标注
-    /// 为 None）。上下文注入时标注归属，为"按轮检索"铺路。
+    /// 0.1.18 B1：归属轮次（记录 tags 内 "turn:N" 标注，由运行侧写入；
+    /// 旧记录无标注为 None）。上下文注入时标注归属，为"按轮检索"铺路。
     pub turn: Option<u64>,
 }
 
-/// 对话记忆后端 trait（E-4 跨平台一致性：Linux/macOS/Windows 路径统一）
+/// 对话记忆后端 trait（E-4 跨平台一致性：Linux/macOS/Windows 路径统一）。
+///
+/// 只读契约（0.1.21 X1-28a）：TUI 不写记忆，trait 不设任何写方法；记忆
+/// 由运行侧机制（CLI / daemon）写入 mem_d，TUI 只做水合、召回与渲染。
 pub trait ConversationMemory: Send + Sync {
-    /// 写入一条记忆。
-    ///
-    /// 0.1.18 B4（隐私）：不再提供携带思考链（reasoning_content）的写入
-    /// 路径——思考链是模型内部推理碎片，不得落长期会话记忆，否则会被后续
-    /// 轮次的召回回灌进上下文。历史记忆中的 reasoning 字段仍可被反序列化
-    /// 读取（兼容 CLI 旧记录），但 TUI 侧只写不携带。
-    fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()>;
-    /// 召回与 query 相关、且 time_before 之前的记忆
+    /// 召回与 query 相关的记忆（按相关度截断）
     fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit>;
     /// 最近 N 条对话（按时间倒序）
     fn recent(&self, n: usize) -> Vec<MemoryRecord>;
     /// 记忆条数
     fn len(&self) -> usize;
-    /// 从权威后端重新水合镜像（网关可用时）。默认后端为纯内存，no-op。
+    /// 从权威后端重新水合镜像（网关可用时）。纯内存后端 no-op。
     fn refresh(&self) {}
     /// 水合就绪闸门（D-14）：镜像已从权威后端加载完成。纯内存后端恒就绪。
     fn is_ready(&self) -> bool {
         true
     }
-    /// 绑定当前会话标识（写入记录 metadata.conv）。默认后端不记录归属。
-    fn set_conversation(&mut self, _conv: &str) {}
     /// 2.2.2.1：当前记忆后端名（TUI 展示用）。
     fn backend_name(&self) -> &'static str {
         "gateway"
     }
+    /// 单测夹具：向镜像注入记录（生产无写入口，读取行为仍需可测）。
+    #[cfg(test)]
+    fn seed(&mut self, role: &str, content: &str, tags: &str, conv: Option<&str>);
 }
 
 /// 网关记忆后端（TUI 唯一后端）。
 ///
 /// 权威存储为网关记忆服务 mem_d（`mem.*` RPC，与 CLI 同一后端）；
-/// 本结构持有的 mirror 是渲染/召回的同步读缓存：启动水合 + 写入回投 +
-/// 面板打开时再水合。无 tokio 运行时（单测）时降级为纯内存 volatile。
+/// 本结构持有的 mirror 是渲染/召回的同步读缓存：启动与面板打开时水合。
+/// 无 tokio 运行时（单测）时降级为纯内存 volatile。写入不在本结构职责内
+/// （0.1.21 X1-28a：TUI 只读）。
 pub struct GatewayMemory {
     /// 网关客户端（refresh 用水合；None = volatile 降级）
     client: Option<GatewayClient>,
     /// 同步读缓存（旧→新有序，recent 时反向取）
     mirror: Arc<Mutex<Vec<MemoryRecord>>>,
-    /// 写投递通道：push 立即入队，后台任务串行投递 `mem.write`
-    tx: Option<tokio::sync::mpsc::UnboundedSender<MemoryRecord>>,
-    /// 当前会话标识（写入记录的归属，D-14）
-    conv: Arc<Mutex<String>>,
     /// 水合完成标志（会话历史还原的就绪闸门，D-14）
     ready: Arc<AtomicBool>,
     /// 后端名（"gateway" / "volatile"），面板展示用
@@ -126,16 +121,11 @@ impl GatewayMemory {
             }
         };
         let mirror: Arc<Mutex<Vec<MemoryRecord>>> = Arc::new(Mutex::new(Vec::new()));
-        let conv = Arc::new(Mutex::new(String::new()));
         let ready = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        handle.spawn(writer(client.clone(), rx));
         handle.spawn(hydrate(client.clone(), mirror.clone(), ready.clone()));
         Self {
             client: Some(client),
             mirror,
-            tx: Some(tx),
-            conv,
             ready,
             backend: "gateway",
         }
@@ -146,60 +136,22 @@ impl GatewayMemory {
         Self {
             client: None,
             mirror: Arc::new(Mutex::new(Vec::new())),
-            tx: None,
-            conv: Arc::new(Mutex::new(String::new())),
             ready: Arc::new(AtomicBool::new(true)),
             backend: "volatile",
         }
     }
-
-    fn push_impl(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()> {
-        let conv = {
-            let g = self.conv.lock().unwrap_or_else(|e| e.into_inner());
-            (!g.is_empty()).then(|| g.clone())
-        };
-        let rec = MemoryRecord {
-            role: role.to_string(),
-            content: content.to_string(),
-            timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-            tags: tags.to_string(),
-            // 0.1.18 B4：TUI 写入恒不携带思考链（字段仅为兼容反序列化
-            // CLI 旧记录而保留）。
-            reasoning: None,
-            conv,
-        };
-        // 权威存储在网关：入队后台投递 `mem.write`。投递失败（运行时已退出）
-        // 仅记日志——镜像已乐观更新，用户交互不因此中断。
-        if let Some(tx) = &self.tx {
-            if tx.send(rec.clone()).is_err() {
-                log::warn!("memory: 网关写投递通道已关闭，记录仅在镜像");
-            }
-        }
-        let mut guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
-        guard.push(rec);
-        if guard.len() > MAX_RECORDS {
-            let drain = guard.len() - MAX_RECORDS;
-            guard.drain(..drain);
-        }
-        Ok(())
-    }
 }
 
 impl ConversationMemory for GatewayMemory {
-    fn push(&mut self, role: &str, content: &str, tags: &str) -> std::io::Result<()> {
-        self.push_impl(role, content, tags)
-    }
-
     fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit> {
         let tokens: Vec<&str> = query
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
             .filter(|t| t.len() >= 2)
             .collect();
-        // 防自我回灌（2026-08-26，与 CLI cli_chat_memory.c 同语义）：当前输入
-        // 在发起对话前刚被 push 为 user 记录，query 又是这条输入本身，直接
-        // 命中率最高。把该记录注入上下文会形成"模型读到自己刚收到的输入的
-        // 记忆"的回声，污染当前问题的理解。跳过与 query 相同/带「用户: 」
-        // 前缀的记录。
+        // 防自我回灌（2026-08-26，与 CLI cli_chat_memory.c 同语义）：运行侧
+        // 把当前输入记为 user 记录，query 又是这条输入本身，命中率最高。把该
+        // 记录注入上下文会形成"模型读到自己刚收到的输入的记忆"的回声，污染
+        // 当前问题的理解。跳过与 query 相同/带「用户: 」前缀的记录。
         let q = query.trim();
         let now = chrono::Utc::now().timestamp();
         let guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
@@ -293,42 +245,25 @@ impl ConversationMemory for GatewayMemory {
         self.ready.load(Ordering::Relaxed)
     }
 
-    fn set_conversation(&mut self, conv: &str) {
-        let mut g = self.conv.lock().unwrap_or_else(|e| e.into_inner());
-        if g.as_str() != conv {
-            g.clear();
-            g.push_str(conv);
-        }
-    }
-
     fn backend_name(&self) -> &'static str {
         self.backend
     }
-}
 
-/// 后台写投递：把镜像新增记录逐条经 `mem.write` 持久化到网关记忆服务。
-///
-/// 记录 schema（与 CLI 共享同一存储的唯一约定）：
-///   data     = 记忆内容
-///   metadata = { source:"tui", role, tags, conv?, reasoning? }
-async fn writer(client: GatewayClient, mut rx: tokio::sync::mpsc::UnboundedReceiver<MemoryRecord>) {
-    while let Some(rec) = rx.recv().await {
-        let mut meta = serde_json::Map::new();
-        meta.insert("source".to_string(), serde_json::json!("tui"));
-        meta.insert("role".to_string(), serde_json::json!(rec.role));
-        meta.insert("tags".to_string(), serde_json::json!(rec.tags));
-        if let Some(cv) = rec.conv.as_ref() {
-            meta.insert("conv".to_string(), serde_json::json!(cv));
-        }
-        if let Some(rz) = rec.reasoning.as_ref() {
-            meta.insert("reasoning".to_string(), serde_json::json!(rz));
-        }
-        let params = serde_json::json!({
-            "data": rec.content,
-            "metadata": serde_json::Value::Object(meta),
-        });
-        if let Err(e) = client.rpc_call("mem.write", params).await {
-            log::warn!("memory: mem.write 失败（记录仅在镜像，待下次水合）: {}", e);
+    #[cfg(test)]
+    fn seed(&mut self, role: &str, content: &str, tags: &str, conv: Option<&str>) {
+        let rec = MemoryRecord {
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+            tags: tags.to_string(),
+            reasoning: None,
+            conv: conv.map(str::to_string),
+        };
+        let mut guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        guard.push(rec);
+        if guard.len() > MAX_RECORDS {
+            let drain = guard.len() - MAX_RECORDS;
+            guard.drain(..drain);
         }
     }
 }
@@ -404,8 +339,8 @@ async fn hydrate(
 /// CLI（`cli_chat_memory.c:cli_chat_mem_record_gw`）每轮以**单条** `mem.write`
 /// 记录整轮：`data = "用户: <input>\nAgentRT: <reply>[\n[reasoning] <chain>]"`
 /// 且 metadata 无 `role`。TUI 是共享记忆（同一 mem_d）的渲染层，若整轮按单条
-/// `user` 呈现则角色错乱——故按该格式拆分还原；非该格式（TUI 自身记录、或
-/// 其它写入方）原样保留为单条。
+/// `user` 呈现则角色错乱——故按该格式拆分还原；非该格式（旧 TUI 记录、
+/// 或其它写入方）原样保留为单条。
 fn split_cli_turn(created: i64, data: &str, tags: &str) -> Vec<MemoryRecord> {
     const USER_PREFIX: &str = "用户: ";
     const ASSISTANT_SEP: &str = "\nAgentRT: ";

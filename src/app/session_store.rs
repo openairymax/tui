@@ -6,9 +6,10 @@
 // 会话布局落盘与历史还原（0.1.21 D-14）。
 //
 // sessions.json 只存布局——每个会话的稳定标识 conv 与标题，不存消息正文：
-// 正文的唯一权威是 mem_d（与 CLI 同一记忆库），TUI 写入时以 metadata.conv
-// 归属会话。布局与内容职责分离，避免第二份历史副本；删掉 sessions.json
-// 也不丢对话——启动水合完成后按 conv 从 mem_d 重建各 tab 的消息。
+// 正文的唯一权威是 mem_d（与 CLI 同一记忆库），运行侧写入时以
+// metadata.conv 归属会话。布局与内容职责分离，避免第二份历史副本；删掉
+// sessions.json 也不丢对话——启动水合完成后按 conv 从 mem_d 重建各 tab 的
+// 消息。TUI 侧只读（0.1.21 X1-28a），写记忆归运行侧机制。
 
 use super::*;
 
@@ -94,27 +95,6 @@ fn group_by_conv(recent: Vec<MemoryRecord>) -> Vec<(String, Vec<MemoryRecord>)> 
 }
 
 impl App {
-    /// 当前会话标识（空布局懒生成；生成即落盘，崩溃也不丢归属）。
-    pub(crate) fn ensure_conv(&mut self) -> String {
-        let i = self.current_tab_index();
-        let need = self
-            .session_tabs
-            .get(i)
-            .map(|t| t.conv.is_empty())
-            .unwrap_or(false);
-        if need {
-            let conv = new_conv();
-            if let Some(t) = self.session_tabs.get_mut(i) {
-                t.conv = conv;
-            }
-            self.persist_tabs();
-        }
-        self.session_tabs
-            .get(i)
-            .map(|t| t.conv.clone())
-            .unwrap_or_default()
-    }
-
     /// 会话布局落盘：只写 conv + 标题，不写消息正文。无标识的 tab 在此
     /// 分配标识——只要入布局就必须有稳定身份，重启后正文才找得回来。
     pub fn persist_tabs(&mut self) {

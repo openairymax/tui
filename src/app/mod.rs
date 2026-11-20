@@ -239,7 +239,7 @@ pub struct App {
     pub status_message: String,
     /// LLM 判定的当前模式：true = 任务集（多步任务编排），false = 普通对话
     pub task_mode: bool,
-    /// 对话记忆后端（跨会话"记得住"）
+    /// 对话记忆后端（只读镜像；写入归运行侧机制，X1-28a）
     pub memory: Box<dyn ConversationMemory>,
     /// 内置拼音输入法引擎（纯 Rust；词典缺失/校验失败时为 None → IME 禁用）
     pub ime_engine: Option<ImeEngine>,

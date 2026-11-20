@@ -271,7 +271,7 @@ mod tests {
         let mut app = App::new("agents/main.agent.yaml", gw);
         let mut mem = GatewayMemory::volatile();
         for (role, text, tags) in records {
-            mem.push(role, text, tags).expect("push");
+            mem.seed(role, text, tags, None);
         }
         app.memory = Box::new(mem);
         app

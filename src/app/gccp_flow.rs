@@ -107,7 +107,6 @@ impl App {
                     }
                 }
                 self.add_message(MessageRole::Agent, r.response.clone());
-                self.mem_push_tagged("assistant", &r.response, "task");
                 self.add_message(
                     MessageRole::System,
                     format!("请输入第 {} 问的回答：", round),
@@ -167,7 +166,6 @@ impl App {
                 // 2.3.9 层级可视化：Executing 阶段逐节点着色）
                 self.gccp.init_node_states();
                 self.add_message(MessageRole::Agent, r.response.clone());
-                self.mem_push_tagged("assistant", &r.response, "task");
                 self.add_message(
                     MessageRole::System,
                     "请确认「任务流程图」（GRAD）：输入「确认」开始执行，或输入修改意见。"
@@ -272,8 +270,6 @@ impl App {
                     }
                     let cleaned = gccp::strip_task_done(&r.response);
                     self.add_message(MessageRole::Agent, cleaned.clone());
-                    // 0.1.18 B4：执行轮同样不落思考链（与 apply_chat_result 对齐）
-                    self.mem_push_tagged("assistant", &cleaned, "task");
                     // C-17：判据复核结果上屏；完成只认证据，正文 [TASK:DONE]
                     // 不再参与完成判定。
                     self.show_verify(&r);
@@ -289,7 +285,6 @@ impl App {
                 } else {
                     self.gccp.grad_plan = r.response.trim().to_string();
                     self.add_message(MessageRole::Agent, r.response.clone());
-                    self.mem_push_tagged("assistant", &r.response, "task");
                     self.add_message(
                         MessageRole::System,
                         "已修订流程图，请再次确认：输入「确认」开始执行。".to_string(),

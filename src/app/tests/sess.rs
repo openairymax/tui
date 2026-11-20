@@ -22,9 +22,8 @@ fn app_mem() -> App {
 }
 
 fn seed(a: &mut App, conv: &str, turns: &[(&str, &str)]) {
-    a.memory.set_conversation(conv);
     for (role, text) in turns {
-        a.memory.push(role, text, "chat").expect("push");
+        a.memory.seed(role, text, "chat", Some(conv));
     }
 }
 
@@ -75,7 +74,8 @@ fn sess_empty_tab_layout_persisted() {
 fn sess_history_restored_from_memory_by_conv() {
     let _home = crate::test_env::Home::new("sess-history");
     let mut a = app_mem();
-    let conv = a.ensure_conv();
+    a.persist_tabs();
+    let conv = a.session_tabs[0].conv.clone();
     seed(&mut a, &conv, &[("user", "第一轮"), ("assistant", "回应")]);
     a.persist_tabs();
 

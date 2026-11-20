@@ -331,7 +331,7 @@ async fn approval_unavailable_fails_closed() {
 }
 
 /// §6.12 #5：降级完成的回复带「· via fallback」角标且标记只消费一次；
-/// 角标是瞬时呈现态——长期记忆只存正文，不随记录落盘。
+/// 角标是瞬时呈现态，不落任何持久面（TUI 侧无记忆写入口，X1-28a）。
 #[test]
 fn fallback_badge_is_transient_and_once() {
     let _h = crate::test_env::Home::new("fallback-badge");
@@ -366,8 +366,7 @@ fn fallback_badge_is_transient_and_once() {
     );
 
     let recent = app.memory.recent(4);
-    assert_eq!(recent.len(), 1, "仅一条助手记忆: {:?}", recent);
-    assert_eq!(recent[0].content, "降级回复正文", "记忆只存正文");
+    assert_eq!(recent.len(), 0, "TUI 不写记忆: {:?}", recent);
 
     app.apply_chat_result("追问".to_string(), Ok(run("正常回复")));
     let last = app.messages.back().expect("第二条回复已入库");
