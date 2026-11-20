@@ -362,13 +362,23 @@ mod tests {
         assert!(status.success(), "子进程须收到 last_seq=7 后正常退出");
     }
 
-    /// 停止后写端已关：不重试、不降级，错误种类可判定。
+    /// 停止后四类输入帧一律失败：不重试、不降级，错误种类可判定。
+    ///
+    /// 四帧同测而不是只测 prompt：写路径共用 `write`，但帧构造函数各不相同，
+    /// 任一构造错误都必须在同一处暴露，不能等接线时才在运行期发现。
     #[test]
     fn writes_fail_after_stop() {
         let c = EventClient::start(&spec("hang")).expect("事件客户端可起");
         c.stop(Duration::from_millis(50)).expect("停止可完成");
-        let err = c.prompt("x").expect_err("写端已关");
-        assert_eq!(err.kind(), std::io::ErrorKind::NotConnected);
+        let errs = [
+            c.prompt("x").expect_err("prompt 写端已关"),
+            c.paste("y").expect_err("paste 写端已关"),
+            c.cancel().expect_err("cancel 写端已关"),
+            c.confirm("c1", true).expect_err("confirm 写端已关"),
+        ];
+        for err in errs {
+            assert_eq!(err.kind(), std::io::ErrorKind::NotConnected);
+        }
     }
 
     /// 克隆共享同一条流：投影与存活判定对两个句柄一致。
