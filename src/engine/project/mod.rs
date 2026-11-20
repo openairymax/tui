@@ -18,6 +18,7 @@
 
 use super::event::model::{Body, Control, Domain, Event, Outcome};
 
+pub(crate) mod dirty;
 pub(crate) mod msgs;
 
 #[cfg(test)]
