@@ -24,6 +24,7 @@ pub(crate) mod msgs;
 #[cfg(test)]
 mod support;
 
+use self::dirty::{Dirty, Span};
 use self::msgs::Msgs;
 
 /// 运行态：由事件驱动，不由渲染层自己判断。
@@ -37,7 +38,7 @@ pub(crate) enum Phase {
     Closed,
 }
 
-/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息表。
+/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息表 + 待刷新行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Projection {
     applied: u64,
@@ -45,6 +46,7 @@ pub(crate) struct Projection {
     phase: Phase,
     counts: [u64; 4],
     msgs: Msgs,
+    dirty: Dirty,
 }
 
 impl Projection {
@@ -56,19 +58,23 @@ impl Projection {
             phase: Phase::Idle,
             counts: [0; 4],
             msgs: Msgs::new(),
+            dirty: Dirty::new(),
         }
     }
 
     /// 折叠一条事件：只改本结构，返回值留空以便后续卡接脏区。
     ///
-    /// 增量语义：每条事件只落到该落的表，已入表的行不重算、不改写。
+    /// 增量语义：每条事件只落到该落的表，已入表的行不重算、不改写；
+    /// 新入表的消息行同时记为待刷新，渲染器按区间取走。
     pub(crate) fn apply(&mut self, ev: &Event) {
         self.applied = self.applied.saturating_add(1);
         self.seq = self.seq.max(ev.seq);
         let slot = slot(ev.domain());
         self.counts[slot] = self.counts[slot].saturating_add(1);
         self.phase = next_phase(self.phase, &ev.body);
-        self.msgs.push(ev);
+        if let Some(row) = self.msgs.push(ev) {
+            self.dirty.mark(row);
+        }
     }
 
     /// 已折叠事件数。
@@ -94,6 +100,16 @@ impl Projection {
     /// 消息表只读视图。
     pub(crate) fn msgs(&self) -> &Msgs {
         &self.msgs
+    }
+
+    /// 待刷新行只读视图（自检与诊断用）。
+    pub(crate) fn dirty(&self) -> &Dirty {
+        &self.dirty
+    }
+
+    /// 取走待刷新行：渲染器每帧消费一次。
+    pub(crate) fn drain_dirty(&mut self) -> Vec<Span> {
+        self.dirty.take()
     }
 }
 
@@ -232,5 +248,23 @@ mod tests {
         assert!(p.msgs().is_empty());
         assert_eq!(p.count(Domain::Control), 1);
         assert_eq!(p.count(Domain::Outcome), 1);
+    }
+
+    /// 脏区可枚举：只标记入表行，取走后清空，相邻区间合并为一段。
+    #[test]
+    fn dirty_ranges_follow_message_rows() {
+        let mut p = Projection::new();
+        p.apply(&delta(1, "一"));
+        p.apply(&delta(2, "二"));
+        p.apply(&start(3));
+        assert_eq!(p.dirty().count(), 2);
+        assert_eq!(p.dirty().segs(), 1);
+        assert!(p.dirty().covers(1));
+        assert!(!p.dirty().covers(2), "控制帧没有消息行");
+
+        p.apply(&delta(4, "四"));
+        let spans: Vec<(usize, usize)> = p.drain_dirty().iter().map(|s| (s.from, s.to)).collect();
+        assert_eq!(spans, vec![(0, 3)], "控制帧不占行，三段自动并成一段");
+        assert!(p.dirty().is_empty(), "取走后清空");
     }
 }
