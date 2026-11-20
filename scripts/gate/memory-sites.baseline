@@ -1,0 +1,6 @@
+# 记忆呈现直呼基线（0.1.21 X1-26b）。
+#
+# 记忆的呈现查询已收拢到 engine::memory 的只读快照（App::memory_snapshot /
+# App::memory_records），终局即 0 且已达成：任何新增直呼都会使
+# scripts/gate/memory-sites.sh 失败。
+direct 0
