@@ -18,7 +18,10 @@ fn probe(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("探针必须可被启动");
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) => panic!("探针必须可被启动: {e}"),
+    };
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),

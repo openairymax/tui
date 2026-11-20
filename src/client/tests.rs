@@ -76,16 +76,14 @@ fn spawn_sse_server_capture(
 /// 同 `spawn_sse_server`，额外回传**写出首个含 `token_delta` 帧的字节块**
 /// 后的时刻（`Instant` 单调单调、跨线程可比）——B2 V2.4「服务端首字节 →
 /// 首字上屏」时差取证的基准点。字节块未含该帧时保持 `None`。
+type Arrival = Arc<Mutex<Option<std::time::Instant>>>;
+
 fn spawn_sse_server_timed(
     chunks: Vec<Vec<u8>>,
-) -> (
-    String,
-    Arc<Mutex<Option<std::time::Instant>>>,
-    Arc<Mutex<Option<String>>>,
-) {
+) -> (String, Arrival, Arc<Mutex<Option<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
     let addr = listener.local_addr().expect("local_addr");
-    let first_delta: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+    let first_delta: Arrival = Arc::new(Mutex::new(None));
     let request: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mark = first_delta.clone();
     let req_out = request.clone();
@@ -611,7 +609,7 @@ async fn task_turn_consumes_plan_step_and_task_state() {
     // C-15：统一任务编排入口全链路——task.submit_stream 发送，run_start
     // 元数据（task_id/mode）、plan/step（子目标）、task_state（阶段）与
     // message/run_end 全部消费；未确认轮不得携带 gccp_confirmed。
-    let body = vec![
+    let body = [
         frame_bytes(&frame_envelope(
             gen::AIRY_RS_TYPE_RUN_START,
             0,
@@ -715,7 +713,7 @@ async fn task_turn_consumes_plan_step_and_task_state() {
 async fn task_turn_needs_intent_is_not_an_error() {
     // C-15：GCCP 门禁——needs_intent 帧（零引擎/零工具调用）不是错误：
     // 结果为 Ok、正文为空、门禁对象随结果回传，供上层进入目标确认。
-    let body = vec![
+    let body = [
         frame_bytes(&frame_envelope(
             gen::AIRY_RS_TYPE_RUN_START,
             0,
