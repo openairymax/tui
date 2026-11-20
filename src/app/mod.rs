@@ -37,7 +37,6 @@ mod evolution;
 mod gccp_flow;
 mod health;
 mod input;
-mod memory;
 mod mode;
 mod model;
 mod panel;
