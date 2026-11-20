@@ -7,13 +7,13 @@
 
 use super::*;
 
-use crate::engine::grid;
-
 impl App {
     /// 决议一个审批请求（Claude Code 风格权限确认）。
     ///
-    /// `decision` ∈ {"allow", "always", "deny"}。决议成功后从待办列表移除
-    /// 并回显结果；失败（已超时/已决议）提示用户。
+    /// `decision` ∈ {"allow", "always", "deny"}。`always` 与 `allow` 一样只
+    /// 放行本次：CLI 尚未提供会话级总是允许的帧语义，回显里注明，不假装
+    /// 已记住。决议帧直达 CLI 并把本地裁决折进投影；写失败按 fail-closed
+    /// 处理——工具侧等不到帧会超时拒绝，界面如实标注。
     pub fn approve_request(&mut self, decision: &str) {
         let Some(a) = self.approvals.first() else {
             self.add_message(
@@ -24,20 +24,34 @@ impl App {
         };
         let request_id = a.request_id.clone();
         let tool = a.tool.clone();
-        let gw = self.gateway.clone();
-        let decision = decision.to_string();
-        let mut approvals = std::mem::take(&mut self.approvals);
-        approvals.remove(0);
-        self.approvals = approvals;
-        let label = match decision.as_str() {
-            "always" => "本会话总是允许",
-            "allow" => "允许本次执行",
-            _ => "拒绝",
-        };
-        let tail = if decision == "deny" {
-            "（rejected：用户拒绝）"
+        let allow = decision != "deny";
+        if let Some(ev) = self.ev.clone() {
+            if let Err(e) = ev.answer(&request_id, allow) {
+                self.add_message(
+                    MessageRole::System,
+                    format!(
+                        "审批回送失败，工具「{}」将按超时拒绝（fail-closed）：{}",
+                        tool, e
+                    ),
+                );
+                self.add_log(
+                    "ERROR",
+                    format!("权限决议回送失败: {} ({})", request_id, tool),
+                );
+                self.approvals.remove(0);
+                return;
+            }
+        }
+        self.approvals.remove(0);
+        let label = if allow { "允许本次执行" } else { "拒绝" };
+        let tail = if allow {
+            if decision == "always" {
+                "（会话级总是允许待 CLI 支持，本次仅放行一次）"
+            } else {
+                ""
+            }
         } else {
-            ""
+            "（rejected：用户拒绝）"
         };
         self.add_message(
             MessageRole::System,
@@ -47,39 +61,6 @@ impl App {
             "INFO",
             format!("权限决议: {} → {} ({})", request_id, label, tool),
         );
-        tokio::spawn(async move {
-            if let Err(e) = gw.resolve_approval(&request_id, &decision).await {
-                log::warn!("tool.approve 请求失败 ({}): {}", request_id, e);
-            }
-        });
-    }
-
-    /// 审批渠道故障（§6.5 #4）：fail-closed。队列中每条请求立即按拒绝
-    /// 呈递并与用户主动拒绝（rejected）区分标注 unavailable；同时尽力
-    /// 通知网关拒绝，避免工具悬空等待。
-    pub(super) fn reject_unavailable(&mut self, reason: &str) {
-        if self.approvals.is_empty() {
-            return;
-        }
-        for a in std::mem::take(&mut self.approvals) {
-            self.add_message(
-                MessageRole::System,
-                format!(
-                    "审批不可用，已拒绝工具「{}」（unavailable：{}）",
-                    a.tool,
-                    grid::clip(reason, 80)
-                ),
-            );
-            self.add_log(
-                "ERROR",
-                format!("权限审批不可用: {} ({})", a.tool, a.request_id),
-            );
-            let gw = self.gateway.clone();
-            let request_id = a.request_id;
-            tokio::spawn(async move {
-                let _ = gw.resolve_approval(&request_id, "deny").await;
-            });
-        }
     }
 
     /// 请求中断（§6.2 #6）：Esc 在等待期先呈递「已请求中断…」，再交由

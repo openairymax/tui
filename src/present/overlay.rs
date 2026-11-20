@@ -226,7 +226,7 @@ pub(super) fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::raw("  "),
         Span::styled(
-            "[a] 本会话总是",
+            "[a] 允许本次（总是待支持）",
             Style::default()
                 .fg(style::accent())
                 .add_modifier(Modifier::BOLD),

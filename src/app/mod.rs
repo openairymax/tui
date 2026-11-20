@@ -324,12 +324,10 @@ pub struct App {
     /// 中间态亦零上屏（V3.1），剥出文本暂存 protocol_buf，落定时入
     /// F3 诊断通道（V3.2）。
     stream_sanitizer: StreamSanitizer,
-    /// 待人工决议的工具审批请求（tool.pending 轮询；Claude Code 风格 permission prompt）
+    /// 待人工决议的工具审批请求（事件投影同步；Claude Code 风格 permission prompt）
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
     pub project_context: String,
-    /// 审批轮询在途请求（spawn 后异步返回，下次 poll 消费结果）
-    approval_poll_rx: Option<tokio::sync::oneshot::Receiver<Result<Vec<PendingApproval>, String>>>,
     /// 启动期连接探测在途结果（§6.1 #1：与首帧并发，晚到热修正连接态）
     boot_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::client::HealthResponse>>>,
     /// 2026-08-17：F8 请求切换到 CLI（airy_cli）——主循环收到标志后
@@ -536,7 +534,6 @@ impl App {
             stream_sanitizer: StreamSanitizer::new(),
             approvals: Vec::new(),
             project_context: String::new(),
-            approval_poll_rx: None,
             boot_rx: None,
             switch_to_cli: false,
             hall_board: None,

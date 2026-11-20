@@ -310,44 +310,39 @@ fn leader_hint_waits_delay_and_cancels() {
     assert!(!app.leader_hint());
 }
 
-/// §6.5 #4：审批渠道故障 fail-closed——队列逐条按「unavailable」拒绝呈递，
-/// 与用户主动拒绝（rejected）分属不同标注，绝不放行；空队列再入静默 no-op。
-#[tokio::test]
-async fn approval_unavailable_fails_closed() {
-    let _h = crate::test_env::Home::new("approval-unavailable");
+/// §6.5 #4：审批回送失败 fail-closed——写端关闭时不得假装已放行：队列移除、
+/// 明确标注工具将在 CLI 侧超时拒绝；空队列再入只提示，不产生决议。
+#[test]
+fn approval_write_failure_fails_closed() {
+    let _h = crate::test_env::Home::new("approval-write-fail");
     let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
     let mut app = App::new("agents/main.agent.yaml", gw);
+    attach_pipe(&mut app);
+    let ev = app.ev.clone().expect("事件管道已接入");
+    ev.stop(Duration::from_millis(50)).expect("停止可完成");
     app.approvals.push(approval_req("r1", "shell_exec"));
-    app.approvals.push(approval_req("r2", "file_write"));
 
-    app.reject_unavailable("channel closed");
+    app.approve_request("allow");
 
-    assert!(app.approvals.is_empty(), "渠道故障须清空待审队列");
+    assert!(app.approvals.is_empty(), "回送失败须清空待审队列");
     let text: String = app
         .messages
         .iter()
         .map(|m| m.content.clone())
         .collect::<Vec<_>>()
         .join("\n");
+    assert!(text.contains("审批回送失败"), "text={}", text);
+    assert!(text.contains("fail-closed"), "text={}", text);
     assert!(
-        text.contains("审批不可用，已拒绝工具「shell_exec」"),
-        "text={}",
-        text
-    );
-    assert!(
-        text.contains("（unavailable：channel closed）"),
-        "text={}",
-        text
-    );
-    assert!(
-        !text.contains("（rejected"),
-        "渠道故障不得与用户拒绝混同: text={}",
+        !text.contains("已允许本次执行"),
+        "回送失败不得回显为已放行: text={}",
         text
     );
 
     let before = app.messages.len();
-    app.reject_unavailable("again");
-    assert_eq!(app.messages.len(), before, "空队列再入为 no-op");
+    app.approve_request("allow");
+    assert_eq!(app.messages.len(), before + 1, "空队列再入只提示");
+    assert!(app.messages.last().unwrap().content.contains("没有待决议"));
 }
 
 /// §6.12 #5：降级完成的回复带「· via fallback」角标且标记只消费一次；

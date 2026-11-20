@@ -6,12 +6,11 @@
 // AgentRT gateway 通信客户端（TUI 侧，退役中）。
 //
 // 运行轮已全部改由事件管道（event 子模块 + airy_cli）承载，本模块只剩观察面
-// 的读侧 RPC：健康探针、tool.pending/tool.approve、hall.*、types 契约。
+// 的读侧 RPC：健康探针、hall.*、types 契约。
 // 分层如下：
 //   - 本模块：连接构造、健康探针、通用 rpc_call（传输骨架）
-//   - approval：tool.pending / tool.approve（尽力而为语义）
 //   - hall：hall.* 读侧 RPC + hall.watch 长连接
-//   - event：事件/投影 API（D-15 子进程），运行轮的唯一入口
+//   - event：事件/投影 API（D-15 子进程），运行轮与审批的唯一入口
 //   - types：wire → Rust 反序列化契约
 //
 // 传输层分工：事件帧由 airy_cli 产出；reqwest 仅承担读侧 JSON-RPC 与
@@ -22,14 +21,13 @@ use log::debug;
 use reqwest::Client as HttpClient;
 use std::time::Duration;
 
-mod approval;
 pub(crate) mod event;
 mod hall;
 mod types;
 
 pub use types::*;
 
-/// Gateway 读侧客户端（观察面与审批）。
+/// Gateway 读侧客户端（观察面）。
 ///
 /// reqwest::Client 内部为 Arc 连接池，Clone 成本低；后台探测任务使用
 /// 独立副本，与主循环渲染解耦。
