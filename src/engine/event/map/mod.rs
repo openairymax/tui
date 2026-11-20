@@ -281,6 +281,7 @@ mod tests {
                 id: "c2".into(),
                 tool: String::new(),
                 target: String::new(),
+                timeout_ms: 0,
             })]
         );
     }
