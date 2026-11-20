@@ -7,6 +7,7 @@
 
 use crate::app::{dep_cn, App};
 use crate::engine::grid;
+use crate::engine::session::SessionView;
 use crate::gccp::FlowPhase;
 use crate::style;
 use ratatui::{
@@ -19,15 +20,13 @@ use ratatui::{
 
 /// 会话 tab 栏（2026-08-21 多会话）：`1 标题 | 2 标题 …` 胶囊。
 /// 当前 tab 高亮（主色底 + 反色字），其余弱化；Alt+1..9 切换 · Ctrl+T 新建。
-pub(super) fn render_tab_bar(f: &mut Frame, area: Rect, app: &App) {
-    let n = app.tab_count();
-    let current = app.current_tab_index();
+pub(super) fn render_tab_bar(f: &mut Frame, area: Rect, view: &SessionView) {
     let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default())];
-    for i in 0..n {
-        let active = i == current;
+    for (i, tab) in view.tabs().iter().enumerate() {
+        let active = view.active_index() == i;
         // 胶囊标题预算 16 列：按显示宽度裁决，否则全角标题会撑破 tab 栏
         // （一个汉字占 2 列，按字符取 16 实占 32 列，后续 tab 被挤出屏幕）。
-        let title = grid::clip(&app.tab_title(i), 16);
+        let title = grid::clip(tab.title(), 16);
         spans.push(Span::styled(
             format!(" {} {} ", i + 1, title),
             Style::default()

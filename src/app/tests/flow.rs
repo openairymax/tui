@@ -17,17 +17,17 @@ async fn session_tabs_new_and_switch_roundtrip() {
     let mut app = App::new("agents/main.agent.yaml", gw);
 
     // 初始：仅主会话（槽 0）
-    assert_eq!(app.tab_count(), 1);
+    assert_eq!(app.session_view().tab_count(), 1);
     assert_eq!(app.current_tab_index(), 0);
 
     // 主会话发一条消息 → 标题派生
     app.submit_input("帮我写一个冒泡排序").expect("submit");
-    assert_eq!(app.tab_title(0), "帮我写一个冒泡排序");
+    assert_eq!(app.session_view().tab_title(0), "帮我写一个冒泡排序");
     app.abort_task();
 
     // Ctrl+T 新建：主会话内容保留，新 tab 为空（仅含系统提示）
     app.new_session_tab();
-    assert_eq!(app.tab_count(), 2);
+    assert_eq!(app.session_view().tab_count(), 2);
     assert_eq!(app.current_tab_index(), 1);
     assert!(
         app.messages.iter().all(|m| m.role == MessageRole::System),
@@ -39,7 +39,7 @@ async fn session_tabs_new_and_switch_roundtrip() {
     );
     // 新会话发消息 → 标题派生到 tab 2
     app.submit_input("继续聊另一个话题").expect("submit");
-    assert_eq!(app.tab_title(1), "继续聊另一个话题");
+    assert_eq!(app.session_view().tab_title(1), "继续聊另一个话题");
     app.abort_task();
 
     // Alt+1 切回主会话：内容还原

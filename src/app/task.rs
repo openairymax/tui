@@ -369,7 +369,7 @@ impl App {
         }
         // ── 会话管理（0.1.20 TUI 缺口②：删除/重命名/落盘，命令与快捷键同源）──
         if lower == "/sessions" {
-            let list = self.list_tabs();
+            let list = self.session_view().render_list();
             self.add_message(
                 MessageRole::System,
                 format!("会话列表（◂ 为当前）：\n{}\n/new 新建 · Alt+N 切换 · /rename 重命名 · /close 关闭", list),
@@ -508,17 +508,7 @@ impl App {
         self.add_message(MessageRole::User, input.clone());
 
         // 多会话：首条用户消息派生会话标题（tab 栏展示）
-        let ci = self.current_tab_index();
-        if self
-            .session_tabs
-            .get(ci)
-            .map(|t| t.title.is_empty())
-            .unwrap_or(false)
-        {
-            if let Some(tab) = self.session_tabs.get_mut(ci) {
-                tab.title = derive_session_title(&input);
-            }
-        }
+        self.seed_tab_title(&input);
 
         // 记忆：持久化用户输入（普通对话与任务均记录），带轮次标注（B1）
         self.mem_push_tagged("user", &input, "chat");

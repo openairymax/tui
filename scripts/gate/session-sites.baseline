@@ -1,0 +1,7 @@
+# 会话呈现直呼基线（0.1.21 X1-26a）。
+#
+# session 的呈现查询已收拢到 engine::session 的只读快照（App::session_view），
+# 终局即 0 且已达成：任何新增都会使 scripts/gate/session-sites.sh 失败。
+# `total` 仅作汇总，门禁按 direct 比对判定。
+direct 0
+total 0

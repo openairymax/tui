@@ -50,6 +50,7 @@ pub(crate) mod sanitize;
 pub(crate) mod sched;
 pub(crate) mod screen;
 pub(crate) mod selfhost;
+pub(crate) mod session;
 pub(crate) mod stats;
 pub(crate) mod term;
 pub(crate) mod timer;

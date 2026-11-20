@@ -60,6 +60,12 @@ jobs:
         working-directory: sdk/tui
         run: sh scripts/gate/rpc-sites.sh
 
+      # 迁移期棘轮：会话呈现直呼恒为 0（只读快照 App::session_view()）。
+      # 与 RPC 门禁同款，放在依赖取用之前，违规时几秒内失败。
+      - name: Session call-site gate
+        working-directory: sdk/tui
+        run: sh scripts/gate/session-sites.sh
+
       # 共享协议客户端（tui 的 path 依赖 ../sdk-rust）
       - name: Checkout agentrt-rs
         uses: actions/checkout@v4
