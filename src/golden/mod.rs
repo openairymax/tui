@@ -18,6 +18,7 @@ mod observe;
 mod panels;
 mod perf;
 mod progress;
+mod sample;
 mod scroll;
 mod selfhost;
 mod size;

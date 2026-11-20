@@ -42,6 +42,10 @@ compile_commands.json
 *.tmp
 *.bak
 
+# ---------- Python 工具缓存 ----------
+__pycache__/
+*.pyc
+
 # ---------- 操作系统文件 ----------
 .DS_Store
 Thumbs.db
