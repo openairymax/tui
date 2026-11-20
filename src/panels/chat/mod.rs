@@ -85,7 +85,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     // 取自节流快照；回到未脱离态即消失。0.1.18 B11（V11.3）位置指示
     // 保留为兜底——到顶显式提示、滚动途中 `视口末行/总行`、底部安静。
     // 回放期抑制浮标，避免与主区回放骨架行重叠（§6.1 #2）。
-    if app.replay_left() == 0 {
+    if app.session_view().replay_left() == 0 {
         let follow = app.follow_badge();
         let label = if let Some(n) = follow {
             Some(if n == 0 {

@@ -64,11 +64,11 @@ fn replay_drains_and_records_ledger() {
     fx.app.memory.push("user", "旧消息", "").expect("写入记忆");
     fx.app.resume_session();
     let mut now = 0;
-    while fx.app.replay_left() > 0 {
+    while fx.app.session_view().replay_left() > 0 {
         now += 1_000;
         fx.app.pump_replay(now);
     }
-    assert_eq!(fx.app.replay_left(), 0);
+    assert_eq!(fx.app.session_view().replay_left(), 0);
     let s = fx.draw();
     assert_lacks(&s, "回放中");
     assert_has(&s, "已补账恢复 1 条历史。");

@@ -68,7 +68,7 @@ fn resume_session_restores_history() {
     // 0.1.19 §6.1 #2：恢复经回放队列节流逐条上屏，泵空后才落进消息列表；
     // 空队列时补一条「已补账恢复 N 条」记账（§6.6 #5 原样复用历史时间戳）。
     let mut now = 0;
-    while app.replay_left() > 0 {
+    while app.session_view().replay_left() > 0 {
         now += crate::budget::REPLAY_INTERVAL_MS;
         app.pump_replay(now);
     }

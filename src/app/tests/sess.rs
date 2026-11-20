@@ -39,8 +39,8 @@ fn sess_layout_roundtrip_has_no_messages() {
 
     let mut b = app();
     b.restore_tabs();
-    assert_eq!(b.tab_count(), 2, "布局应整体还原");
-    assert_eq!(b.tab_title(1), "部署排查", "标题属于布局");
+    assert_eq!(b.session_view().tab_count(), 2, "布局应整体还原");
+    assert_eq!(b.session_view().tab_title(1), "部署排查", "标题属于布局");
     assert!(
         b.session_tabs.iter().all(|t| t.messages.is_empty()),
         "sessions.json 不得再存消息正文"
@@ -63,7 +63,11 @@ fn sess_empty_tab_layout_persisted() {
     a.persist_tabs();
     let mut b = app();
     b.restore_tabs();
-    assert_eq!(b.tab_count(), 2, "空会话的布局也应保留（内容在 mem_d）");
+    assert_eq!(
+        b.session_view().tab_count(),
+        2,
+        "空会话的布局也应保留（内容在 mem_d）"
+    );
     assert!(b.messages.is_empty());
 }
 
@@ -116,9 +120,9 @@ fn sess_close_removes_tab_and_switches() {
     a.add_message(MessageRole::User, "keep".to_string());
     a.new_session_tab();
     a.add_message(MessageRole::User, "gone".to_string());
-    assert_eq!(a.tab_count(), 2);
+    assert_eq!(a.session_view().tab_count(), 2);
     a.close_tab();
-    assert_eq!(a.tab_count(), 1, "关闭后只剩主会话");
+    assert_eq!(a.session_view().tab_count(), 1, "关闭后只剩主会话");
     assert_eq!(a.active_tab, None, "关闭末 tab 后回落到槽 0");
     assert!(
         a.messages.iter().any(|m| m.content == "keep"),
@@ -132,7 +136,7 @@ fn sess_close_main_clears_in_place() {
     let mut a = app();
     a.add_message(MessageRole::User, "x".to_string());
     a.close_tab();
-    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.session_view().tab_count(), 1);
     assert!(
         !a.messages
             .iter()
@@ -147,8 +151,8 @@ fn sess_rename_updates_title_and_persists() {
     let mut a = app();
     a.add_message(MessageRole::User, "hi".to_string());
     a.rename_tab("部署排查");
-    assert_eq!(a.tab_title(0), "部署排查");
+    assert_eq!(a.session_view().tab_title(0), "部署排查");
     let mut b = app();
     b.restore_tabs();
-    assert_eq!(b.tab_title(0), "部署排查", "重命名必须随落盘持久");
+    assert_eq!(b.session_view().tab_title(0), "部署排查", "重命名必须随落盘持久");
 }

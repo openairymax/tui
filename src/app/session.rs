@@ -6,6 +6,8 @@
 // 会话与多标签：项目上下文加载、历史会话恢复、向导接入、tab 槽位存取。
 // 布局落盘与经 mem_d 的历史还原在 session_store（D-14）。
 
+use crate::engine::session::SessionView;
+
 use super::*;
 
 impl App {
@@ -96,11 +98,6 @@ impl App {
         }
     }
 
-    /// 回放剩余条数（渲染骨架行「回放中 · N 条」）。
-    pub fn replay_left(&self) -> usize {
-        self.replay.len()
-    }
-
     /// 重新打开首次启动向导（/hiairy 命令触发）。
     pub fn open_wizard(&mut self) {
         self.wizard.reopen();
@@ -176,23 +173,36 @@ impl App {
         self.active_tab = if i == 0 { None } else { Some(i) };
     }
 
-    /// tab 总数（含主会话，恒 ≥1）。
-    pub fn tab_count(&self) -> usize {
-        self.session_tabs.len()
+    /// 会话呈现快照（0.1.21 X1-26a）：会话状态的唯一读出口。
+    ///
+    /// 渲染侧一律先取本快照再读字段，不再直接访问 `session_tabs` 或会话
+    /// 访问器。当前会话的消息数取主字段 live 长度（既有 list_tabs 语义）。
+    pub(crate) fn session_view(&self) -> SessionView {
+        let cur = self.current_tab_index();
+        let rows: Vec<(String, usize)> = self
+            .session_tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let live = if i == cur {
+                    self.messages.len()
+                } else {
+                    t.messages.len()
+                };
+                (t.title.clone(), live)
+            })
+            .collect();
+        SessionView::new(rows, cur, self.replay.len())
     }
 
-    /// 指定 tab 的展示标题（无标题回退「会话 N」；tab 栏渲染用）。
-    pub fn tab_title(&self, i: usize) -> String {
-        self.session_tabs
-            .get(i)
-            .map(|t| {
-                if t.title.is_empty() {
-                    format!("会话 {}", i + 1)
-                } else {
-                    t.title.clone()
-                }
-            })
-            .unwrap_or_default()
+    /// 首条用户消息派生会话标题（tab 栏展示）；已有标题不覆盖。
+    pub(super) fn seed_tab_title(&mut self, text: &str) {
+        let i = self.current_tab_index();
+        if let Some(tab) = self.session_tabs.get_mut(i) {
+            if tab.title.is_empty() {
+                tab.title = derive_session_title(text);
+            }
+        }
     }
 
     /// Ctrl+T：新建会话 tab。当前对话（有内容时）保留为 tab，开启空白新会话。
@@ -269,7 +279,11 @@ impl App {
         self.stream_tool_events.clear();
         self.add_log(
             "INFO",
-            format!("切换到会话 tab {}（{}）", n, self.tab_title(target)),
+            format!(
+                "切换到会话 tab {}（{}）",
+                n,
+                self.session_view().tab_title(target)
+            ),
         );
         self.persist_tabs();
     }
@@ -320,7 +334,7 @@ impl App {
             );
             return;
         }
-        let title = self.tab_title(cur);
+        let title = self.session_view().tab_title(cur).to_string();
         self.session_tabs.remove(cur);
         let next = cur.min(self.session_tabs.len() - 1);
         self.messages.clear();
@@ -331,7 +345,11 @@ impl App {
         self.persist_tabs();
         self.add_message(
             MessageRole::System,
-            format!("已关闭会话「{}」，切换到 {}。", title, self.tab_title(next)),
+            format!(
+                "已关闭会话「{}」，切换到 {}。",
+                title,
+                self.session_view().tab_title(next)
+            ),
         );
     }
 
@@ -348,27 +366,8 @@ impl App {
         }
         self.add_message(
             MessageRole::System,
-            format!("会话已重命名为「{}」。", self.tab_title(i)),
+            format!("会话已重命名为「{}」。", self.session_view().tab_title(i)),
         );
         self.persist_tabs();
-    }
-
-    /// /sessions：列出全部会话（序号 · 标题 · 消息数，当前会话标记）。
-    pub fn list_tabs(&self) -> String {
-        let cur = self.current_tab_index();
-        self.session_tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let live = if i == cur {
-                    self.messages.len()
-                } else {
-                    t.messages.len()
-                };
-                let mark = if i == cur { "◂" } else { " " };
-                format!("{} [{}] {}（{} 条）", mark, i + 1, self.tab_title(i), live)
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }

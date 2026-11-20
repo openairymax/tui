@@ -124,13 +124,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_degraded(f, main_layout[at], app);
     }
     let main_area = main_layout[plan.slots.main];
+    // 会话呈现一律走只读快照（X1-26a），不再直呼 App 的会话访问器
+    let view = app.session_view();
     // 多会话 tab 栏（Chat 面板顶部一行；仅存在多会话时渲染）
-    if app.active_panel == ActivePanel::Chat && app.tab_count() > 1 {
+    if app.active_panel == ActivePanel::Chat && view.tab_count() > 1 {
         let tab_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(main_area);
-        render_tab_bar(f, tab_layout[0], app);
+        render_tab_bar(f, tab_layout[0], &view);
         panels::chat::render(f, tab_layout[1], app);
     } else {
         match app.active_panel {
@@ -153,8 +155,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     // 回放骨架行（0.1.19 §6.1 #2）：会话恢复期间主区不空白，右下角常显
     // 进度；计数由 100ms 回放泵节流推进。
-    if app.replay_left() > 0 {
-        render_replay(f, main_area, app);
+    if view.replay_left() > 0 {
+        render_replay(f, main_area, view.replay_left());
     }
     if let Some(at) = plan.slots.approval {
         render_approval_banner(f, main_layout[at], app);
@@ -211,11 +213,11 @@ fn render_too_small(f: &mut Frame, area: Rect) {
 }
 
 /// 回放进度行（TUI 方案 §6.1 #2）：主区右下角常显剩余条数。
-fn render_replay(f: &mut Frame, area: Rect, app: &App) {
+fn render_replay(f: &mut Frame, area: Rect, left: usize) {
     if area.height == 0 {
         return;
     }
-    let text = format!(" 回放中 · {} 条 ", app.replay_left());
+    let text = format!(" 回放中 · {} 条 ", left);
     let w = (UnicodeWidthStr::width(text.as_str()) as u16).min(area.width);
     let row = Rect {
         x: area.right().saturating_sub(w),
