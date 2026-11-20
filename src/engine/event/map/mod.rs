@@ -19,6 +19,7 @@
 mod cog;
 pub(crate) mod ctl;
 mod exe;
+mod out;
 
 use serde_json::Value;
 
@@ -27,15 +28,17 @@ use super::model::{Body, Event};
 
 /// 类型 + 载荷 + 帧序号 → 归域载荷（一帧可派生多条）；未识别返回空。
 pub(crate) fn bodies(kind: &str, payload: &Value, seq: u64) -> Vec<Body> {
-    let mut out = Vec::new();
+    let mut acc = Vec::new();
     if ctl::known(kind) {
-        out.extend(ctl::read(kind, payload, seq).map(Body::Control));
+        acc.extend(ctl::read(kind, payload, seq).map(Body::Control));
     } else if cog::known(kind) {
-        out.extend(cog::read(kind, payload).into_iter().map(Body::Cognition));
+        acc.extend(cog::read(kind, payload).into_iter().map(Body::Cognition));
     } else if exe::known(kind) {
-        out.extend(exe::read(kind, payload).map(Body::Execution));
+        acc.extend(exe::read(kind, payload).map(Body::Execution));
+    } else if out::known(kind) {
+        acc.extend(out::read(kind, payload).map(Body::Outcome));
     }
-    out
+    acc
 }
 
 /// 信封 → 事件序列：主载荷一条，run_start 另按配置键逐条展开。
@@ -167,6 +170,62 @@ mod tests {
                 args: json!("ls"),
             })
         );
+    }
+
+    /// 三域全覆盖：认知、执行、收口各有真实发帧，逐类落到本域。
+    #[test]
+    fn covers_three_domains() {
+        let failure = json!({"reason": "provider_unreachable", "next_action": "retry"});
+        let cases: [(&str, Value, Domain); 8] = [
+            (
+                "token_delta",
+                json!({"data": {"delta": "片"}}),
+                Domain::Cognition,
+            ),
+            (
+                "plan",
+                json!({"data": {"plan": "先读依赖"}}),
+                Domain::Cognition,
+            ),
+            (
+                "message",
+                json!({"data": {"content": "答案"}}),
+                Domain::Cognition,
+            ),
+            (
+                "catalog",
+                json!({"data": {"available": 3}}),
+                Domain::Execution,
+            ),
+            (
+                "tool_start",
+                json!({"data": {"tool": "shell", "tool_id": "t1"}}),
+                Domain::Execution,
+            ),
+            (
+                "tool_end",
+                json!({"data": {"tool_id": "t1", "status": "ok"}}),
+                Domain::Execution,
+            ),
+            (
+                "run_end",
+                json!({"data": {"status": "completed"}}),
+                Domain::Outcome,
+            ),
+            (
+                "error",
+                json!({"data": {"message": "上游不可达", "failure": failure}}),
+                Domain::Outcome,
+            ),
+        ];
+        for (kind, payload, want) in cases {
+            let evs = events(env(kind, payload));
+            assert!(!evs.is_empty(), "{kind} 应可归域");
+            assert!(
+                evs.iter().all(|e| e.domain() == want),
+                "{kind} 归错域：{evs:?}"
+            );
+        }
     }
 
     /// run_start 把服务端裁决配置逐键展开，与状态事件共用帧序号。
