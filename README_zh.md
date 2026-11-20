@@ -106,7 +106,6 @@ curl -fsSL "https://api.atomgit.com/api/v5/repos/openairymax/agentrt/contents/sc
 |--------|------|
 | `Ctrl+C` | 退出程序 |
 | `Ctrl+X` | 中止当前后台请求（任务执行 / 等待中的回复） |
-| `Ctrl+Z` | 暂停 / 恢复等待（请求继续在后台执行） |
 | `Ctrl+T` | 新建会话标签（任务执行中不可用） |
 | `Alt+1`–`Alt+9` | 切换会话标签（`Alt+1` 回到主会话） |
 | `Esc` | 返回对话面板 |

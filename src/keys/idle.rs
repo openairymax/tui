@@ -14,7 +14,6 @@ use super::util::{read_only_panel, truncate_str};
 use super::Flow;
 
 use crate::app::{ActivePanel, App, MessageRole};
-use crate::gccp::TaskControl;
 
 /// 空闲态按键分派。返回 `Exit` 时调用方立即退出主循环（终端守卫 Drop 还原）。
 pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
@@ -42,19 +41,6 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 // 空闲态且处于任务集：Ctrl+X 退出任务集（回到普通对话）
                 info!("User pressed Ctrl+X, exiting task mode");
                 app.exit_task_mode();
-            }
-        }
-        // Ctrl+Z：暂停/恢复后台请求等待（请求继续在网关执行）
-        KeyCode::Char('z') | KeyCode::Char('Z')
-            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-        {
-            if app.is_busy() {
-                info!("User pressed Ctrl+Z, toggling pause");
-                if app.task_control == TaskControl::Paused {
-                    app.resume_task();
-                } else {
-                    app.pause_task();
-                }
             }
         }
         // 首次启动向导激活：按键全部交给向导
@@ -230,7 +216,7 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             // 后台请求已发出 → 立即交还主循环：此后按键由 busy_key 分派
             //   - thinking... 动效与流式上屏由主循环按 L4 节拍成帧
             //   - 回复到达/流式增量/审批待决议由主循环 poll_pending 消费
-            //   - Ctrl+X 中止 / Ctrl+Z 暂停（等待期间可人工控制）
+            //   - Ctrl+X 中止（等待期间可人工控制）
             //   - 任务完成后插入对话队列由主循环逐条提交（单 pending 槽，
             //     每条等其完成再处理下一条，逻辑链连续不割裂）
             return Ok(Flow::Continue);

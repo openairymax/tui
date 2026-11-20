@@ -361,7 +361,6 @@ impl App {
 
     /// 主循环轮询：后台请求完成则应用结果（返回是否有待办请求，供渲染循环判断）。
     ///
-    /// 用户暂停（Ctrl+Z）期间不消费结果——请求继续在网关执行，恢复后结果照常应用。
     /// 流式请求（StreamRound）：先消费 mpsc 增量块实时追加到 streaming_text，
     /// 再检查 oneshot 完整结果（结束信号）——**结果到达即落定**，不受上屏
     /// 动画进度影响（0.1.18 B2-6）。
@@ -369,9 +368,6 @@ impl App {
     /// `approvals_due` 由主循环传入（`Beats::has(Beat::Approvals)`）：审批轮询
     /// 节拍归 L4 调度表，此处不再自持 1.5s 节流时钟（0.1.18 §5A.3 W4）。
     pub fn poll_pending(&mut self, approvals_due: bool) -> bool {
-        if self.task_control == TaskControl::Paused {
-            return true;
-        }
         // 审批轮询：请求在途时查询 tool.pending（在借用 self.pending 前调用，
         // 且 poll_approvals 内部自判 pending 是否存在）
         self.poll_approvals(approvals_due);

@@ -1,0 +1,3 @@
+# 本地暂停态直呼基数（<key> <count>）。只降不升：新增一处即失败。
+# local-pause = TaskControl::Paused / pause_task / resume_task 的出现次数。
+local-pause 0

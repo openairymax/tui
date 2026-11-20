@@ -27,13 +27,15 @@ pub enum FlowPhase {
     Executing,
 }
 
-/// 任务集执行控制状态（人工中止/暂停）
+/// 任务集执行控制状态（人工中止）
+///
+/// 只承载「用户按过中止键」这一本地事实；暂停不在本枚举内——暂停是
+/// 运行结果的事实态，唯一来源是 `task_state` 事件（C-15 / D-13），
+/// 见 [`TaskState::Paused`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskControl {
     /// 正常运行
     Running,
-    /// 用户暂停（Ctrl+Z）：轮询挂起，可恢复
-    Paused,
     /// 用户中止（Ctrl+X）：后台请求已取消，状态徽章展示中止态；
     /// 下次发起新交互（start_pending 等）时自动复位为 Running
     Aborted,
@@ -43,7 +45,6 @@ impl TaskControl {
     pub fn label(self) -> &'static str {
         match self {
             TaskControl::Running => "运行中",
-            TaskControl::Paused => "已暂停",
             TaskControl::Aborted => "已中止",
         }
     }
@@ -52,8 +53,9 @@ impl TaskControl {
 /// 任务集生命周期状态（C-14-07）。
 ///
 /// 迁移的事实源是协议终态（`run_end.status`；D-13 落地后由 `task_state`
-/// 事件取代），**不解析正文标记**。与 TaskControl 正交：后者是用户按键
-/// 产生的控制态，本状态是运行结果的事实态，两者可同时存在。
+/// 事件取代），**不解析正文标记**。暂停同属本状态（`Paused`），不再由
+/// 本地按键自持；与 TaskControl 正交：后者只记用户中止动作，本状态是
+/// 运行结果的事实态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TaskState {
     /// 执行中（默认）

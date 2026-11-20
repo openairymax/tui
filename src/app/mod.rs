@@ -265,7 +265,7 @@ pub struct App {
     pub wizard: wizard::WizardState,
     /// 进行中的后台 LLM 请求（主循环每 100ms 轮询 + 渲染，驱动 thinking 动效）
     pending: Option<PendingTurn>,
-    /// 任务集执行控制状态（人工暂停/中止，默认运行中）
+    /// 任务集执行控制状态（人工中止，默认运行中；暂停只由 task_state 驱动）
     pub task_control: TaskControl,
     /// 任务集生命周期状态（C-14-07）：由协议终态驱动，阻断态必须三选。
     pub task_state: TaskState,

@@ -161,23 +161,20 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                 .filter(|d| !d.is_empty())
                 .map(|d| format!(" · {} 个步骤", d.node_count()))
                 .unwrap_or_default();
-            let control_hint = match app.task_control {
-                crate::gccp::TaskControl::Paused => "  ⏸ 已暂停（Ctrl+Z 恢复）",
-                crate::gccp::TaskControl::Aborted => "  ✕ 已中止",
-                crate::gccp::TaskControl::Running => "  Ctrl+X 中止 · Ctrl+Z 暂停",
-            };
-            // C-14-07：阻断态（暂停/失败）替换「执行中」文案并给出三选，
-            // 避免运行态被静默呈现为仍在执行。
-            let (title, tail) = match app.task_state {
-                crate::gccp::TaskState::Paused => (
-                    "任务集已暂停".to_string(),
+            // C-14-07：阻断态（暂停/失败/未验证）一律替换「执行中」文案并
+            // 给出三选，避免运行态被静默呈现为仍在执行。状态只认 task_state
+            // （事件驱动），本地不再持有暂停态。
+            let (title, tail) = if app.task_state.is_blocked() {
+                (
+                    format!("任务集{}", app.task_state.label()),
                     format!("  {}", crate::gccp::TaskState::choices()),
-                ),
-                crate::gccp::TaskState::Failed => (
-                    "任务集已失败".to_string(),
-                    format!("  {}", crate::gccp::TaskState::choices()),
-                ),
-                _ => (format!("任务集执行中{node_hint}"), control_hint.to_string()),
+                )
+            } else {
+                let hint = match app.task_control {
+                    crate::gccp::TaskControl::Aborted => "  ✕ 已中止",
+                    crate::gccp::TaskControl::Running => "  Ctrl+X 中止",
+                };
+                (format!("任务集执行中{node_hint}"), hint.to_string())
             };
             out.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
