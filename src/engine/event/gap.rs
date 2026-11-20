@@ -12,12 +12,18 @@
 //
 // 时刻由调用方给出（毫秒），本模块不读时钟：判定与记录保持纯函数，
 // 测试可用固定时刻复现同一段区间。
+//
+// 落盘走只读审计通道（X1-09b）：一行一段区间，格式固定为
+// `{"gap":{"from":N,"to":N,"at":ms,"missed":N}}`，与事件录制共用
+// `LineLog` 的截断/刷盘/熔断纪律，但落在独立的文件名下——录制文件是
+// 可回放的帧流，混入审计行会让回放把它当成坏帧。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::VecDeque;
 
 use super::seq::Verdict;
+use crate::engine::logfile::LineLog;
 
 /// 台账容量：足以覆盖一次长时间断网，又不会随会话时长增长。
 pub(crate) const MAX_GAPS: usize = 256;
@@ -34,6 +40,19 @@ impl Gap {
     /// 缺失帧数（真空区间不出台账，故至少 1）。
     pub(crate) fn missed(&self) -> u64 {
         self.to.saturating_sub(self.from).saturating_add(1)
+    }
+
+    /// 审计行：一段区间一行 JSON，字段与内存结构一一对应。
+    pub(crate) fn audit_line(&self) -> String {
+        serde_json::json!({
+            "gap": {
+                "from": self.from,
+                "to": self.to,
+                "at": self.at,
+                "missed": self.missed(),
+            }
+        })
+        .to_string()
     }
 }
 
@@ -99,6 +118,27 @@ impl Gaps {
     pub(crate) fn missed(&self) -> u64 {
         self.slots.iter().map(Gap::missed).sum()
     }
+
+    /// 命中查询：某个帧号是否落在已记录的缺失区间内（定位用）。
+    pub(crate) fn covering(&self, seq: u64) -> Option<&Gap> {
+        self.slots.iter().find(|g| g.from <= seq && seq <= g.to)
+    }
+
+    /// 把现存区间逐条写入只读审计，返回实际落盘条数。
+    ///
+    /// 写失败即停并保留未写部分：审计通道不可用时台账本身不能一起丢，
+    /// 内存里仍可展示最近的断点。
+    pub(crate) fn flush_to(&mut self, log: &mut LineLog) -> usize {
+        let mut kept = 0;
+        while let Some(g) = self.slots.pop_front() {
+            if !log.write(&g.audit_line()) {
+                self.slots.push_front(g);
+                break;
+            }
+            kept += 1;
+        }
+        kept
+    }
 }
 
 impl Default for Gaps {
@@ -162,5 +202,52 @@ mod tests {
         g.note(gap(7, 3), 1);
         assert_eq!(g.missed(), 1);
         assert!(Gaps::default().is_empty());
+    }
+
+    /// 定位：缺失帧落在区间内可命中，区间外的帧不误命中。
+    #[test]
+    fn covering_locates_missing_frame() {
+        let mut g = Gaps::new();
+        g.note(gap(3, 5), 10);
+        g.note(gap(9, 9), 20);
+        assert_eq!(g.covering(4).map(|x| x.at), Some(10));
+        assert_eq!(g.covering(9).map(|x| x.at), Some(20));
+        assert_eq!(g.covering(6), None);
+        assert_eq!(g.covering(2), None);
+    }
+
+    /// 审计落盘：一段一行，坏帧区间与时刻可在文件里逐条定位。
+    #[test]
+    fn audit_locates_ranges_on_disk() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("gaps.jsonl");
+        let mut log = LineLog::open(&path, 64).expect("打开审计");
+        let mut g = Gaps::new();
+        g.note(gap(3, 5), 900);
+        g.note(gap(9, 9), 950);
+        assert_eq!(g.flush_to(&mut log), 2);
+        assert!(g.is_empty(), "落盘后内存台账不再重复持有");
+        drop(log);
+
+        let body = std::fs::read_to_string(&path).expect("审计已落盘");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("合法 JSON");
+        assert_eq!(first["gap"]["from"], 3);
+        assert_eq!(first["gap"]["to"], 5);
+        assert_eq!(first["gap"]["at"], 900);
+        assert_eq!(first["gap"]["missed"], 3);
+    }
+
+    /// 审计不可用（容量为零）时不必丢台账：未写部分留在内存。
+    #[test]
+    fn flush_keeps_gaps_when_audit_closed() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let mut log = LineLog::open(&dir.path().join("off.jsonl"), 0).expect("打开审计");
+        let mut g = Gaps::new();
+        g.note(gap(2, 4), 7);
+        assert_eq!(g.flush_to(&mut log), 0);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g.latest().map(|x| x.at), Some(7));
     }
 }
