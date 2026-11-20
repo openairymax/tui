@@ -373,7 +373,7 @@ impl Probe {
     /// 等待探测结论并回收线程；窗口内无应答时返回空结论。
     pub(crate) fn collect(&mut self) -> Caps {
         let left = self.window.left_at(Instant::now());
-        let caps = self.rx.recv_timeout(left).unwrap_or_default();
+        let caps = await_caps(&self.rx, left);
         self.shutdown();
         caps
     }
@@ -390,6 +390,14 @@ impl Drop for Probe {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// 在预算内等待探测结论；无应答按默认能力返回，绝不无限期阻塞调用方。
+///
+/// 启动路径的重绘、状态恢复与事件循环都不等待终端回包：这里最多等到
+/// 窗口剩余时间，静默终端也照常进入主循环，只是能力保持未探明。
+fn await_caps(rx: &mpsc::Receiver<Caps>, budget: Duration) -> Caps {
+    rx.recv_timeout(budget).unwrap_or_default()
 }
 
 /// 显式主题（AIRY_TUI_THEME）优先于一切探测结论。
@@ -574,5 +582,32 @@ mod tests {
         assert!(!w.closed_at(w.started, &stop));
         stop.store(true, Ordering::Relaxed);
         assert!(w.closed_at(w.started, &stop), "取消须先于超时生效");
+    }
+
+    /// 无应答：等待必须按预算返回默认能力，绝不挂住启动路径。
+    #[test]
+    fn silent_probe_returns_by_budget() {
+        let (_tx, rx) = mpsc::channel::<Caps>();
+        let started = Instant::now();
+        let caps = await_caps(&rx, Duration::from_millis(30));
+        assert_eq!(caps, Caps::default(), "无应答按默认能力");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "等待必须被预算截断"
+        );
+    }
+
+    /// 有应答：结论原样交回，不做二次加工。
+    #[test]
+    fn probe_reply_is_delivered() {
+        let (tx, rx) = mpsc::channel();
+        let want = Caps {
+            scheme: None,
+            sync_output: Some(true),
+            kitty: Some(true),
+            truecolor: true,
+        };
+        tx.send(want).expect("接收端仍存活");
+        assert_eq!(await_caps(&rx, Duration::from_millis(30)), want);
     }
 }
