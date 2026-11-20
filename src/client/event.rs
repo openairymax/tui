@@ -16,23 +16,26 @@
 //        → Projection（唯一折叠点，X1-10）
 //
 // 读线程是 std 管道的唯一消费者：stdout 交出后只有它推进投影，渲染侧只能
-// 克隆快照，无法回写。写方向只有四类输入帧（prompt/paste/cancel/confirm），
-// 与 CLI 的 cli_ev_in.c 一一对应；帧格式由本模块集中构造，调用方不拼 JSON。
+// 克隆快照，无法回写。写方向只有五类输入帧（prompt/paste/cancel/confirm/
+// query），与 CLI 的 cli_ev_in.c 一一对应；帧格式由本模块集中构造，调用方
+// 不拼 JSON。观察面读统一走 query：CLI 取值后回 query_result，按 id 暂存，
+// 面板以 take_query 摘取后自行判读 ok/error，不进入投影事件语义。
 //
 // 停止语义与 `pipe::Feed` 一致：关 stdin → 宽限 → 强杀 → 回收，随后等读线程
 // 看到 EOF。`Clone` 只复制句柄（Arc），最后一个句柄丢弃才停子进程；后台任务
 // 可以安全持有一份而不延长会话寿命。
 //
-// 运行轮已全部收敛到本模块（`app::lane` 唯一入口），网关只保留观察面读侧
-// RPC：health_check 2、resolve_approval 2、list_pending_approvals 1、
-// rpc_call 16（hall_* 4、mem.* 3、llm.* 2、tool.* 1、agent.turns 1、
-// telemetry 1、运维命令 4）。面板级读在后续卡按域迁出。
+// 运行轮与审批已全部收敛到本模块（`app::lane` 唯一入口），网关只保留观察面
+// 读侧 RPC：health_check 2、rpc_call 16（hall_* 4、mem.* 3、llm.* 2、
+// tool.* 1、agent.turns 1、telemetry 1、运维命令 4）。面板级读在后续卡按域
+// 迁出。
 //
-// 门禁口径按客户端入口计（六个方法共 21 处，`{ns}.health_check` 走同一入口），
+// 门禁口径按客户端入口计（两个方法共 18 处，`{ns}.health_check` 走同一入口），
 // 基线见 scripts/gate/rpc-sites.baseline，只许下调；上限为 0（X1-29a）。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::collections::HashMap;
 use std::io::{self, BufReader};
 use std::process::{ChildStdout, ExitStatus};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -44,6 +47,7 @@ use serde_json::{json, Value};
 use crate::engine::event::envelope::Envelope;
 use crate::engine::event::frame::Frames;
 use crate::engine::event::map;
+use crate::engine::event::model::{Body, Control, Event};
 use crate::engine::event::pipe::{Feed, Spec, STOP_GRACE};
 use crate::engine::event::seq::Watch;
 use crate::engine::project::Projection;
@@ -76,10 +80,13 @@ struct Inner {
     reader: Mutex<Option<JoinHandle<()>>>,
 }
 
-/// 折叠状态：投影、序号断言器与丢弃计数。
+/// 折叠状态：投影、序号断言器、查询应答与丢弃计数。
 struct State {
     proj: Projection,
     watch: Watch,
+    queries: HashMap<String, Value>,
+    last_seq: u64,
+    last_ts: u64,
     bad: u64,
     rejects: u64,
     unknown: u64,
@@ -112,6 +119,9 @@ impl EventClient {
         let state = Arc::new(Mutex::new(State {
             proj: Projection::new(),
             watch: Watch::resume(last_seq),
+            queries: HashMap::new(),
+            last_seq,
+            last_ts: 0,
             bad: 0,
             rejects: 0,
             unknown: 0,
@@ -165,6 +175,45 @@ impl EventClient {
             "request_id": request_id,
             "behavior": behavior,
         }))
+    }
+
+    /// 观察面读：只读面板数据，不走运行事件语义。
+    ///
+    /// `id` 由调用方生成并在应答里回显，用于把异步返回配回发起查询的面板；
+    /// 结果由 `take_query` 摘取，未摘取的应答留在表里（按 id 覆盖）。
+    pub(crate) fn query(&self, id: &str, method: &str, params: &Value) -> io::Result<()> {
+        self.write(&json!({
+            "type": "input",
+            "kind": "query",
+            "id": id,
+            "method": method,
+            "params": params,
+        }))
+    }
+
+    /// 摘取一条查询应答（`{"id","ok","result"|"error"}`），取走即删。
+    pub(crate) fn take_query(&self, id: &str) -> Option<Value> {
+        lock(&self.inner.state).queries.remove(id)
+    }
+
+    /// 回应审批并把本地裁决折进投影：同一请求只可能有一个结论。
+    ///
+    /// 帧直达 CLI 后，投影表不会自己变——线上没有「裁决已收到」的回帧，
+    /// 行会悬读到超时。这里按事件流最后时刻补一条本地 `Control::Answer`，
+    /// 让界面与用户动作同拍收口；不推进 Watch，续传水位仍只由线上帧推进。
+    pub(crate) fn answer(&self, request_id: &str, allow: bool) -> io::Result<()> {
+        self.confirm(request_id, allow)?;
+        let mut s = lock(&self.inner.state);
+        let ev = Event {
+            seq: s.last_seq,
+            ts: s.last_ts,
+            body: Body::Control(Control::Answer {
+                id: request_id.to_owned(),
+                ok: allow,
+            }),
+        };
+        s.proj.apply(&ev);
+        Ok(())
     }
 
     fn write(&self, frame: &Value) -> io::Result<()> {
@@ -248,6 +297,14 @@ fn pump(out: ChildStdout, state: Arc<Mutex<State>>) {
         let mut s = lock(&state);
         s.bad = frames.bad();
         let _ = s.watch.feed(env.seq);
+        s.last_seq = s.last_seq.max(env.seq);
+        s.last_ts = s.last_ts.max(env.ts);
+        if env.kind == "query_result" {
+            if let Some(id) = env.payload["id"].as_str() {
+                s.queries.insert(id.to_owned(), env.payload);
+            }
+            continue;
+        }
         let events = map::events(env);
         if events.is_empty() {
             s.unknown = s.unknown.saturating_add(1);
@@ -372,9 +429,9 @@ mod tests {
         assert!(status.success(), "子进程须收到 last_seq=7 后正常退出");
     }
 
-    /// 停止后四类输入帧一律失败：不重试、不降级，错误种类可判定。
+    /// 停止后五类输入帧一律失败：不重试、不降级，错误种类可判定。
     ///
-    /// 四帧同测而不是只测 prompt：写路径共用 `write`，但帧构造函数各不相同，
+    /// 五帧同测而不是只测 prompt：写路径共用 `write`，但帧构造函数各不相同，
     /// 任一构造错误都必须在同一处暴露，不能等接线时才在运行期发现。
     #[test]
     fn writes_fail_after_stop() {
@@ -385,10 +442,32 @@ mod tests {
             c.paste("y").expect_err("paste 写端已关"),
             c.cancel().expect_err("cancel 写端已关"),
             c.confirm("c1", true).expect_err("confirm 写端已关"),
+            c.query("q1", "hall.board", &serde_json::json!({}))
+                .expect_err("query 写端已关"),
         ];
         for err in errs {
             assert_eq!(err.kind(), std::io::ErrorKind::NotConnected);
         }
+    }
+
+    /// 查询应答：按 id 暂存、摘取即删，且不进入投影事件流。
+    #[test]
+    fn answers_query_by_id() {
+        let c = EventClient::start(&spec("query")).expect("事件客户端可起");
+        until("心跳入表", || c.stats().applied >= 1);
+        c.query("q7", "hall.board", &serde_json::json!({"limit": 2}))
+            .expect("query 帧可写");
+        until("应答入表", || c.stats().watermark >= 2);
+
+        let v = c.take_query("q7").expect("应答按 id 可摘");
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["result"]["agents"][0]["id"], serde_json::json!("a1"));
+        assert!(c.take_query("q7").is_none(), "摘取即删");
+        let st = c.stats();
+        assert_eq!((st.applied, st.unknown), (1, 0), "应答不产事件、不计未知");
+
+        let status = c.stop(Duration::from_secs(5)).expect("停止可完成");
+        assert!(status.success(), "查询应答后子进程正常退出");
     }
 
     /// 克隆共享同一条流：投影与存活判定对两个句柄一致。
@@ -410,6 +489,7 @@ mod tests {
             Ok("session") => child_session(),
             Ok("messy") => child_messy(),
             Ok("hello7") => child_hello(7),
+            Ok("query") => child_query(),
             Ok("hang") => std::thread::sleep(Duration::from_secs(30)),
             _ => {}
         }
@@ -435,6 +515,26 @@ mod tests {
         emit(r#"{"schema":2,"seq":1,"ts":0,"type":"heartbeat","payload":{}}"#);
         emit(r#"{"schema":1,"seq":1,"ts":0,"type":"heartbeat","payload":{}}"#);
         emit(r#"{"schema":1,"seq":3,"ts":0,"type":"mystery","payload":{}}"#);
+        std::process::exit(0);
+    }
+
+    /// 查询角色：读 hello → 回心跳；读 query 帧 → 按 id 回 query_result。
+    fn child_query() {
+        if !line().contains("\"hello\"") {
+            std::process::exit(2);
+        }
+        emit(r#"{"schema":1,"seq":1,"ts":1,"type":"heartbeat","payload":{}}"#);
+        let q = line();
+        if !q.contains("\"query\"")
+            || !q.contains("\"hall.board\"")
+            || !q.contains("\"q7\"")
+            || !q.contains("\"limit\"")
+        {
+            std::process::exit(2);
+        }
+        emit(
+            r#"{"schema":1,"seq":2,"ts":2,"type":"query_result","payload":{"id":"q7","ok":true,"result":{"agents":[{"id":"a1"}]}}}"#,
+        );
         std::process::exit(0);
     }
 
