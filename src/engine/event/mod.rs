@@ -13,5 +13,6 @@
 pub(crate) mod envelope;
 pub(crate) mod frame;
 pub(crate) mod lines;
+pub(crate) mod map;
 pub(crate) mod model;
 pub(crate) mod pipe;
