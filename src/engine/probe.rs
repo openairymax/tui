@@ -183,31 +183,50 @@ fn scheme_of(buf: &[u8]) -> Option<(Scheme, Src)> {
     }
 }
 
+/// DECRQM 2026 的三分支裁决：未识别 / 已设置 / 已重置。
+///
+/// 「未识别」是终端给出的明确否定回执，与「尚无回包」是两件事：前者可
+/// 断言不支持，后者只能记为未知。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sync {
+    Unsupported,
+    On,
+    Off,
+}
+
+impl Sync {
+    fn enabled(self) -> bool {
+        self == Sync::On
+    }
+}
+
 /// 解析 DECRQM 2026 回执 `CSI ? 2026 ; Ps $ y`。
 ///
-/// Ps：0 未识别、1 已设置、2 已重置、3 永久设置、4 永久重置。支持与否按
-/// 1~4 判定，开关状态按 1/3 为开；0 与畸形回包一律返回 None，不猜。
+/// Ps：0 未识别（不支持）、1 已设置、2 已重置、3 永久设置、4 永久重置。
+/// 前三者构成三分支：0 与 2/4 均落「不可用」，仅 1/3 为开。畸形回包
+/// 继续向后扫描；整段无有效回执时返回 None——未知不得当作不支持。
 pub(crate) fn parse_sync(buf: &[u8]) -> Option<bool> {
     let mut at = 0;
     while let Some(pos) = find(&buf[at..], DECRQ_SYNC) {
         let head = at + pos + DECRQ_SYNC.len();
         if let Some(state) = sync_state(&buf[head..]) {
-            return Some(state);
+            return Some(state.enabled());
         }
         at = head;
     }
     None
 }
 
-fn sync_state(rest: &[u8]) -> Option<bool> {
+fn sync_state(rest: &[u8]) -> Option<Sync> {
     let end = rest.iter().position(|b| !b.is_ascii_digit())?;
     if rest.get(end) != Some(&b'$') || rest.get(end + 1) != Some(&b'y') {
         return None;
     }
     let ps: u32 = std::str::from_utf8(&rest[..end]).ok()?.parse().ok()?;
     match ps {
-        1 | 3 => Some(true),
-        2 | 4 => Some(false),
+        0 => Some(Sync::Unsupported),
+        1 | 3 => Some(Sync::On),
+        2 | 4 => Some(Sync::Off),
         _ => None,
     }
 }
@@ -340,10 +359,19 @@ mod tests {
         assert_eq!(parse_sync(b"\x1b[?2026;2$y"), Some(false));
         assert_eq!(parse_sync(b"\x1b[?2026;3$y"), Some(true));
         assert_eq!(parse_sync(b"\x1b[?2026;4$y"), Some(false));
-        assert_eq!(parse_sync(b"\x1b[?2026;0$y"), None);
+        assert_eq!(parse_sync(b"\x1b[?2026;0$y"), Some(false), "未识别即不支持");
         assert_eq!(parse_sync(b"\x1b[?2026;1n"), None);
         assert_eq!(parse_sync(b"\x1b[?2026;"), None);
         assert_eq!(parse_sync(b"noise"), None);
+    }
+
+    /// 三分支状态机：未识别 / 已设置 / 已重置各归其位。
+    #[test]
+    fn decrqm_2026_branch_thirds() {
+        assert_eq!(sync_state(b"0$y"), Some(Sync::Unsupported));
+        assert_eq!(sync_state(b"1$y"), Some(Sync::On));
+        assert_eq!(sync_state(b"2$y"), Some(Sync::Off));
+        assert_eq!(sync_state(b"9$y"), None, "未定义取值不得归类");
     }
 
     #[test]
