@@ -367,9 +367,9 @@ fn explicit_theme() -> bool {
         .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "light" | "dark"))
 }
 
-/// 探测线程主体：先发 OSC11 与 DEC2031 查询，再按短片轮询原始输入。
+/// 探测线程主体：先写出四问查询帧，再按短片轮询原始输入。
 fn probe_loop(stop: &AtomicBool, tx: &mpsc::Sender<Caps>) {
-    if !emit_seq("\x1b]11;?\x1b\\\x1b[?996n") {
+    if !emit_seq(probe::QUERY) {
         let _ = tx.send(Caps::default());
         return;
     }

@@ -55,6 +55,12 @@ const DEC997: &[u8] = b"\x1b[?997;";
 const DECRQ_SYNC: &[u8] = b"\x1b[?2026;";
 const CSI_PRIVATE: &[u8] = b"\x1b[?";
 
+/// 探测查询帧：一次写出全部四问，顺序固定便于录制比对。
+///
+/// OSC11（背景色）→ DEC2031（明暗）→ DECRQM 2026（同步输出）→ kitty 键盘
+/// 协议查询。一条 `write` 完成，避免终端在两次写之间插入回显。
+pub(crate) const QUERY: &str = "\x1b]11;?\x1b\\\x1b[?996n\x1b[?2026$p\x1b[?u";
+
 /// 解析 OSC11 背景色应答，返回归一化后的 (r, g, b)。
 ///
 /// 应答形如 `ESC ] 11 ; rgb:RRRR/GGGG/BBBB` 后接 BEL 或 ST；段数不足时
@@ -315,5 +321,25 @@ mod tests {
         assert_eq!(got.kitty, Some(true));
         assert_eq!(got.dark(), Some(true));
         assert_eq!(Caps::default().dark(), None, "未探明时不得猜测明暗");
+    }
+
+    #[test]
+    fn query_frame_asks_every_probe_in_order() {
+        let parts = ["\x1b]11;?", "\x1b[?996n", "\x1b[?2026$p", "\x1b[?u"];
+        let at: Vec<usize> = parts
+            .iter()
+            .map(|p| QUERY.find(p).expect("查询帧必须含全部四问"))
+            .collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "查询顺序必须固定");
+        assert_eq!(QUERY.lines().count(), 1, "查询帧不得含换行");
+    }
+
+    #[test]
+    fn single_reply_frame_yields_all_caps() {
+        let reply = b"\x1b]11;rgb:0000/0000/0000\x07\x1b[?997;1n\x1b[?2026;1$y\x1b[?1u";
+        let got = caps(reply);
+        assert_eq!(got.scheme, Some((Scheme::Dark, Src::Osc11)));
+        assert_eq!(got.sync_output, Some(true));
+        assert_eq!(got.kitty, Some(true));
     }
 }
