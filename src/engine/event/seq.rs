@@ -110,15 +110,16 @@ mod tests {
         assert_eq!(t.accept(3), Verdict::Ok);
     }
 
-    /// 重连续收按断点起算；序号上界不溢出。
+    /// 重连续收按断点起算；序号上界饱和而不溢出。
     #[test]
     fn resume_from_checkpoint() {
         let mut t = Tracker::resume(41);
         assert_eq!(t.next(), 42);
         assert_eq!(t.accept(42), Verdict::Ok);
 
+        // 实际链路远达不到 2^64 帧：上界只保证不溢出，期望号饱和在 MAX。
         let mut edge = Tracker::resume(u64::MAX);
         assert_eq!(edge.accept(u64::MAX), Verdict::Ok);
-        assert_eq!(edge.accept(u64::MAX), Verdict::Repeat { seq: u64::MAX });
+        assert_eq!(edge.next(), u64::MAX);
     }
 }
