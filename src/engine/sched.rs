@@ -39,6 +39,7 @@
 use std::collections::VecDeque;
 
 use super::frame::{Costs, Stage};
+use super::ring::Ring;
 use crate::budget::{
     FRAME_BUDGET_US, FRAME_QUEUE_CAP, IDLE_WAIT_MS, MAX_FPS, MIN_RENDER_INTERVAL_MS,
 };
@@ -206,6 +207,8 @@ pub(crate) struct Sched {
     /// 帧率窗口起点（注入毫秒）。构造为 0，与时刻起点一致，故首个窗口即为
     /// 「启动至首次上报」的真实跨度，无需额外哨兵。
     rate_ms: u64,
+    /// 最近 1,024 帧的六段耗时（定长环，写满覆盖最旧）。
+    ring: Ring,
 }
 
 impl Sched {
@@ -230,6 +233,7 @@ impl Sched {
             present_max_us: 0,
             over: 0,
             rate_ms: 0,
+            ring: Ring::new(),
         }
     }
 
@@ -349,7 +353,11 @@ impl Sched {
     /// 冲刷/换帧在 P2 原子帧后端落地前合为一档（Present），故当前只有两段
     /// 有值。合计只累已采样段——缺段不拖累整帧口径，也不虚构 0。超预算即
     /// 置降级态。
+    ///
+    /// 逐帧原样留存到定长环（X8-05a），供读侧快照与离线复算；留存发生在
+    /// 聚合之前，故环内是未经平滑的原始样本。
     pub(crate) fn note_frame(&mut self, costs: &Costs) {
+        self.ring.push(*costs);
         let layout_us = costs.get(Stage::Compose).unwrap_or(0);
         let present_us = costs.get(Stage::Present).unwrap_or(0);
         self.frames = self.frames.wrapping_add(1);
@@ -648,6 +656,17 @@ mod tests {
         sched.advance(100);
         sched.beat_now(Beat::Hall);
         assert!(sched.advance(100).has(Beat::Hall), "启用后强制立即到期");
+    }
+
+    /// 逐帧留存：聚合口径与环内原始样本出自同一次上报。
+    #[test]
+    fn note_frame_retains_raw_sample_in_ring() {
+        let mut sched = fixture();
+        sched.note_frame(&cost(120, 300));
+        sched.note_frame(&cost(80, 200));
+        assert_eq!(sched.ring.len(), 2);
+        assert_eq!(sched.ring.written(), 2);
+        assert_eq!(sched.frames, 2);
     }
 
     /// 帧度量：按帧数节拍自计数，不因跳帧漂移。

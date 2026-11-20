@@ -39,6 +39,7 @@ pub(crate) mod leader;
 pub(crate) mod link;
 pub(crate) mod notify;
 pub(crate) mod probe;
+pub(crate) mod ring;
 pub(crate) mod sanitize;
 pub(crate) mod sched;
 pub(crate) mod screen;
