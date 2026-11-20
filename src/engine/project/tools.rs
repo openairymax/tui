@@ -104,6 +104,9 @@ impl Tools {
     }
 
     /// 结果收尾：对齐最近一条同号未收尾的行；对不上就单独成行。
+    ///
+    /// 同号行已收尾时的结果帧不是孤儿：它是重传或迟到的二次结论，按「终态
+    /// 不改写」丢弃。只有从未见过的调用号才单独成行——显示异常但不伪造行。
     fn close(&mut self, ev: &Event, id: &str, ok: bool, text: &str) -> bool {
         let status = if ok { Status::Ok } else { Status::Failed };
         let found = self
@@ -111,6 +114,9 @@ impl Tools {
             .iter()
             .rposition(|r| !r.done() && r.id == id && !id.is_empty());
         let Some(idx) = found else {
+            if !id.is_empty() && self.rows.iter().any(|r| r.id == id) {
+                return false;
+            }
             self.rows.push(Row {
                 id: id.to_owned(),
                 name: String::new(),

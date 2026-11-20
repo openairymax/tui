@@ -124,7 +124,7 @@ mod tests {
         d.mark(7);
         d.mark_span(10..13);
         assert_eq!(d.segs(), 3);
-        assert_eq!(d.count(), 6);
+        assert_eq!(d.count(), 5);
         let got: Vec<(usize, usize)> = d.take().iter().map(|s| (s.from, s.to)).collect();
         assert_eq!(got, vec![(2, 3), (7, 8), (10, 13)]);
     }
