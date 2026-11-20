@@ -42,6 +42,7 @@ pub(crate) mod link;
 pub(crate) mod logfile;
 pub(crate) mod notify;
 pub(crate) mod probe;
+pub(crate) mod recorder;
 pub(crate) mod ring;
 pub(crate) mod sanitize;
 pub(crate) mod sched;
