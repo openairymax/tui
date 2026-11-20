@@ -42,9 +42,9 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         {
             app.abort_task();
         }
-        // 工具级权限审批（§6.5 #3：y=允许本次 / a=本会话总是 / n=拒绝，
-        // Esc 亦为拒绝）。仅当存在待审批请求时生效——此前无条件拦截
-        // a/y/n/d/A，busy 期间输入含这些字母的文本会被吞字并
+        // 工具级权限审批（§6.5 #3：y=允许本次 / a=允许本次，会话级总是
+        // 待 CLI 支持 / n=拒绝，Esc 亦为拒绝）。仅当存在待审批请求时生效——
+        // 此前无条件拦截 a/y/n/d/A，busy 期间输入含这些字母的文本会被吞字并
         // 向对话区插入"没有待决议的权限请求"污染聊天。
         KeyCode::Char('y')
             if !app.approvals.is_empty()

@@ -5,9 +5,9 @@
 //
 // 审批与确认流（TUI 建设方案 §6.5）。审批卡由 `present::render` 真实投影
 // 到输入栏上方；队列、信息完备、三态直达、决议回显均走产品公开入口。
-// 渠道故障（fail-closed，§6.5 #4）与降级角标（§6.12 #5）的呈递语义涉及
+// 回送失败（fail-closed，§6.5 #4）与降级角标（§6.12 #5）的呈递语义涉及
 // `pub(super)` 入口，按「不为测试放宽可见性」纪律在 `app::tests` 内以
-// 真实路径覆盖（approval_unavailable_fails_closed /
+// 真实路径覆盖（approval_write_failure_fails_closed /
 // fallback_badge_is_transient_and_once）——golden 不复制产品文案。
 
 use super::*;
@@ -61,7 +61,7 @@ fn tri_state_keys_are_visible() {
     fx.app.approvals.push(approval("r1", "file_write", "", "{}"));
     let s = fx.draw();
     assert_has(&s, "[y] 允许本次");
-    assert_has(&s, "[a] 本会话总是");
+    assert_has(&s, "[a] 允许本次（总是待支持）");
     assert_has(&s, "[n] 拒绝（Esc）");
 }
 
@@ -80,8 +80,8 @@ async fn decision_clears_head_and_echoes() {
     assert_lacks(&s, "1 / 2");
 }
 
-/// §6.5 #3/#4：用户拒绝以 `rejected` 语义呈递，与渠道故障的 `unavailable`
-/// 分属不同标注——两者都绝不放行。
+/// §6.5 #3/#4：用户拒绝以 `rejected` 语义呈递，绝不放行；回送失败另见
+/// `app::tests::approval_write_failure_fails_closed`。
 #[tokio::test]
 async fn deny_marks_rejected() {
     let mut fx = Fixture::new("approval-deny");

@@ -505,63 +505,48 @@ impl App {
         self.pending.is_some()
     }
 
-    /// 审批轮询：后台请求进行中时查询 tool_d pending 审批列表。
+    /// 审批同步：把事件投影里的待批行同步到界面队列。
     ///
-    /// 被静态审批拒绝（如 shell_run）的工具会阻塞等待 tool.approve 决议
-    /// （AIRY_TOOL_APPROVAL_MODE=interactive）。此处轮询工具侧 pending，
-    /// 有新请求则上屏提示用户按 a/A/n 决议（Claude Code 风格 permission prompt）。
+    /// 审批请求由 CLI 经事件流（control_request）直达，投影按 request_id
+    /// 建行；本地决议把 Answer 折回投影，行随即收口。不再向网关轮询
+    /// pending，也不存在「渠道故障」这条独立失败路径——管道断了事件流
+    /// 本身就会停，队列随运行结束一并清空。
     ///
-    /// `due` 为 L4 调度表给出的 `Beat::Approvals` 到期信号：只门控**发起**新查询，
-    /// 在途结果每轮照常消费（结果不因节拍未到而滞留）。
+    /// `due` 为 L4 调度表给出的 `Beat::Approvals` 到期信号：只门控快照
+    /// 读取（克隆整份投影有成本），不是数据可用性的前提。
     pub(super) fn poll_approvals(&mut self, due: bool) {
-        // 仅当后台请求进行中（工具执行可能正在等待审批）
-        if self.pending.is_none() {
+        if self.pending.is_none() || !due {
             return;
         }
-        // 消费在途轮询结果（上次 spawn 的异步查询）
-        if let Some(mut rx) = self.approval_poll_rx.take() {
-            match rx.try_recv() {
-                Ok(Ok(pending_list)) => {
-                    // 新请求：去重后上屏提示
-                    for a in pending_list {
-                        if !self.approvals.iter().any(|x| x.request_id == a.request_id) {
-                            self.mark_landed(Lane::Poll);
-                            self.approvals.push(a.clone());
-                            self.add_message(
-                                MessageRole::System,
-                                format!(
-                                    "工具「{}」请求权限执行（agent: {}，参数: {}）\n按 y=允许本次 · a=本会话总是 · n=拒绝（Esc 拒绝）",
-                                    a.tool, a.agent_id, grid::clip(&a.params, 160)
-                                ),
-                            );
-                            self.add_log(
-                                "INFO",
-                                format!("权限审批待决议: {} ({})", a.tool, a.request_id),
-                            );
-                        }
-                    }
-                }
-                Ok(Err(e)) => self.reject_unavailable(&e),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    // 尚未返回：存回，下次继续
-                    self.approval_poll_rx = Some(rx);
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    // 查询任务异常结束：忽略，下个周期重新发起
-                }
+        let Some(ev) = self.ev.clone() else {
+            return;
+        };
+        let proj = ev.snapshot();
+        for r in proj.approvals().pending() {
+            if self.approvals.iter().any(|x| x.request_id == r.id) {
+                continue;
             }
+            self.mark_landed(Lane::Poll);
+            self.approvals.push(PendingApproval {
+                request_id: r.id.clone(),
+                tool: r.tool.clone(),
+                agent_id: String::new(),
+                params: r.target.clone(),
+                created_at: Some(r.asked as i64),
+            });
+            self.add_message(
+                MessageRole::System,
+                format!(
+                    "工具「{}」请求权限执行（参数: {}）\n按 y=允许本次 · a=允许本次（总是待支持） · n=拒绝（Esc 拒绝）",
+                    r.tool,
+                    grid::clip(&r.target, 160)
+                ),
+            );
+            self.add_log(
+                "INFO",
+                format!("权限审批待决议: {} ({})", r.tool, r.id),
+            );
         }
-        // 节拍门控发起新查询（1.5s 相位由 L4 调度表 Beat::Approvals 给出）
-        if !due {
-            return;
-        }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let list = gw.list_pending_approvals().await.map_err(|e| e.to_string());
-            let _ = tx.send(list);
-        });
-        self.approval_poll_rx = Some(rx);
     }
 
     /// 应用后台请求结果（按请求类型分派）。
