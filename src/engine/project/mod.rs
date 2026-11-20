@@ -20,12 +20,14 @@ use super::event::model::{Body, Control, Domain, Event, Outcome};
 
 pub(crate) mod dirty;
 pub(crate) mod msgs;
+pub(crate) mod tasks;
 
 #[cfg(test)]
 mod support;
 
 use self::dirty::{Dirty, Span};
 use self::msgs::Msgs;
+use self::tasks::Tasks;
 
 /// 运行态：由事件驱动，不由渲染层自己判断。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +40,7 @@ pub(crate) enum Phase {
     Closed,
 }
 
-/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息表 + 待刷新行。
+/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息表 + 任务表 + 待刷新行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Projection {
     applied: u64,
@@ -46,6 +48,7 @@ pub(crate) struct Projection {
     phase: Phase,
     counts: [u64; 4],
     msgs: Msgs,
+    tasks: Tasks,
     dirty: Dirty,
 }
 
@@ -58,6 +61,7 @@ impl Projection {
             phase: Phase::Idle,
             counts: [0; 4],
             msgs: Msgs::new(),
+            tasks: Tasks::new(),
             dirty: Dirty::new(),
         }
     }
@@ -72,6 +76,7 @@ impl Projection {
         let slot = slot(ev.domain());
         self.counts[slot] = self.counts[slot].saturating_add(1);
         self.phase = next_phase(self.phase, &ev.body);
+        self.tasks.apply(ev);
         if let Some(row) = self.msgs.push(ev) {
             self.dirty.mark(row);
         }
@@ -100,6 +105,11 @@ impl Projection {
     /// 消息表只读视图。
     pub(crate) fn msgs(&self) -> &Msgs {
         &self.msgs
+    }
+
+    /// 任务表只读视图。
+    pub(crate) fn tasks(&self) -> &Tasks {
+        &self.tasks
     }
 
     /// 待刷新行只读视图（自检与诊断用）。
@@ -135,7 +145,7 @@ fn slot(d: Domain) -> usize {
 /// 否则状态栏会在两轮之间闪回未知态。
 fn next_phase(cur: Phase, body: &Body) -> Phase {
     match body {
-        Body::Control(Control::State { name }) => match name.as_str() {
+        Body::Control(Control::State { name, .. }) => match name.as_str() {
             "running" | "executing" => Phase::Running,
             "done" | "completed" | "failed" | "cancelled" => Phase::Closed,
             _ => cur,
@@ -160,7 +170,18 @@ mod tests {
         ev(
             seq,
             Body::Control(Control::State {
+                id: "t1".into(),
                 name: "running".into(),
+            }),
+        )
+    }
+
+    fn state(seq: u64, id: &str, name: &str) -> Event {
+        ev(
+            seq,
+            Body::Control(Control::State {
+                id: id.into(),
+                name: name.into(),
             }),
         )
     }
@@ -204,6 +225,7 @@ mod tests {
         p.apply(&ev(
             3,
             Body::Control(Control::State {
+                id: "t1".into(),
                 name: "unknown".into(),
             }),
         ));
@@ -266,5 +288,22 @@ mod tests {
         let spans: Vec<(usize, usize)> = p.drain_dirty().iter().map(|s| (s.from, s.to)).collect();
         assert_eq!(spans, vec![(0, 3)], "控制帧不占行，三段自动并成一段");
         assert!(p.dirty().is_empty(), "取走后清空");
+    }
+
+    /// 任务表随事件流推进：同一身份只有一行，消息表不受影响。
+    #[test]
+    fn tasks_track_state_transitions() {
+        let mut p = Projection::new();
+        p.apply(&start(1));
+        p.apply(&state(2, "t1", "executing"));
+        p.apply(&delta(3, "答"));
+
+        assert_eq!(p.tasks().len(), 1);
+        let row = p.tasks().get("t1").expect("任务行");
+        assert_eq!((row.state.as_str(), row.rev), ("executing", 2));
+        assert_eq!(p.msgs().len(), 1, "状态帧不进消息表");
+
+        p.apply(&state(4, "t2", "submitted"));
+        assert_eq!(p.tasks().len(), 2);
     }
 }

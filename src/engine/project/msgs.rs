@@ -187,6 +187,7 @@ mod tests {
             seq: 9,
             ts: 9,
             body: Body::Control(crate::engine::event::model::Control::State {
+                id: "t1".into(),
                 name: "running".into(),
             }),
         };

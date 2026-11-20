@@ -78,6 +78,9 @@ pub(crate) enum Body {
 }
 
 /// 控制面：凡是「要有人点头」或「链路自身状态」都归这里。
+///
+/// 状态迁移与取消都带任务身份：任务表按身份寻址；无身份的状态帧只驱动
+/// 全局运行相位，不进任务表（不得凭空造一行没有身份的任务）。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Control {
     /// 审批请求：TUI 须以 control_response 回应，超时按拒绝处理。
@@ -87,9 +90,9 @@ pub(crate) enum Control {
         target: String,
     },
     /// 取消：本地或对端发起的中断。
-    Cancel { reason: String },
-    /// 运行状态迁移（idle/running/done/…）。
-    State { name: String },
+    Cancel { id: String, reason: String },
+    /// 运行状态迁移（idle/running/done/…）；`id` 是任务身份，缺席时为空。
+    State { id: String, name: String },
     /// 配置项告知（键 + 原始值）。
     Cfg { key: String, value: Value },
     /// 一般通知：级别 + 文本。
@@ -191,9 +194,11 @@ mod tests {
                 target: "rm -rf build".into(),
             },
             Control::Cancel {
+                id: "t1".into(),
                 reason: "user".into(),
             },
             Control::State {
+                id: "t1".into(),
                 name: "running".into(),
             },
             Control::Cfg {

@@ -76,6 +76,7 @@ mod tests {
             ev(
                 1,
                 Body::Control(Control::State {
+                    id: "t1".into(),
                     name: "running".into(),
                 }),
             ),
