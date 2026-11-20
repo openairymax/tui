@@ -28,13 +28,32 @@ pub(crate) enum Src {
 }
 
 /// 探测窗口内收集到的能力结论。
+///
+/// 三态口径：`None` = 终端未回包（超时或无应答），不得当作「不支持」；
+/// 只有明确回执才落 `Some`。`truecolor` 来自环境（COLORTERM/TERM），
+/// 没有回执概念，缺失即 `false`（回落 256 色，fail-safe）。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Caps {
     pub(crate) scheme: Option<(Scheme, Src)>,
+    /// DECRQM 2026（同步输出）：`Some(true)` 已开启，`Some(false)` 支持但关闭。
+    pub(crate) sync_output: Option<bool>,
+    /// kitty 键盘协议：见到 `CSI ? <flags> u` 即为支持。
+    pub(crate) kitty: Option<bool>,
+    /// 真彩能力：COLORTERM 或 TERM 的 direct 标记，缺失按不支持。
+    pub(crate) truecolor: bool,
+}
+
+impl Caps {
+    /// 明暗结论的布尔投影；未探明时 `None`（调用方不得猜）。
+    pub(crate) fn dark(&self) -> Option<bool> {
+        self.scheme.map(|(s, _)| s == Scheme::Dark)
+    }
 }
 
 const OSC11: &[u8] = b"\x1b]11;rgb:";
 const DEC997: &[u8] = b"\x1b[?997;";
+const DECRQ_SYNC: &[u8] = b"\x1b[?2026;";
+const CSI_PRIVATE: &[u8] = b"\x1b[?";
 
 /// 解析 OSC11 背景色应答，返回归一化后的 (r, g, b)。
 ///
@@ -85,14 +104,84 @@ pub(crate) fn classify((r, g, b): (u8, u8, u8)) -> Scheme {
 
 /// 汇总一个探测窗口的原始回包：OSC11 优先，其次 DEC2031。
 pub(crate) fn caps(buf: &[u8]) -> Caps {
-    if let Some(rgb) = parse_osc11(buf) {
-        return Caps {
-            scheme: Some((classify(rgb), Src::Osc11)),
-        };
-    }
     Caps {
-        scheme: parse_scheme(buf).map(|s| (s, Src::Dec997)),
+        scheme: scheme_of(buf),
+        sync_output: parse_sync(buf),
+        kitty: parse_kitty(buf),
+        truecolor: env_truecolor(|k| std::env::var(k).ok()),
     }
+}
+
+fn scheme_of(buf: &[u8]) -> Option<(Scheme, Src)> {
+    match parse_osc11(buf) {
+        Some(rgb) => Some((classify(rgb), Src::Osc11)),
+        None => parse_scheme(buf).map(|s| (s, Src::Dec997)),
+    }
+}
+
+/// 解析 DECRQM 2026 回执 `CSI ? 2026 ; Ps $ y`。
+///
+/// Ps：0 未识别、1 已设置、2 已重置、3 永久设置、4 永久重置。支持与否按
+/// 1~4 判定，开关状态按 1/3 为开；0 与畸形回包一律返回 None，不猜。
+pub(crate) fn parse_sync(buf: &[u8]) -> Option<bool> {
+    let mut at = 0;
+    while let Some(pos) = find(&buf[at..], DECRQ_SYNC) {
+        let head = at + pos + DECRQ_SYNC.len();
+        if let Some(state) = sync_state(&buf[head..]) {
+            return Some(state);
+        }
+        at = head;
+    }
+    None
+}
+
+fn sync_state(rest: &[u8]) -> Option<bool> {
+    let end = rest.iter().position(|b| !b.is_ascii_digit())?;
+    if rest.get(end) != Some(&b'$') || rest.get(end + 1) != Some(&b'y') {
+        return None;
+    }
+    let ps: u32 = std::str::from_utf8(&rest[..end]).ok()?.parse().ok()?;
+    match ps {
+        1 | 3 => Some(true),
+        2 | 4 => Some(false),
+        _ => None,
+    }
+}
+
+/// 解析 kitty 键盘协议回执：`CSI ? <flags> u` 出现即为支持。
+///
+/// 只认带 `?` 私有前缀且以 `u` 结尾的形式；其余 CSI 序列不参与判定。
+pub(crate) fn parse_kitty(buf: &[u8]) -> Option<bool> {
+    let mut at = 0;
+    while let Some(pos) = find(&buf[at..], CSI_PRIVATE) {
+        let head = at + pos + CSI_PRIVATE.len();
+        let rest = &buf[head..];
+        let Some(end) = rest.iter().position(|b| !b.is_ascii_digit()) else {
+            break;
+        };
+        if end > 0 && rest.get(end) == Some(&b'u') {
+            return Some(true);
+        }
+        at = head;
+    }
+    None
+}
+
+/// 真彩判定：COLORTERM 含 truecolor/24bit，或 TERM 含 direct。
+pub(crate) fn env_truecolor(var: impl Fn(&str) -> Option<String>) -> bool {
+    match var("COLORTERM") {
+        Some(val) => has_truecolor(&val),
+        None => var("TERM").is_some_and(|val| has_direct(&val)),
+    }
+}
+
+fn has_truecolor(val: &str) -> bool {
+    let low = val.to_ascii_lowercase();
+    low.contains("truecolor") || low.contains("24bit")
+}
+
+fn has_direct(val: &str) -> bool {
+    val.to_ascii_lowercase().contains("direct")
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -179,5 +268,52 @@ mod tests {
         let got = caps(b"\x1b[?997;2n");
         assert_eq!(got.scheme, Some((Scheme::Light, Src::Dec997)));
         assert_eq!(caps(b"noise").scheme, None);
+    }
+
+    #[test]
+    fn decrqm_2026_states() {
+        assert_eq!(parse_sync(b"\x1b[?2026;1$y"), Some(true));
+        assert_eq!(parse_sync(b"\x1b[?2026;2$y"), Some(false));
+        assert_eq!(parse_sync(b"\x1b[?2026;3$y"), Some(true));
+        assert_eq!(parse_sync(b"\x1b[?2026;4$y"), Some(false));
+        assert_eq!(parse_sync(b"\x1b[?2026;0$y"), None);
+        assert_eq!(parse_sync(b"\x1b[?2026;1n"), None);
+        assert_eq!(parse_sync(b"\x1b[?2026;"), None);
+        assert_eq!(parse_sync(b"noise"), None);
+    }
+
+    #[test]
+    fn decrqm_skips_malformed_occurrence() {
+        assert_eq!(parse_sync(b"\x1b[?2026;x\x1b[?2026;2$y"), Some(false));
+    }
+
+    #[test]
+    fn kitty_flags_reply_marks_support() {
+        assert_eq!(parse_kitty(b"\x1b[?1u"), Some(true));
+        assert_eq!(parse_kitty(b"\x1b[?0u"), Some(true));
+        assert_eq!(parse_kitty(b"\x1b[?1n"), None);
+        assert_eq!(parse_kitty(b"\x1b[?u"), None);
+        assert_eq!(parse_kitty(b"noise"), None);
+    }
+
+    #[test]
+    fn truecolor_follows_env_evidence() {
+        assert!(env_truecolor(|_| Some("truecolor".to_string())));
+        assert!(env_truecolor(|k| (k == "COLORTERM").then(|| "24BIT".into())));
+        assert!(!env_truecolor(|k| (k == "COLORTERM").then(|| "yes".into())));
+        assert!(env_truecolor(|k| (k == "TERM").then(|| "xterm-direct".into())));
+        assert!(!env_truecolor(|k| (k == "TERM").then(|| "xterm-256color".into())));
+        assert!(!env_truecolor(|_| None));
+    }
+
+    #[test]
+    fn caps_merges_every_evidence_source() {
+        let raw = b"\x1b[?997;1n\x1b[?2026;2$y\x1b[?1u\x1b]11;rgb:1414/1414/1313\x07";
+        let got = caps(raw);
+        assert_eq!(got.scheme, Some((Scheme::Dark, Src::Osc11)));
+        assert_eq!(got.sync_output, Some(false));
+        assert_eq!(got.kitty, Some(true));
+        assert_eq!(got.dark(), Some(true));
+        assert_eq!(Caps::default().dark(), None, "未探明时不得猜测明暗");
     }
 }
