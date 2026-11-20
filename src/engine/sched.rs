@@ -38,6 +38,7 @@
 
 use std::collections::VecDeque;
 
+use super::frame::{Costs, Stage};
 use crate::budget::{
     FRAME_BUDGET_US, FRAME_QUEUE_CAP, IDLE_WAIT_MS, MAX_FPS, MIN_RENDER_INTERVAL_MS,
 };
@@ -342,17 +343,21 @@ impl Sched {
         self.degrade
     }
 
-    /// 上报一帧的分段耗时（μs）。
+    /// 上报一帧的分段耗时。
     ///
-    /// 排版段在渲染回调内打点；差异与合成由 ratatui 的 flush() 合并执行
-    /// （Terminal 双缓冲字段私有），故合为一档。超预算即置降级态。
-    pub(crate) fn note_frame(&mut self, layout_us: u64, present_us: u64) {
+    /// 六阶段口径见 `engine::frame`：排版段在渲染回调内打点，差异/编码/写出/
+    /// 冲刷/换帧在 P2 原子帧后端落地前合为一档（Present），故当前只有两段
+    /// 有值。合计只累已采样段——缺段不拖累整帧口径，也不虚构 0。超预算即
+    /// 置降级态。
+    pub(crate) fn note_frame(&mut self, costs: &Costs) {
+        let layout_us = costs.get(Stage::Compose).unwrap_or(0);
+        let present_us = costs.get(Stage::Present).unwrap_or(0);
         self.frames = self.frames.wrapping_add(1);
         self.layout_sum_us = self.layout_sum_us.wrapping_add(layout_us);
         self.present_sum_us = self.present_sum_us.wrapping_add(present_us);
         self.layout_max_us = self.layout_max_us.max(layout_us);
         self.present_max_us = self.present_max_us.max(present_us);
-        let total = layout_us.saturating_add(present_us);
+        let total = costs.total();
         if total > self.cfg.budget_us {
             self.over = self.over.wrapping_add(1);
         }
@@ -425,12 +430,20 @@ impl Sched {
 
 #[cfg(test)]
 mod tests {
-    use super::{Beat, Beats, Cfg, Lane, Sched, BEATS, BEAT_N, METRIC_EVERY};
+    use super::{Beat, Beats, Cfg, Costs, Lane, Sched, Stage, BEATS, BEAT_N, METRIC_EVERY};
     use crate::budget::{FRAME_QUEUE_CAP, IDLE_WAIT_MS};
 
     /// 60fps：合帧窗口为区间下限 16ms。
     fn fixture() -> Sched {
         Sched::new(Cfg::from_fps(60))
+    }
+
+    /// 当前生产打点只覆盖排版与呈现两段，其余阶段在 P2 前保持未采样。
+    fn cost(layout_us: u64, present_us: u64) -> Costs {
+        let mut costs = Costs::new();
+        costs.set(Stage::Compose, layout_us);
+        costs.set(Stage::Present, present_us);
+        costs
     }
 
     /// 节拍表须覆盖全部变体且下标即判别值（否则 advance 会串档）。
@@ -517,7 +530,7 @@ mod tests {
         let mut sched = fixture();
         for i in 0..METRIC_EVERY {
             sched.advance(i * 16);
-            sched.note_frame(100, 200);
+            sched.note_frame(&cost(100, 200));
         }
         assert_eq!(sched.frames, METRIC_EVERY);
         assert_eq!(
@@ -569,10 +582,10 @@ mod tests {
         assert!(sched.take_frame());
         assert!(!sched.degraded());
 
-        sched.note_frame(4_000, 4_000);
+        sched.note_frame(&cost(4_000, 4_000));
         assert!(!sched.degraded(), "预算内不降级");
 
-        sched.note_frame(5_000, 5_000);
+        sched.note_frame(&cost(5_000, 5_000));
         assert!(sched.degraded(), "超预算降级");
 
         sched.advance(1);
@@ -645,7 +658,7 @@ mod tests {
         for i in 0..8u64 {
             sched.advance(i * 100);
             assert!(!sched.take_frame(), "无待办不得成帧");
-            sched.note_frame(100, 200);
+            sched.note_frame(&cost(100, 200));
         }
         assert_eq!(sched.frames, 8);
         assert_eq!(sched.layout_sum_us, 800);
