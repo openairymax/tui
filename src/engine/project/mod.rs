@@ -18,6 +18,8 @@
 
 use super::event::model::{Body, Control, Domain, Event, Outcome};
 
+pub(crate) mod msgs;
+
 #[cfg(test)]
 mod support;
 
