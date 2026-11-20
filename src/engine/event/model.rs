@@ -133,8 +133,12 @@ pub(crate) enum Execution {
 pub(crate) enum Outcome {
     /// 正常终态（含暂停/未验证等非失败收尾）。
     End { status: String },
-    /// 失败：错误码 + 说明。
-    Err { code: String, text: String },
+    /// 失败三件套：机器可读原因 + 一句人话 + 下一步动作。
+    Err {
+        reason: String,
+        text: String,
+        next: String,
+    },
     /// 运行结果摘要（成功路径的统计性收尾）。
     Result { status: String },
 }
@@ -246,8 +250,9 @@ mod tests {
 
         let out = [
             Outcome::Err {
-                code: "no_terminal".into(),
+                reason: "no_terminal".into(),
                 text: "没有终态帧".into(),
+                next: "inspect".into(),
             },
             Outcome::Result {
                 status: "completed".into(),
