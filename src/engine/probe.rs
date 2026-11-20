@@ -7,11 +7,14 @@
 //
 // 三源分级：OSC11（背景 RGB）> DEC2031（`CSI ? 997 ; Ps n` 明暗偏好）>
 // COLORFGBG（由 style::init_from_env 消费）。本模块只把终端回包还原为
-// 语义结果，不做任何 IO、不读时钟、不碰主题状态——探测线程（term）负责
-// 读写，主题裁决（style）负责落地，解析规则在此唯一实现。
+// 语义结果，解析不做任何 IO、不读时钟、不碰主题状态——探测线程（term）
+// 负责读写，主题裁决（style）负责落地，解析规则在此唯一实现。查询帧的
+// 编码与写出同在此处，使「问什么、怎么写」只有一个事实来源。
 //
 // OSC11 归一化沿用 C 版 airy_cli（cli_term.c term_query_bg）：每段 1~4 位
 // 十六进制，1 位按 `(v<<4)|v` 扩展到 8 位，超过 255 的按 `/257` 压回 8 位。
+
+use std::io::{self, Write};
 
 /// 终端背景明暗（OSC11 亮度或 DEC2031 偏好的语义化结果）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +104,19 @@ const CSI_PRIVATE: &[u8] = b"\x1b[?";
 /// OSC11（背景色）→ DEC2031（明暗）→ DECRQM 2026（同步输出）→ kitty 键盘
 /// 协议查询。一条 `write` 完成，避免终端在两次写之间插入回显。
 pub(crate) const QUERY: &str = "\x1b]11;?\x1b\\\x1b[?996n\x1b[?2026$p\x1b[?u";
+
+/// 写出查询帧：整帧一次写 + 冲刷，失败时整帧重试一次。
+///
+/// 探测是启动期的尽力而为动作：任何失败只意味着「未探明」，由调用方
+/// 降级为默认结论，绝不阻断启动。重试一次覆盖瞬时错误（EINTR、管道
+/// 背压）；整帧重发是安全的——解析侧对重复回包取首个有效值。
+pub(crate) fn send_query(mut out: impl Write) -> io::Result<()> {
+    let frame = QUERY.as_bytes();
+    match out.write_all(frame).and_then(|_| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(_) => out.write_all(frame).and_then(|_| out.flush()),
+    }
+}
 
 /// 解析 OSC11 背景色应答，返回归一化后的 (r, g, b)。
 ///
@@ -374,6 +390,64 @@ mod tests {
             .collect();
         assert!(at.windows(2).all(|w| w[0] < w[1]), "查询顺序必须固定");
         assert_eq!(QUERY.lines().count(), 1, "查询帧不得含换行");
+    }
+
+    /// 可控写端：`fail` 为剩余失败次数，`writes` 记录每次成功的整段写入。
+    #[derive(Default)]
+    struct Sink {
+        fail: usize,
+        writes: Vec<Vec<u8>>,
+        flushes: usize,
+    }
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.fail > 0 {
+                self.fail -= 1;
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            self.writes.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    /// 首写成功：逐字节等于查询帧，且以一次冲刷收尾。
+    #[test]
+    fn send_query_writes_exact_frame() {
+        let mut sink = Sink::default();
+        assert!(send_query(&mut sink).is_ok());
+        assert_eq!(sink.writes, vec![QUERY.as_bytes().to_vec()]);
+        assert_eq!(sink.flushes, 1);
+    }
+
+    /// 首写失败：整帧重试一次并成功，重试内容与首帧逐字节一致。
+    #[test]
+    fn send_query_retries_once_after_error() {
+        let mut sink = Sink {
+            fail: 1,
+            ..Sink::default()
+        };
+        assert!(send_query(&mut sink).is_ok());
+        assert_eq!(sink.writes.len(), 1, "失败一次后仅成功一次");
+        assert_eq!(sink.writes[0], QUERY.as_bytes());
+        assert_eq!(sink.flushes, 1);
+    }
+
+    /// 持续失败：只重试一次即上抛，由调用方降级为默认能力。
+    #[test]
+    fn send_query_gives_up_after_one_retry() {
+        let mut sink = Sink {
+            fail: 2,
+            ..Sink::default()
+        };
+        assert!(send_query(&mut sink).is_err());
+        assert!(sink.writes.is_empty());
+        assert_eq!(sink.flushes, 0);
     }
 
     #[test]
