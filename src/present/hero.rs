@@ -130,7 +130,9 @@ pub(super) fn render_hero(f: &mut Frame, area: Rect, app: &App) {
                 .bg(badge_color)
                 .add_modifier(Modifier::BOLD),
         ));
-        if let crate::gccp::TaskControl::Paused = app.task_control {
+        // 暂停只认 task_state（C-15 / D-13：事实源是 task_state 事件），
+        // 本地不再持有暂停态；中止是用户按键的本地事实，两者正交。
+        if app.task_state == crate::gccp::TaskState::Paused {
             spans.push(Span::styled(
                 "  ⏸ 已暂停 ",
                 Style::default()

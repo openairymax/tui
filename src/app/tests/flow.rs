@@ -522,6 +522,28 @@ fn paused_run_enters_three_choice_state() {
     );
 }
 
+/// C-15 / IS-12：暂停只由 task_state 事件推进，本地不持有暂停态。
+#[test]
+fn pause_state_follows_task_events() {
+    use crate::gccp::{FlowPhase, TaskState};
+    let _h = crate::test_env::Home::new("c15-pause-events");
+    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
+    let mut app = App::new("agents/main.agent.yaml", gw);
+    app.task_mode = true;
+    app.set_flow_phase(FlowPhase::Executing);
+
+    app.observe_task_state("paused");
+    assert_eq!(app.task_state, TaskState::Paused);
+    app.observe_task_state("executing");
+    assert_eq!(app.task_state, TaskState::Executing);
+    app.observe_task_state("unknown-state");
+    assert_eq!(
+        app.task_state,
+        TaskState::Executing,
+        "未知状态不得改写任务态"
+    );
+}
+
 /// 非预算中断：任务上下文中的错误落到 Failed，禁止静默停留在执行中。
 #[test]
 fn failed_run_enters_failed_state() {

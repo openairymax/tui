@@ -3,7 +3,7 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 运行控制与视图滚动：审批、暂停/恢复/中止、连接检查、退出。
+// 运行控制与视图滚动：审批、中止、连接检查、退出。
 
 use super::*;
 
@@ -219,29 +219,6 @@ impl App {
             "已退出任务集，回到普通对话。".to_string(),
         );
         self.add_log("INFO", "已退出任务集（Ctrl+X 空闲态）".to_string());
-    }
-
-    /// 暂停后台请求轮询（Ctrl+Z）：冻结等待渲染，请求继续在网关执行。
-    pub fn pause_task(&mut self) {
-        if self.pending.is_some() {
-            self.set_task_control(TaskControl::Paused);
-            log::info!("pause_task: 已暂停（Ctrl+Z，请求仍在后台执行）");
-            self.add_message(
-                MessageRole::System,
-                "⏸ 已暂停等待（Ctrl+Z 恢复，Ctrl+X 中止）。请求仍在后台执行。".to_string(),
-            );
-            self.add_log("INFO", "任务已暂停（Ctrl+Z）".to_string());
-        }
-    }
-
-    /// 恢复暂停（Ctrl+Z）。
-    pub fn resume_task(&mut self) {
-        if self.task_control == TaskControl::Paused {
-            self.set_task_control(TaskControl::Running);
-            log::info!("resume_task: 已恢复等待（Ctrl+Z）");
-            self.add_message(MessageRole::System, "▶ 已恢复，继续等待回复。".to_string());
-            self.add_log("INFO", "任务已恢复（Ctrl+Z）".to_string());
-        }
     }
 
     /// 是否有进行中的后台请求（主循环据此进入渲染等待）。

@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::engine::notify::{frame, Method};
-use crate::gccp::{FlowPhase, NodeState, TaskControl};
+use crate::gccp::{FlowPhase, NodeState, TaskState};
 
 /// §6.7 #1：chrome 状态条空会话默认形态，以及模型/用量填充后的数值形态。
 #[test]
@@ -32,7 +32,7 @@ fn hero_lifecycle() {
     assert_has(&s, "12345 tok · $0.0080");
 }
 
-/// §6.7 #1：状态条阶段徽章随任务生命周期切换，暂停与恢复提示同步。
+/// §6.7 #1：状态条阶段徽章随任务生命周期切换；暂停只认 task_state 事件。
 #[test]
 fn phase_badge_lifecycle() {
     let mut fx = Fixture::new("progress-phase");
@@ -46,14 +46,14 @@ fn phase_badge_lifecycle() {
     let s = fx.draw();
     assert_has(&s, "│   任务集");
 
-    fx.app.task_control = TaskControl::Paused;
+    fx.app.task_state = TaskState::Paused;
     let s = fx.draw();
     assert_has(&s, "⏸ 已暂停");
+    assert_has(&s, "任务集已暂停");
 
-    fx.app.resume_task();
+    fx.app.task_state = TaskState::Executing;
     let s = fx.draw();
     assert_lacks(&s, "已暂停");
-    assert_has(&s, "▶ 已恢复，继续等待回复。");
 }
 
 /// §6.7 #2：工具运行卡头部取自首 token 与已知工具表，图标区分成败与回传。

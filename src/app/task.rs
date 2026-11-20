@@ -23,8 +23,8 @@ impl App {
 
     /// 切换任务控制状态并记录日志。
     ///
-    /// 人工中止（Ctrl+X）/ 暂停（Ctrl+Z）/ 恢复 / 自然完成都会经过此处，
-    /// 状态迁移是任务控制问题排查的关键节点。
+    /// 人工中止（Ctrl+X）与自然完成/复位都会经过此处，状态迁移是任务
+    /// 控制问题排查的关键节点；暂停不经此处，只由 `task_state` 事件驱动。
     pub(super) fn set_task_control(&mut self, to: TaskControl) {
         let from = self.task_control;
         if from != to {

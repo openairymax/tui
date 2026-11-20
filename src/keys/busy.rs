@@ -3,7 +3,7 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// busy 等待态按键分派：中止/暂停/审批、滚动阅读、插入对话输入。
+// busy 等待态按键分派：中止/审批、滚动阅读、插入对话输入。
 
 use anyhow::Result;
 use crossterm::event::{self, KeyCode, KeyEvent};
@@ -14,10 +14,9 @@ use super::util::read_only_panel;
 use super::Flow;
 
 use crate::app::{ActivePanel, App};
-use crate::gccp::TaskControl;
 
 /// busy 等待态按键分派（主循环在 `App::is_busy()` 为真时调用）：等待在途请求
-/// 完成期间处理中止/暂停/审批/滚动/插入对话提交。返回 `Exit` 表示用户请求
+/// 完成期间处理中止/审批/滚动/插入对话提交。返回 `Exit` 表示用户请求
 /// 退出（busy 期间 Ctrl+C）。
 ///
 /// 本函数不循环、不睡眠、不成帧：等待节拍由 L4 调度器统一给出，在途结果由
@@ -42,15 +41,6 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
         {
             app.abort_task();
-        }
-        KeyCode::Char('z') | KeyCode::Char('Z')
-            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-        {
-            if app.task_control == TaskControl::Paused {
-                app.resume_task();
-            } else {
-                app.pause_task();
-            }
         }
         // 工具级权限审批（§6.5 #3：y=允许本次 / a=本会话总是 / n=拒绝，
         // Esc 亦为拒绝）。仅当存在待审批请求时生效——此前无条件拦截

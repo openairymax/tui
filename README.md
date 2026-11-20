@@ -106,7 +106,6 @@ Other environment variables: `AIRY_HOME` (data root, default `~/.airymaxrt`), `A
 |-----|--------|
 | `Ctrl+C` | Quit |
 | `Ctrl+X` | Abort the current background request (task execution / pending reply) |
-| `Ctrl+Z` | Pause / resume waiting (the request keeps running in the background) |
 | `Ctrl+T` | Open a new session tab (unavailable while a task is running) |
 | `Alt+1`–`Alt+9` | Switch session tabs (`Alt+1` returns to the primary session) |
 | `Esc` | Return to the Chat panel |

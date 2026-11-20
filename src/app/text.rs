@@ -71,7 +71,6 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  Home/End    - 输入框光标到行首/行尾（readline 惯例）".to_string(),
         "  Alt+Home/End - 视口滚动到顶/底（End 在空输入时回底部）".to_string(),
         "  Ctrl+X      - 中止当前请求（任务执行/对话等待）".to_string(),
-        "  Ctrl+Z      - 暂停/恢复等待（请求继续在后台执行）".to_string(),
         "  Ctrl+T      - 新建会话 tab（多会话；任务执行中不可用）".to_string(),
         "  Alt+1..9    - 切换会话（Alt+1 = 主会话，Alt+N = 第 N 个 tab）".to_string(),
         "  /sessions   - 会话列表（序号/标题/消息数；落盘 sessions.json 重启即恢复）".to_string(),
@@ -111,7 +110,7 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  GCCP（任务事实确认）：大任务集启动时共 5 问，逐一询问，".to_string(),
         "    每问之间 LLM 基于已答事实思考后再提下一问。".to_string(),
         "  GRAD（任务流程图确认）：五问齐备后生成流程图与结构化依赖图（DAG），".to_string(),
-        "    确认后开始执行；执行中可 Ctrl+X 中止、Ctrl+Z 暂停。".to_string(),
+        "    确认后开始执行；执行中可 Ctrl+X 中止。".to_string(),
         "  任务完成由服务端按完成判据复核，通过后状态栏显示「已完成」；".to_string(),
         "    判据无法取证时显示「未验证」，需补充判据或人工裁决。".to_string(),
         "  轮次预算用尽或执行失败时进入暂停/失败态，输入「继续」断点续跑、".to_string(),
@@ -130,7 +129,7 @@ pub(super) fn build_help_text() -> Vec<String> {
         String::new(),
         "状态栏:".to_string(),
         "  顶部系统状态条：连接状态与时间、模型、Token/成本、阶段徽章、".to_string(),
-        "  任务控制（暂停/中止）——技能数/回合数不在此栏，F4 记忆/F5 技能查看。".to_string(),
+        "  任务控制（阶段徽章 / 暂停 / 中止）——技能数/回合数不在此栏，F4 记忆/F5 技能查看。".to_string(),
     ]
 }
 

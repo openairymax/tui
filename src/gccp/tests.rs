@@ -252,7 +252,6 @@ fn render_dag_parallel_layer_same_row() {
 #[test]
 fn task_control_labels() {
     assert_eq!(TaskControl::Running.label(), "运行中");
-    assert_eq!(TaskControl::Paused.label(), "已暂停");
     assert_eq!(TaskControl::Aborted.label(), "已中止");
 }
 
