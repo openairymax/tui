@@ -54,6 +54,12 @@ jobs:
         with:
           path: sdk/tui
 
+      # 迁移期棘轮：网关 RPC 调用点只许减少（基线见 scripts/gate）。
+      # 放在依赖取用之前，违规时几秒内失败，不浪费构建窗口。
+      - name: RPC call-site gate
+        working-directory: sdk/tui
+        run: sh scripts/gate/rpc-sites.sh
+
       # 共享协议客户端（tui 的 path 依赖 ../sdk-rust）
       - name: Checkout agentrt-rs
         uses: actions/checkout@v4

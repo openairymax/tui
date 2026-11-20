@@ -1,0 +1,11 @@
+# 网关 RPC 调用点基线（0.1.21 X1-25b）。
+#
+# 每行一个方法及其当前生产调用点数；任务卡推进时只许下调。终局为 0
+# （X1-29a 退役 GatewayClient）。`total` 仅作汇总，门禁按逐项比对判定。
+health_check 3
+send_message 1
+cancel_session 1
+resolve_approval 2
+list_pending_approvals 1
+rpc_call 18
+total 26
