@@ -4,8 +4,7 @@
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
 // 事件管道运行轮：TUI 经 airy_cli 事件流下发运行、消费投影增量，终态并入
-// 既有 pending 落定通道——落定后的行为与网关直连完全同一条 apply 路径，
-// 不因事件源切换而分叉。
+// 既有 pending 落定通道。事件管道是运行轮的唯一通道，不可用时本轮如实中止。
 
 use serde_json::{json, Value};
 
@@ -15,6 +14,24 @@ use crate::engine::event::pipe::Spec;
 use crate::engine::project::{msgs::Kind, tools::Status, Phase};
 
 use super::*;
+
+/// 一轮的下发参数，与事件帧 opts 同构：历史、续跑令牌、GCCP 答案与编排
+/// spec 都随帧下发。运行入口只此一处，客户端不再按语义预先分流。
+#[derive(Default)]
+pub(super) struct TurnArgs {
+    /// 完整对话历史（OpenAI messages 数组，末条 user 为本轮输入）
+    pub messages: Option<Value>,
+    /// 预算暂停后的断点续跑令牌（携带时按令牌内的步骤摘要续跑）
+    pub resume: Option<String>,
+    /// GCCP 两段式交互第二段答案（JSON 文本）
+    pub gccp_answers: Option<String>,
+    /// agent 编排 spec（任务执行场景由 gateway 走 spawn+invoke）
+    pub agent: Option<Value>,
+    /// 已确认任务的继续执行标记（GCCP 通过后重提同一 prompt）
+    pub confirmed: bool,
+    /// 显式运行模式（task 等）；续跑固定按 task 下发
+    pub mode: Option<&'static str>,
+}
 
 /// 在途轮：起始水位 + 已消费游标（认知行 / 工具行状态）。
 ///
@@ -28,8 +45,8 @@ pub(super) struct LaneTurn {
 }
 
 impl App {
-    /// 挂接事件管道（启动期一次）。失败不静默：保留原因供诊断，运行轮仍走
-    /// 网关直连——事件源不可用不应让整机不可用。
+    /// 挂接事件管道（启动期一次）。失败不静默：保留原因供诊断，运行轮
+    /// 在管道恢复前如实中止，不静默改走其他通道。
     pub fn attach_lane(&mut self) -> bool {
         match EventClient::start(&Spec::cli()) {
             Ok(ev) => {
@@ -48,7 +65,7 @@ impl App {
     }
 
     /// 经事件管道发起一轮：`opts` 与流式入口的参数同构（goal/mode 由 CLI
-    /// 赋值，调用方不重复给）。返回 false 表示本轮回退网关直连，原因已记录。
+    /// 赋值，调用方不重复给）。返回 false 表示管道不可用，本轮不成立。
     pub(super) fn start_lane_turn(&mut self, kind: PendingKind, prompt: &str, opts: Value) -> bool {
         let Some(ev) = self.ev.as_ref() else {
             return false;
@@ -56,7 +73,7 @@ impl App {
         if !ev.alive() {
             self.lane_err = Some("事件管道已退出".to_string());
             self.ev = None;
-            log::warn!("事件管道已退出，本轮回退网关直连");
+            log::warn!("事件管道已退出，本轮不下发");
             return false;
         }
         let start = ev.snapshot();
@@ -67,7 +84,7 @@ impl App {
         if let Err(e) = sent {
             self.lane_err = Some(e.to_string());
             self.ev = None;
-            log::warn!("事件管道下发失败：{e}，本轮回退网关直连");
+            log::warn!("事件管道下发失败：{e}，本轮不下发");
             return false;
         }
         let sid = opts
@@ -91,9 +108,57 @@ impl App {
             final_text: String::new(),
         });
         self.lane_tx = Some(tx);
+        self.clear_stream();
+        self.stream_error = None;
         self.begin_busy();
         self.set_task_control(TaskControl::Running);
         true
+    }
+
+    /// 统一运行入口：把本轮参数装成事件帧 opts 后经管道下发。管道不可用
+    /// 即本轮不可运行——TUI 不自持协议客户端，也不静默改走别的通道。
+    pub(super) fn start_turn(&mut self, kind: PendingKind, prompt: &str, args: TurnArgs) -> bool {
+        let sid = self.new_session_id();
+        let mut opts = serde_json::Map::new();
+        opts.insert("agent_file".into(), json!(&self.agent_file));
+        opts.insert("interactive".into(), json!(true));
+        opts.insert("session_id".into(), json!(&sid));
+        if !self.model.is_empty() {
+            opts.insert("model".into(), json!(&self.model));
+        }
+        if let Some(m) = &args.messages {
+            opts.insert("messages".into(), m.clone());
+        }
+        if let Some(a) = &args.gccp_answers {
+            opts.insert("gccp_answers".into(), json!(a));
+        }
+        if let Some(a) = &args.agent {
+            opts.insert("agent".into(), a.clone());
+        }
+        if let Some(tok) = &args.resume {
+            // 续跑=已确认任务的继续执行，与 CLI 续跑入口同一语义
+            opts.insert("resume_token".into(), json!(tok));
+            opts.insert("mode".into(), json!("task"));
+            opts.insert("gccp_confirmed".into(), json!(true));
+        } else if let Some(m) = args.mode {
+            opts.insert("mode".into(), json!(m));
+        }
+        if args.confirmed {
+            opts.insert("gccp_confirmed".into(), json!(true));
+        }
+        if self.start_lane_turn(kind, prompt, Value::Object(opts)) {
+            return true;
+        }
+        let why = self
+            .lane_err
+            .clone()
+            .unwrap_or_else(|| "未挂接事件管道".to_string());
+        self.add_message(
+            MessageRole::System,
+            format!("事件管道不可用（{why}）：本轮已中止。"),
+        );
+        self.loading = false;
+        false
     }
 
     /// 消费事件投影：增量上屏、工具行收尾、终态并入 pending 落定通道。

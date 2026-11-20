@@ -597,34 +597,6 @@ impl App {
                     self.apply_turn_state(res);
                 }
             }
-            PendingKind::CheckConnect {
-                kind,
-                prompt,
-                agent,
-                history,
-                gccp_answers,
-            } => {
-                match outcome {
-                    PendingOutcome::Connect(true) => {
-                        // 连接成功：继续执行真实请求（loading 由 start_pending 重新置位）
-                        log::info!(
-                            "apply_result: 连接检查通过，继续执行请求（kind={:?}）",
-                            kind
-                        );
-                        self.connected = true;
-                        self.start_pending(*kind, &prompt, agent, history, gccp_answers);
-                    }
-                    _ => {
-                        log::warn!("apply_result: 连接检查失败（kind={:?}）", kind);
-                        self.add_log("ERROR", "网关不可达：连接检查失败".to_string());
-                        self.add_message(
-                            MessageRole::System,
-                            "Not connected to gateway. Run 'agentrt' to start the server."
-                                .to_string(),
-                        );
-                    }
-                }
-            }
         }
     }
 }

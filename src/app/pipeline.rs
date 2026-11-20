@@ -55,17 +55,6 @@ pub(super) enum PendingKind {
     GradConfirm { confirmed: bool },
     /// D-12：向 agent.turns 取回重启后仍暂停的回合令牌
     TurnState,
-    /// 未连接时的连接检查：通过后继续执行 kind/prompt 的真实请求
-    CheckConnect {
-        kind: Box<PendingKind>,
-        prompt: String,
-        /// 待继续请求携带的 agent 编排 spec（连接通过后透传）
-        agent: Option<serde_json::Value>,
-        /// 待继续请求携带的完整对话历史（连接通过后透传）
-        history: Option<serde_json::Value>,
-        /// 待继续请求携带的 GCCP 交互答案 JSON（连接通过后透传）
-        gccp_answers: Option<String>,
-    },
 }
 
 /// 后台 LLM 请求句柄：网关调用在 tokio 任务中执行，结果经 oneshot 回传。
@@ -74,7 +63,7 @@ pub(super) struct PendingTurn {
     pub(super) rx: tokio::sync::oneshot::Receiver<PendingOutcome>,
     pub(super) kind: PendingKind,
     pub(super) task: Option<tokio::task::JoinHandle<()>>,
-    /// 客户端预分配会话 ID（Ctrl+X 时调用 gateway task.cancel 中止运行中请求）
+    /// 客户端预分配会话 ID（随事件帧下发，Ctrl+X 时用于日志对账）
     pub(super) session_id: String,
     /// 流式输出接收端（StreamRound）：SSE 增量块（option：非流式请求为 None）
     pub(super) stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
@@ -82,7 +71,7 @@ pub(super) struct PendingTurn {
     pub(super) tool_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 }
 
-/// 后台请求的结果载荷（LLM 调用结果 / 连接检查结果）。
+/// 后台请求的结果载荷（LLM 调用结果 / 断点查询结果）。
 ///
 /// Run 变体携带完整回复、轨迹与续跑令牌（C-14-07），值尺寸略超 clippy 的
 /// 启发式阈值；该载荷每回合只构造一次，Box 化只增加分配而无收益，故按
@@ -91,8 +80,6 @@ pub(super) struct PendingTurn {
 pub(super) enum PendingOutcome {
     /// LLM 调用结果
     Run(Result<RunResponse>),
-    /// 连接检查结果（成功与否）
-    Connect(bool),
     /// D-12：agent.turns 查询结果（暂停回合列表）
     Turns(Result<serde_json::Value>),
 }

@@ -23,13 +23,12 @@
 // 看到 EOF。`Clone` 只复制句柄（Arc），最后一个句柄丢弃才停子进程；后台任务
 // 可以安全持有一份而不延长会话寿命。
 //
-// RPC 调用点清点（X1-25a，`src/app` 内 27 处，按 RPC 方法名计；随卡归零）：
-//   health_check 3、{ns}.health_check 2、hall_* 5、mem.* 3、llm.* 3、
-//   tool.* 3、agent.* 2、telemetry 1、send_message 1、cancel_session 1、
-//   resolve_approval 2、list_pending_approvals 1。事件流已能承载的
-//   「运行态读」由本模块替代，面板级读在后续卡按域迁出。
+// 运行轮已全部收敛到本模块（`app::lane` 唯一入口），网关只保留观察面读侧
+// RPC：health_check 2、resolve_approval 2、list_pending_approvals 1、
+// rpc_call 16（hall_* 4、mem.* 3、llm.* 2、tool.* 1、agent.turns 1、
+// telemetry 1、运维命令 4）。面板级读在后续卡按域迁出。
 //
-// 门禁口径按客户端入口计（六个方法共 26 处，`{ns}.health_check` 走同一入口），
+// 门禁口径按客户端入口计（六个方法共 21 处，`{ns}.health_check` 走同一入口），
 // 基线见 scripts/gate/rpc-sites.baseline，只许下调；上限为 0（X1-29a）。
 
 #![cfg_attr(not(test), allow(dead_code))]

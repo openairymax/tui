@@ -159,33 +159,6 @@ impl App {
         );
     }
 
-    /// D-12：下游重启/断流 → 可续跑暂停（不是失败）。
-    ///
-    /// 服务端在工具边界落盘，已完成步骤不会重跑；本地若已拿到令牌直接
-    /// 复用，否则「继续」改走 agent.turns 取回（见 resume_blocked_task）。
-    pub(super) fn enter_task_paused(
-        &mut self,
-        detail: &str,
-        retry_ms: u64,
-        token: Option<String>,
-    ) {
-        if token.is_some() {
-            self.resume_token = token;
-        }
-        let secs = retry_ms.max(200) as f64 / 1000.0;
-        let why: String = detail.lines().next().unwrap_or("").chars().take(120).collect();
-        self.set_task_state(TaskState::Paused);
-        self.add_message(
-            MessageRole::System,
-            format!(
-                "执行服务正在重启，本回合已暂停且未失败（完成的步骤不会重跑）。约 {:.1} 秒后输入{}。原因：{}",
-                secs,
-                TaskState::choices(),
-                why
-            ),
-        );
-    }
-
     /// D-12：消费 agent.turns 查询结果——取最近一条 paused 回合的令牌续跑。
     pub(super) fn apply_turn_state(&mut self, res: Result<serde_json::Value>) {
         let value = match res {
@@ -636,8 +609,8 @@ impl App {
 
     /// 普通对话轮次：发送增强 prompt，并按 LLM 判定的模式切换任务流。
     ///
-    /// 普通对话（未连接时先检查；已连接走流式 SSE 增量渲染，Claude 风格）。
-    /// 任务执行轮（flow_phase == Executing）走 agent 编排路径（非流式）。
+    /// 事件管道不依赖网关连接态，普通对话一律走流式增量渲染（Claude 风格）；
+    /// 任务执行轮（flow_phase == Executing）另走 agent 编排参数。
     pub(super) fn chat_round(&mut self, input: &str) -> Result<()> {
         // §6.12 #5：记录请求发起时刻 LLM 后端的真实可达性。落定时若请求
         // 仍成功且后端当时不可达，说明回复经降级路径完成。
@@ -649,20 +622,7 @@ impl App {
         // 历史，否则只送本轮增强 prompt（修复上下文串轮）。
         let history = self.build_history_messages(&prompt, input, HistoryPolicy::Gated);
 
-        if !self.connected {
-            self.dispatch_with_agent(
-                PendingKind::ChatRound {
-                    input: input.to_string(),
-                },
-                &prompt,
-                None,
-                history,
-                None,
-            );
-            return Ok(());
-        }
-
-        // 普通对话走流式：SSE 增量渲染（Claude 风格）；任务执行轮保持编排链路
+        // 普通对话走流式：增量渲染（Claude 风格）；任务执行轮保持编排链路
         let messages =
             history.unwrap_or_else(|| serde_json::json!([{ "role": "user", "content": prompt }]));
         self.start_stream_pending(
@@ -912,14 +872,6 @@ impl App {
                 }
             }
             Err(e) => {
-                // D-12：下游重启窗口不是失败——不弹失败卡，直接可续跑暂停。
-                if let Some(u) = e.downcast_ref::<crate::client::Unavailable>() {
-                    let detail = u.detail.clone();
-                    let retry = u.retry_ms;
-                    let token = u.token.clone();
-                    self.enter_task_paused(&detail, retry, token);
-                    return;
-                }
                 // §6.12 #4：可行动错误卡片——人话成因 + 修复命令 + 原始错误折叠，
                 // 裸错误串不再原样直达用户面。
                 self.fail_card(&e);

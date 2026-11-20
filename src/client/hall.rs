@@ -15,8 +15,25 @@ use reqwest::Client as HttpClient;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
-use super::stream::{sse_buf_extend, sse_frame_end};
 use super::{GatewayClient, HallBoard, HallEvent, HallTask};
+
+/// 单条 SSE 帧缓冲上限（1 MiB）。hall 事件为紧凑 JSON，正常远小于此值；
+/// 若网关推送异常（长流无 "\n\n" 分隔），无界累积会导致内存耗尽。
+const MAX_SSE_BUFFER: usize = 1 << 20;
+
+/// 将 chunk 追加进 SSE 帧缓冲；追加后总量超限时丢弃半帧并从零累积
+/// （不完整帧本就无法解析，保持内存有界即协议自愈）。
+fn sse_buf_extend(buf: &mut Vec<u8>, chunk: &[u8]) {
+    if buf.len() + chunk.len() > MAX_SSE_BUFFER {
+        buf.clear();
+    }
+    buf.extend_from_slice(chunk);
+}
+
+/// 定位 SSE 帧结束位置（首个空行 "\n\n"，含末尾分隔符）。
+fn sse_frame_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(2).position(|w| w == b"\n\n").map(|p| p + 2)
+}
 
 impl GatewayClient {
     /// 任务看板（hall.board）：work_hall 持久化执行实例 + agent_d 在线 agent 名单。
@@ -118,5 +135,44 @@ impl GatewayClient {
             }
         });
         rx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sse_buf_extend, sse_frame_end, MAX_SSE_BUFFER};
+
+    #[test]
+    fn sse_frame_end_finds_blank_line_separator() {
+        assert_eq!(sse_frame_end(b"data: x\n\n"), Some(9));
+        assert_eq!(sse_frame_end(b"data: x\n"), None);
+        assert_eq!(sse_frame_end(b""), None);
+    }
+
+    #[test]
+    fn sse_buf_extend_appends_within_limit() {
+        let mut buf = Vec::new();
+        sse_buf_extend(&mut buf, b"data: 1\n\n");
+        assert_eq!(buf, b"data: 1\n\n");
+    }
+
+    #[test]
+    fn sse_buf_extend_discards_half_frame_on_overflow() {
+        // T-20：异常流无 "\n\n" 分隔时，缓冲超限必须丢弃半帧而不是无界增长。
+        let mut buf = vec![b'a'; MAX_SSE_BUFFER];
+        sse_buf_extend(&mut buf, b"overflow");
+        // 半帧被清零，仅保留新 chunk（内存有界）。
+        assert_eq!(buf, b"overflow");
+        // 随后可正常重新累积帧。
+        sse_buf_extend(&mut buf, b"data: x\n\n");
+        assert_eq!(buf, b"overflowdata: x\n\n");
+    }
+
+    #[test]
+    fn sse_buf_extend_allows_frame_up_to_limit() {
+        // 恰好等于上限的帧允许保留（不误伤合法大帧）。
+        let mut buf = Vec::new();
+        sse_buf_extend(&mut buf, &vec![b'x'; MAX_SSE_BUFFER]);
+        assert_eq!(buf.len(), MAX_SSE_BUFFER);
     }
 }

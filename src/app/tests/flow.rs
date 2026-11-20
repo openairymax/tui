@@ -6,6 +6,26 @@ use super::super::*;
 use crate::memory::GatewayMemory;
 use std::time::Duration;
 
+/// 接入真实事件管道的会话角色子进程（复用 client::event 的测试夹具）。
+///
+/// 运行轮只走事件管道，用例需要一条真实通道才能观察「已下发」；这里起的是
+/// 真实子进程与真实帧，不伪造投影结果。
+fn attach_pipe(app: &mut App) {
+    let exe = std::env::current_exe().expect("测试二进制路径");
+    let spec = crate::engine::event::pipe::Spec::new(
+        &exe.to_string_lossy(),
+        &[
+            "--exact",
+            "client::event::tests::child",
+            "--nocapture",
+            "--quiet",
+            "--test-threads=1",
+        ],
+    )
+    .env("AIRY_EV_CLIENT_CHILD", "session");
+    app.ev = Some(crate::client::event::EventClient::start(&spec).expect("事件管道可起"));
+}
+
 /// 多会话 tab：新建保留当前内容、主会话与 tab 间切换往返一致。
 ///
 /// submit_input 会 spawn 后台请求（需要 tokio 运行时）；测试环境无
@@ -584,22 +604,6 @@ async fn resume_without_token_queries_server_turns() {
     app.abort_task();
 }
 
-/// D-12：服务重启（UNAVAILABLE）进入可续跑暂停态——不落失败卡。
-#[tokio::test]
-async fn unavailable_enters_paused_not_failed() {
-    use crate::gccp::TaskState;
-    let _h = crate::test_env::Home::new("c14-unavail");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
-
-    app.enter_task_paused("agent service restarting", 900, Some("tok-7".to_string()));
-    assert_eq!(app.task_state, TaskState::Paused);
-    assert_eq!(app.resume_token.as_deref(), Some("tok-7"));
-    let note = app.messages.back().expect("暂停说明已入史").content.clone();
-    assert!(note.contains("已暂停且未失败"), "须显式声明未失败: {note}");
-    assert!(note.contains("0.9 秒"), "须带上重试提示: {note}");
-}
-
 /// D-12：agent.turns 返回 paused 回合时，取令牌原地续跑。
 #[tokio::test]
 async fn apply_turn_state_resumes_with_server_token() {
@@ -609,6 +613,7 @@ async fn apply_turn_state_resumes_with_server_token() {
     let mut app = App::new("agents/main.agent.yaml", gw);
     app.task_state = TaskState::Paused;
     app.resume_token = None;
+    attach_pipe(&mut app);
 
     let turns = serde_json::json!({"count": 2, "turns": [
         {"turn_id": "a", "state": "running", "token": "skip"},
@@ -629,6 +634,7 @@ async fn resume_with_token_dispatches_resume() {
     let mut app = App::new("agents/main.agent.yaml", gw);
     app.task_state = TaskState::Paused;
     app.resume_token = Some("tok-2".to_string());
+    attach_pipe(&mut app);
 
     app.submit_input("继续").expect("continue");
     assert!(app.is_busy(), "有令牌应发起续跑请求");

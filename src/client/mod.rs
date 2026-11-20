@@ -3,36 +3,30 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// AgentRT gateway 通信客户端（TUI 侧）。
+// AgentRT gateway 通信客户端（TUI 侧，退役中）。
 //
-// 0.1.18 按职责域分文件（文件行数纪律：单文件 ≤800 行）：同一个
-// `impl GatewayClient` 分散在子模块，子模块以 `use super::*` 继承本模块
-// 的类型与私有字段，外部路径仍为 crate::client。分层如下：
-//   - 本模块：连接构造、健康探针、同步 task.submit、取消、通用 rpc_call（传输骨架）
+// 运行轮已全部改由事件管道（event 子模块 + airy_cli）承载，本模块只剩观察面
+// 的读侧 RPC：健康探针、tool.pending/tool.approve、hall.*、types 契约。
+// 分层如下：
+//   - 本模块：连接构造、健康探针、通用 rpc_call（传输骨架）
 //   - approval：tool.pending / tool.approve（尽力而为语义）
-//   - stream：agent.run_stream 事件消费 + SSE 缓冲边界
 //   - hall：hall.* 读侧 RPC + hall.watch 长连接
-//   - event：事件/投影 API（D-15 子进程），读侧 RPC 的替代入口
+//   - event：事件/投影 API（D-15 子进程），运行轮的唯一入口
 //   - types：wire → Rust 反序列化契约
 //
-// 传输层分工：agentrt-rs 协议客户端是流式执行轮的唯一通道（端点与 v1
-// 信封不在此重写）；reqwest 仅承担本文件的 JSON-RPC 直发与 SSE 长连接。
+// 传输层分工：事件帧由 airy_cli 产出；reqwest 仅承担读侧 JSON-RPC 与
+// hall.watch 长连接。
 
 use anyhow::{Context, Result};
-use log::{debug, error, info};
+use log::debug;
 use reqwest::Client as HttpClient;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod approval;
 pub(crate) mod event;
 mod hall;
-mod stream;
 mod types;
 
-#[cfg(test)]
-mod tests;
-
-pub use stream::{RunFail, Unavailable};
 pub use types::*;
 
 /// Gateway API client for the TUI application.
@@ -77,258 +71,6 @@ impl GatewayClient {
         let body = resp.text().await?;
         debug!("← health {} ({} bytes)", status, body.len());
         serde_json::from_str(&body).context("Failed to parse health response")
-    }
-
-    /// 发送对话/任务请求到 gateway（task.submit，与 CLI 同一提交面）。
-    ///
-    /// `model` 为 None 或空串时省略 model 字段：gateway 回落到
-    /// env AIRY_AGENT_MODEL → 用户覆盖 $AIRY_CONFIG_DIR/model.yaml →
-    /// 内置默认；最终 llm_d 无模型时再回落其 global.default_model。
-    ///
-    /// `session_id` 为客户端预分配的会话 ID（`sess_` 前缀，用于 Ctrl+X
-    /// 调用 task.cancel 中止运行中请求）；None 时由网关生成。
-    ///
-    /// `agent` 为可选的 agent 编排 spec（JSON 对象，如 `{"role":"coding"}`）。
-    /// task.submit 由服务端统一裁决编排与执行，spec 仅作提示透传；模式、
-    /// 计划与终态以返回的 task_id/plan_id/status 为准。
-    ///
-    /// `history` 为可选的完整对话历史（OpenAI messages 数组，user/assistant
-    /// 交替，含当前输入作为末条 user 消息）。携带时 gateway 以整个数组作为
-    /// 工具循环的初始上下文（M1/M2 修复），否则退化为单条 prompt。
-    ///
-    /// `gccp_answers` 为 GCCP 两段式交互第二段的用户答案 JSON（可 None；
-    /// 第一段 think.process 返回 gccp_need_interaction 后，客户端展示问题、
-    /// 收集答案并以本参数重发同一 prompt 完成澄清闭环）。
-    // 公开 API 签名稳定优先（WS-1 冻结）：7 个业务参数为 gateway params
-    // 的显式形态，压缩为参数结构体会破坏既有全部调用点。
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_message(
-        &self,
-        prompt: &str,
-        agent_file: &str,
-        model: Option<&str>,
-        session_id: Option<&str>,
-        agent: Option<serde_json::Value>,
-        history: Option<serde_json::Value>,
-        gccp_answers: Option<&str>,
-    ) -> Result<RunResponse> {
-        // gateway 采用 JSON-RPC（POST /），method=task.submit：与 CLI 同一
-        // 提交面，任务身份与终态由服务端统一产生
-        let url = format!("{}/", self.base_url);
-        let mut params = serde_json::json!({
-            "goal": prompt,
-            "prompt": prompt,
-            "agent_file": agent_file,
-            "client": "tui",
-        });
-        if let Some(m) = model {
-            if !m.is_empty() {
-                params["model"] = serde_json::Value::String(m.to_string());
-            }
-        }
-        if let Some(sid) = session_id {
-            if !sid.is_empty() {
-                params["session_id"] = serde_json::Value::String(sid.to_string());
-            }
-        }
-        if let Some(a) = agent {
-            // 编排 spec 仅作提示：执行分支由 task.submit 的服务端模式裁决决定
-            params["agent"] = a;
-        }
-        if let Some(h) = history {
-            // 完整对话历史（OpenAI messages 数组）：gateway 透传为工具循环初始上下文
-            params["messages"] = h;
-        }
-        if let Some(a) = gccp_answers {
-            // GCCP 两段式交互第二段：用户答案 JSON（gateway 透传 think.process）
-            if !a.is_empty() {
-                params["gccp_answers"] = serde_json::Value::String(a.to_string());
-            }
-        }
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "task.submit",
-            "params": params,
-        });
-
-        let start = Instant::now();
-        info!(
-            "POST {} (prompt_len={}, session={})",
-            url,
-            prompt.len(),
-            session_id.unwrap_or("(网关生成)")
-        );
-        let resp = self.http.post(&url).json(&request).send().await?;
-        let elapsed = start.elapsed();
-        let status = resp.status();
-        let body = resp.text().await?;
-
-        if !status.is_success() {
-            error!(
-                "← task/submit FAILED: HTTP {} ({}ms) → {}",
-                status.as_u16(),
-                elapsed.as_millis(),
-                body
-            );
-            // 2.3.4：完整 body 可能含 daemon 内部细节（路径/panic/响应原文），
-            // 已写入日志（上方 error!）。界面错误链只保留状态码，body 不上屏。
-            anyhow::bail!("Gateway error (HTTP {})", status.as_u16());
-        }
-
-        // 解析 JSON-RPC：优先 result，出错时透出 error.message
-        let json: serde_json::Value =
-            serde_json::from_str(&body).context("Failed to parse run response")?;
-        if let Some(err) = json.get("error") {
-            let msg = err
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            anyhow::bail!("Gateway error: {}", msg);
-        }
-        let result = json
-            .get("result")
-            .context("Missing result in JSON-RPC response")?;
-
-        let response = result
-            .get("response")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let session_id = result
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        // D-11：result 同样携带 usage；界面 token 计数统一取 usage.total
-        // （与流式 run_end 同一语义），tokens_used 仅作旧引擎回退。
-        let usage = result
-            .get(agentrt_rs::run_stream::gen::AIRY_RS_K_USAGE)
-            .and_then(|v| serde_json::from_value::<Usage>(v.clone()).ok());
-        let tokens_used = usage
-            .as_ref()
-            .map(|u| u.total)
-            .filter(|t| *t > 0)
-            .or_else(|| result.get("tokens_used").and_then(|v| v.as_u64()));
-        let cost_usd = result.get("cost_usd").and_then(|v| v.as_f64());
-
-        // 双思考轨迹（可选）：gateway 回传 think.process 的
-        // {plan: DAG, feedback: GRAD 反馈, stats}，供对话面板展示
-        let thinking = result.get("thinking").and_then(|v| v.as_object()).cloned();
-
-        // GCCP 两段式交互（P-A）：think.process 第一段挂起时 gateway 回传
-        // {gccp_need_interaction:1, gccp_questions:[...]}——客户端展示问题、
-        // 收集答案后以 gccp_answers 重发同一 prompt（第二段完成澄清闭环）。
-        let gccp_need_interaction = result
-            .get("gccp_need_interaction")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let gccp_questions: Vec<GccpQuestion> = result
-            .get("gccp_questions")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        // Agent 工具调用轨迹（可选）
-        let tool_trace = result
-            .get("tool_trace")
-            .and_then(|v| serde_json::from_value::<Vec<ToolTrace>>(v.clone()).ok());
-
-        // run_end 终态与续跑令牌（C-14-07）：状态迁移只认协议字段，不解析正文。
-        let status = result
-            .get("status")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let resume_token = result
-            .get("resume_token")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let rounds_used = result.get("rounds_used").and_then(|v| v.as_i64());
-        let rounds_limit = result.get("rounds_limit").and_then(|v| v.as_i64());
-
-        // C-15/C-17：任务身份与门禁对象。同步面与流式面同源，界面只认
-        // 协议字段；needs_intent/needs_criteria 表示零引擎、零工具调用，
-        // 与 CLI 呈现同一张卡片。
-        let text_of = |k: &str| {
-            result
-                .get(k)
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        };
-        let task_id = text_of("task_id");
-        let plan_id = text_of("plan_id");
-        let mode = text_of("mode");
-        let mode_reason = text_of("mode_reason");
-        let plan_unavailable = text_of("plan_unavailable");
-        let needs_intent = result.get("needs_intent").cloned();
-        let needs_criteria = result.get("needs_criteria").cloned();
-        let verification = result.get("verification").cloned();
-
-        info!(
-            "← task/submit OK ({}ms, {} tokens, task={})",
-            elapsed.as_millis(),
-            tokens_used.unwrap_or(0),
-            task_id.as_deref().unwrap_or("-")
-        );
-        Ok(RunResponse {
-            session_id,
-            response,
-            tokens_used,
-            cost_usd,
-            thinking,
-            tool_trace,
-            gccp_need_interaction,
-            gccp_questions,
-            status,
-            resume_token,
-            rounds_used,
-            rounds_limit,
-            usage,
-            task_id,
-            plan_id,
-            mode,
-            mode_reason,
-            needs_intent,
-            needs_criteria,
-            plan_unavailable,
-            verification,
-        })
-    }
-
-    /// 中止运行中的 task.submit 请求（Ctrl+X 服务端配合）。
-    ///
-    /// 取消与提交同属一条会话时间线：agent.cancel 与 task.submit 共享
-    /// agent_d 的按会话注册表；task.* 生命周期的 task.cancel 在 L-9
-    /// 唯一任务协议收口时统一。
-    ///
-    /// gateway 侧运行中请求注册表置位 cancelled，工具循环轮次间检查后中断，
-    /// 原请求返回 -32800 "Request cancelled by user"。
-    pub async fn cancel_session(&self, session_id: &str) -> Result<()> {
-        let url = format!("{}/", self.base_url);
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "agent.cancel",
-            "params": { "session_id": session_id },
-        });
-        let resp = self.http.post(&url).json(&request).send().await?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        if !status.is_success() {
-            anyhow::bail!("agent.cancel HTTP {}: {}", status.as_u16(), body);
-        }
-        let json: serde_json::Value =
-            serde_json::from_str(&body).context("Failed to parse cancel response")?;
-        if let Some(err) = json.get("error") {
-            let msg = err
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown");
-            // 请求已完成（未找到活动条目）属于正常情况，仅记录
-            debug!("agent.cancel: {}", msg);
-            return Ok(());
-        }
-        info!("agent.cancel OK (session={})", session_id);
-        Ok(())
     }
 
     /// 通用 JSON-RPC 调用（POST /），返回 result 节点（无 result 时返回 Null）。
