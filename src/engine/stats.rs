@@ -82,7 +82,7 @@ pub(crate) fn aggregate(samples: impl IntoIterator<Item = Costs>) -> FrameStats 
 }
 
 /// 升序排序后取分位；空样本不出结论。
-fn summarize(values: &mut Vec<u64>) -> Option<Summary> {
+fn summarize(values: &mut [u64]) -> Option<Summary> {
     if values.is_empty() {
         return None;
     }
