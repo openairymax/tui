@@ -25,7 +25,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::engine::grid;
-use crate::memory::{ConversationMemory, MemoryRecord};
+use crate::engine::memory::{MemoryEntry, MemorySnapshot};
 use crate::style;
 
 /// 记忆后端说明（TUI 无本地存储，统一经网关 mem.* 访问 mem_d）。
@@ -94,10 +94,10 @@ fn last_page_start(total: usize) -> usize {
 
 /// Render the memory statistics panel.
 ///
-/// 渲染对话记忆库视图：数据来自 `app.memory`（TUI 唯一后端 = 网关记忆
-/// 服务 mem_d，经 gateway `mem.*` 水合的同步读缓存，与 CLI 同一存储）。
-/// 按来源（标签）分组展示记忆链。内容整段缓存，条数与页码未变时零重建；
-/// 打开面板时由 `App::toggle_panel` 触发一次 `refresh()` 重新水合。
+/// 渲染对话记忆库视图：数据取 `App::memory_snapshot()` 的只读快照（TUI 唯一
+/// 后端 = 网关记忆服务 mem_d，经 gateway `mem.*` 水合的同步读缓存，与 CLI
+/// 同一存储）。按来源（标签）分组展示记忆链。内容整段缓存，条数与页码未变
+/// 时零重建；打开面板时由 `App::toggle_panel` 触发一次 `refresh()` 重新水合。
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -109,19 +109,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ));
 
-    let total = app.memory.len();
-    if app.memory_view.needs_rebuild(total) {
-        rebuild(&mut app.memory_view, app.memory.as_ref(), total);
+    let snap = app.memory_snapshot();
+    if app.memory_view.needs_rebuild(snap.total()) {
+        // 窗口按页取：页起点在视图缓存上，重建时一次取够本页所需条数。
+        let take = (app.memory_view.skip + PAGE_RECORDS).min(snap.total());
+        let recs = app.memory_records(take);
+        rebuild(&mut app.memory_view, &snap, &recs);
     }
     let body = app.memory_view.lines.clone();
     f.render_widget(Paragraph::new(body).block(block), area);
 }
 
 /// 重建整段视图：头部统计 + 当前页分组链 + 页码提示。
-fn rebuild(view: &mut MemoryView, mem: &dyn ConversationMemory, total: usize) {
-    let backend = mem.backend_name();
-    let want = (view.skip + PAGE_RECORDS).min(total);
-    let recs = mem.recent(want);
+fn rebuild(view: &mut MemoryView, snap: &MemorySnapshot, recs: &[MemoryEntry]) {
+    let total = snap.total();
+    let backend = snap.backend();
     let window = &recs[view.skip.min(recs.len())..];
 
     let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
@@ -188,8 +190,8 @@ fn hidden_hint(skip: usize) -> Line<'static> {
 }
 
 /// 按来源（tags 首标签）分组：每组为一段记忆链，组内保持后端时序。
-fn build_groups(recs: &[MemoryRecord]) -> Vec<(String, Vec<&MemoryRecord>)> {
-    let mut groups: Vec<(String, Vec<&MemoryRecord>)> = Vec::new();
+fn build_groups(recs: &[MemoryEntry]) -> Vec<(String, Vec<&MemoryEntry>)> {
+    let mut groups: Vec<(String, Vec<&MemoryEntry>)> = Vec::new();
     for rec in recs {
         let src = source_of(rec);
         if let Some(g) = groups.iter_mut().find(|(k, _)| k == &src) {
@@ -202,7 +204,7 @@ fn build_groups(recs: &[MemoryRecord]) -> Vec<(String, Vec<&MemoryRecord>)> {
 }
 
 /// 渲染一个来源分组（含组内记忆链与组后留白）。
-fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryRecord]) {
+fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryEntry]) {
     lines.push(Line::from(vec![
         Span::styled("  ", Style::default()),
         Span::styled(
@@ -214,21 +216,17 @@ fn push_group(lines: &mut Vec<Line<'static>>, src: &str, entries: &[&MemoryRecor
     ]));
     let n = entries.len();
     for (i, rec) in entries.iter().enumerate() {
-        let speaker = role_cn(&rec.role);
+        let speaker = role_cn(rec.role());
         // 内容摘要边界按列裁决（全角记忆正文按字符取会让条目行右溢）
-        let content = grid::clip(&rec.content, 60);
+        let content = grid::clip(rec.content(), 60);
         let (stem, conn) = if i + 1 == n {
             ("└─", "  ")
         } else {
             ("├─", "│ ")
         };
-        let hhmm = grid::clip(&rec.timestamp, 16);
+        let hhmm = grid::clip(rec.timestamp(), 16);
         // 关联链标记：含思考链（reasoning）的记忆条目弱化提示
-        let has_reasoning = rec
-            .reasoning
-            .as_deref()
-            .map(|r| !r.trim().is_empty())
-            .unwrap_or(false);
+        let has_reasoning = rec.has_reasoning();
         lines.push(Line::from(vec![
             Span::styled(format!("  {} ", stem), Style::default().fg(style::border())),
             Span::styled(
@@ -284,13 +282,13 @@ fn render_empty(lines: &mut Vec<Line<'static>>) {
 }
 
 /// 记忆来源：tags 首个非空标签；无标签时回退角色。
-fn source_of(rec: &MemoryRecord) -> String {
-    rec.tags
+fn source_of(rec: &MemoryEntry) -> String {
+    rec.tags()
         .split(',')
         .map(|t| t.trim())
         .find(|t| !t.is_empty())
         .map(|t| t.to_string())
-        .unwrap_or_else(|| role_cn(&rec.role).to_string())
+        .unwrap_or_else(|| role_cn(rec.role()).to_string())
 }
 
 /// 角色中文名。
@@ -307,15 +305,14 @@ fn role_cn(role: &str) -> &str {
 mod tests {
     use super::*;
 
-    fn rec(role: &str, content: &str, tags: &str, ts: &str) -> MemoryRecord {
-        MemoryRecord {
-            role: role.to_string(),
-            content: content.to_string(),
-            timestamp: ts.to_string(),
-            tags: tags.to_string(),
-            reasoning: None,
-            conv: None,
-        }
+    fn rec(role: &str, content: &str, tags: &str, ts: &str) -> MemoryEntry {
+        MemoryEntry::new(
+            role.to_string(),
+            content.to_string(),
+            ts.to_string(),
+            tags.to_string(),
+            false,
+        )
     }
 
     #[test]
@@ -350,8 +347,8 @@ mod tests {
         assert_eq!(groups[0].1.len(), 2);
         assert_eq!(groups[1].0, "chat");
         // 组内保持后端传入的时序（最新优先）
-        assert_eq!(groups[0].1[0].content, "c");
-        assert_eq!(groups[0].1[1].content, "a");
+        assert_eq!(groups[0].1[0].content(), "c");
+        assert_eq!(groups[0].1[1].content(), "a");
     }
 
     #[test]

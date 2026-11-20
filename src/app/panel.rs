@@ -221,7 +221,7 @@ impl App {
 
     /// PgDn：记忆面板向更早方向翻一页（分组窗口懒加载，0.1.9 W8）。
     pub fn memory_page_down(&mut self) {
-        self.memory_view.page_down(self.memory.len());
+        self.memory_view.page_down(self.memory_snapshot().total());
     }
 
     /// PgUp：记忆面板向更新方向翻回一页。

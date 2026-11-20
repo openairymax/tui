@@ -41,6 +41,7 @@ pub(crate) mod layout;
 pub(crate) mod leader;
 pub(crate) mod link;
 pub(crate) mod logfile;
+pub(crate) mod memory;
 pub(crate) mod notify;
 pub(crate) mod probe;
 pub(crate) mod project;
