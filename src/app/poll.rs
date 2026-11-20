@@ -592,11 +592,6 @@ impl App {
                     self.apply_grad_confirm(confirmed, res);
                 }
             }
-            PendingKind::Distill => {
-                if let PendingOutcome::Run(res) = outcome {
-                    self.apply_distill_result(res);
-                }
-            }
             PendingKind::TurnState => {
                 if let PendingOutcome::Turns(res) = outcome {
                     self.apply_turn_state(res);
@@ -620,24 +615,13 @@ impl App {
                         self.start_pending(*kind, &prompt, agent, history, gccp_answers);
                     }
                     _ => {
-                        // 连接检查失败：若正在进行任务收尾（技能蒸馏），仍需结束任务流，
-                        // 否则会卡在 Executing 阶段——「技能沉淀」被跳过且无法继续对话。
                         log::warn!("apply_result: 连接检查失败（kind={:?}）", kind);
                         self.add_log("ERROR", "网关不可达：连接检查失败".to_string());
-                        if matches!(&*kind, PendingKind::Distill) {
-                            self.add_message(
-                                MessageRole::System,
-                                "网关不可达，技能蒸馏请求失败：本次任务已完成，但经验未能沉淀。"
-                                    .to_string(),
-                            );
-                            self.finish_task(false);
-                        } else {
-                            self.add_message(
-                                MessageRole::System,
-                                "Not connected to gateway. Run 'agentrt' to start the server."
-                                    .to_string(),
-                            );
-                        }
+                        self.add_message(
+                            MessageRole::System,
+                            "Not connected to gateway. Run 'agentrt' to start the server."
+                                .to_string(),
+                        );
                     }
                 }
             }

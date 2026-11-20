@@ -78,9 +78,9 @@ fn golden_memory_panel_empty_is_honest() {
 /// 固定条数的内存技能库：golden 专用，验证整表渲染不受任何常量截断。
 struct CountedStore(Vec<crate::skills::SkillRecord>);
 impl crate::skills::SkillStore for CountedStore {
-    fn save(&mut self, s: crate::skills::SkillRecord) -> std::io::Result<()> {
+    #[cfg(test)]
+    fn seed(&mut self, s: crate::skills::SkillRecord) {
         self.0.push(s);
-        Ok(())
     }
     fn find(&self, _: &str, limit: usize) -> Vec<crate::skills::SkillRecord> {
         self.0.iter().take(limit).cloned().collect()

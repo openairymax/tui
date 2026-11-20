@@ -170,9 +170,6 @@ impl App {
                 );
                 self.task_mode = false;
             }
-            PendingKind::Distill => {
-                self.finish_task(false);
-            }
             PendingKind::CheckConnect { .. } => {
                 self.add_message(MessageRole::System, "已中止连接等待。".to_string());
             }
