@@ -44,7 +44,8 @@ pub(crate) struct Caps {
     pub(crate) sync_output: Option<bool>,
     /// kitty 键盘协议：见到 `CSI ? <flags> u` 即为支持。
     pub(crate) kitty: Option<bool>,
-    /// 真彩能力：COLORTERM 或 TERM 的 direct 标记，缺失按不支持。
+    /// 真彩能力：COLORTERM/TERM 的标记，或 OSC11 的 24 位通道回包；
+    /// 缺失按不支持（回落 256 色，fail-safe）。
     pub(crate) truecolor: bool,
 }
 
@@ -171,9 +172,18 @@ pub(crate) fn caps(buf: &[u8]) -> Caps {
         scheme: scheme_of(buf),
         sync_output: parse_sync(buf),
         kitty: parse_kitty(buf),
-        truecolor: env_truecolor(|k| std::env::var(k).ok()),
+        truecolor: truecolor_ev(buf, |k| std::env::var(k).ok()),
     }
     .override_env(|k| std::env::var(k).ok())
+}
+
+/// 真彩判定：环境证据与 OSC11 回包任一成立即为真。
+///
+/// OSC11 应答形如 `rgb:RRRR/GGGG/BBBB`：终端能按 24 位通道回话，即表明
+/// 其颜色解析走 RGB 三通道而非调色板索引。两条证据都不存在时按 256 色
+/// 保守处理——缺失即不支持，宁可降色也不发出错位的 SGR。
+fn truecolor_ev(buf: &[u8], var: impl Fn(&str) -> Option<String>) -> bool {
+    parse_osc11(buf).is_some() || env_truecolor(var)
 }
 
 fn scheme_of(buf: &[u8]) -> Option<(Scheme, Src)> {
@@ -432,6 +442,25 @@ mod tests {
         assert!(env_truecolor(|k| (k == "TERM").then(|| "xterm-direct".into())));
         assert!(!env_truecolor(|k| (k == "TERM").then(|| "xterm-256color".into())));
         assert!(!env_truecolor(|_| None));
+    }
+
+    /// 真彩证据二者其一即可：OSC11 的 24 位通道回包同样成立。
+    #[test]
+    fn osc11_reply_counts_as_truecolor_evidence() {
+        let light = b"\x1b]11;rgb:ffff/ffff/ffff\x07";
+        assert!(truecolor_ev(light, |_| None), "OSC11 回包即证据");
+        assert!(!truecolor_ev(b"", |_| None), "无证据按 256 色");
+        assert!(truecolor_ev(b"", |k| (k == "COLORTERM").then(|| "truecolor".into())));
+    }
+
+    /// 真彩与 kitty 两问必须同帧发出：缺任一都得不到完整结论。
+    #[test]
+    fn truecolor_and_kitty_probes_go_out_together() {
+        let mut sink = Sink::default();
+        assert!(send_query(&mut sink).is_ok());
+        let sent = &sink.writes[0];
+        assert!(sent.windows(OSC11.len()).any(|w| w == OSC11), "OSC11 问");
+        assert!(sent.windows(4).any(|w| w == b"\x1b[?u"), "kitty 问");
     }
 
     #[test]
