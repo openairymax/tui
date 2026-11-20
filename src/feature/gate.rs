@@ -28,14 +28,23 @@ pub(crate) fn enabled(name: &str) -> bool {
     }
 }
 
-/// 组装环境变量键；名非法时返回 None。
-fn env_key(name: &str) -> Option<String> {
-    let legal = !name.is_empty()
+/// 开关名是否合法：非空、不超长、仅 [a-z0-9_]。
+pub(crate) fn legal(name: &str) -> bool {
+    !name.is_empty()
         && name.len() <= NAME_MAX
         && name
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
-    legal.then(|| format!("{PREFIX}{}", name.to_ascii_uppercase()))
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// 组装环境变量键；名非法时返回 None。
+fn env_key(name: &str) -> Option<String> {
+    legal(name).then(|| format!("{PREFIX}{}", name.to_ascii_uppercase()))
+}
+
+/// 登记键回显（供五件套模板使用）；名非法时为空串。
+pub(crate) fn env_key_of(name: &str) -> String {
+    env_key(name).unwrap_or_default()
 }
 
 /// 取值判定：`1` / `true` / `on` 为开，其余一律关。
