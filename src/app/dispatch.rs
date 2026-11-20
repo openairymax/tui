@@ -139,6 +139,32 @@ impl App {
             .and_then(|m| m.get("content").and_then(|c| c.as_str()))
             .unwrap_or("")
             .to_string();
+        // 事件管道优先（X1-26c）：同一 turn 语义经 CLI 事件流下发；管道不可用
+        // 才走网关直连（原因记入 lane_err，不静默）。
+        if self.ev.is_some() {
+            let mut opts = serde_json::Map::new();
+            opts.insert("agent_file".into(), serde_json::json!(&agent_file));
+            opts.insert("interactive".into(), serde_json::json!(true));
+            opts.insert("session_id".into(), serde_json::json!(&session_id));
+            if let Some(m) = &model {
+                opts.insert("model".into(), serde_json::json!(m));
+            }
+            if let Some(msgs) = &messages {
+                opts.insert("messages".into(), msgs.clone());
+            }
+            if let Some(tok) = &resume {
+                // 续跑=已确认任务的继续执行：与网关直连入口同一语义
+                opts.insert("resume_token".into(), serde_json::json!(tok));
+                opts.insert("gccp_confirmed".into(), serde_json::json!(true));
+                opts.insert("mode".into(), serde_json::json!("task"));
+            }
+            let opts = serde_json::Value::Object(opts);
+            if self.start_lane_turn(kind.clone(), &prompt, opts) {
+                self.clear_stream();
+                log::info!("start_stream_pending: 经事件管道发起（session={session_id}）");
+                return;
+            }
+        }
         // 续跑是已确认任务的继续执行；新对话轮不带 gccp_confirmed
         let confirmed = resume.is_some();
         // 流式通道：tokio 任务把事件帧转译后的文本增量送进 mpsc，主循环
@@ -185,6 +211,11 @@ impl App {
             tool_rx: Some(tool_rx),
         });
         // 占位消息：流式输出目标（chat.rs 按 streaming_text 增量渲染）
+        self.clear_stream();
+    }
+
+    /// 流式渲染态归零：新轮开始前清空上一轮的增量、工具行与思考链残留。
+    fn clear_stream(&mut self) {
         self.streaming_text.clear();
         self.stream_sanitizer.reset();
         self.stream_reasoning.clear();
