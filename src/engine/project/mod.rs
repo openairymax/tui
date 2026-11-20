@@ -21,6 +21,7 @@ use super::event::model::{Body, Control, Domain, Event, Outcome};
 pub(crate) mod dirty;
 pub(crate) mod msgs;
 pub(crate) mod tasks;
+pub(crate) mod tools;
 
 #[cfg(test)]
 mod support;
@@ -28,6 +29,7 @@ mod support;
 use self::dirty::{Dirty, Span};
 use self::msgs::Msgs;
 use self::tasks::Tasks;
+use self::tools::Tools;
 
 /// 运行态：由事件驱动，不由渲染层自己判断。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +42,7 @@ pub(crate) enum Phase {
     Closed,
 }
 
-/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息表 + 任务表 + 待刷新行。
+/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息/任务/工具表 + 待刷新行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Projection {
     applied: u64,
@@ -49,6 +51,7 @@ pub(crate) struct Projection {
     counts: [u64; 4],
     msgs: Msgs,
     tasks: Tasks,
+    tools: Tools,
     dirty: Dirty,
 }
 
@@ -62,6 +65,7 @@ impl Projection {
             counts: [0; 4],
             msgs: Msgs::new(),
             tasks: Tasks::new(),
+            tools: Tools::new(),
             dirty: Dirty::new(),
         }
     }
@@ -77,6 +81,7 @@ impl Projection {
         self.counts[slot] = self.counts[slot].saturating_add(1);
         self.phase = next_phase(self.phase, &ev.body);
         self.tasks.apply(ev);
+        self.tools.apply(ev);
         if let Some(row) = self.msgs.push(ev) {
             self.dirty.mark(row);
         }
@@ -110,6 +115,11 @@ impl Projection {
     /// 任务表只读视图。
     pub(crate) fn tasks(&self) -> &Tasks {
         &self.tasks
+    }
+
+    /// 工具表只读视图。
+    pub(crate) fn tools(&self) -> &Tools {
+        &self.tools
     }
 
     /// 待刷新行只读视图（自检与诊断用）。
@@ -305,5 +315,37 @@ mod tests {
 
         p.apply(&state(4, "t2", "submitted"));
         assert_eq!(p.tasks().len(), 2);
+    }
+
+    /// 工具表随执行面事件推进：调用与结果合成一行，消息表不受影响。
+    #[test]
+    fn tools_track_calls() {
+        use crate::engine::event::model::Execution;
+        use crate::engine::project::tools::Status;
+
+        let mut p = Projection::new();
+        p.apply(&ev(1, Body::Execution(Execution::Tools { count: 4 })));
+        p.apply(&ev(
+            2,
+            Body::Execution(Execution::Call {
+                id: "c1".into(),
+                name: "shell".into(),
+                args: serde_json::json!("ls"),
+            }),
+        ));
+        p.apply(&ev(
+            3,
+            Body::Execution(Execution::Result {
+                id: "c1".into(),
+                ok: true,
+                text: "done".into(),
+            }),
+        ));
+
+        assert_eq!(p.tools().catalog(), Some(4));
+        assert_eq!(p.tools().len(), 1);
+        assert_eq!(p.tools().rows()[0].status, Status::Ok);
+        assert!(p.msgs().is_empty(), "执行帧不进消息表");
+        assert_eq!(p.count(Domain::Execution), 3);
     }
 }
