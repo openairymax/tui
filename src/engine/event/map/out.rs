@@ -40,9 +40,13 @@ pub(crate) fn read(kind: &str, p: &Value) -> Option<Outcome> {
     }
 }
 
-/// 终态：status 是唯一事实源。
+/// 终态：status 是唯一事实源；data 段整体随行，供语义层取会话/用量/判据。
 fn end(p: &Value) -> Option<Outcome> {
-    field(p, "status").map(|status| Outcome::End { status })
+    let data = p
+        .pointer("/data")
+        .map(|d| d.to_string())
+        .unwrap_or_default();
+    field(p, "status").map(|status| Outcome::End { status, data })
 }
 
 /// 失败三件套：说明是收下的前提（reason/next 缺失另有回退）。
@@ -105,7 +109,8 @@ mod tests {
                 &json!({"data": {"status": "paused", "rounds_used": 3}})
             ),
             Some(Outcome::End {
-                status: "paused".into()
+                status: "paused".into(),
+                data: json!({"status": "paused", "rounds_used": 3}).to_string(),
             })
         );
         assert_eq!(read("run_end", &json!({"data": {}})), None);
