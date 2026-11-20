@@ -136,7 +136,8 @@ mod tests {
         d.mark_span(1..4);
         d.mark_span(3..6);
         d.mark_span(6..6);
-        d.mark_span(9..8);
+        let (lo, hi) = (9usize, 8usize);
+        d.mark_span(lo..hi);
         assert_eq!(d.segs(), 1);
         assert_eq!(d.count(), 5);
         assert_eq!(d.take()[0].to, 6);
