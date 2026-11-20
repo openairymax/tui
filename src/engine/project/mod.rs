@@ -23,6 +23,8 @@ pub(crate) mod msgs;
 #[cfg(test)]
 mod support;
 
+use self::msgs::Msgs;
+
 /// 运行态：由事件驱动，不由渲染层自己判断。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -34,13 +36,14 @@ pub(crate) enum Phase {
     Closed,
 }
 
-/// 折叠结果：帧号水位 + 逐域计数 + 运行相位。
+/// 折叠结果：帧号水位 + 逐域计数 + 运行相位 + 消息表。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Projection {
     applied: u64,
     seq: u64,
     phase: Phase,
     counts: [u64; 4],
+    msgs: Msgs,
 }
 
 impl Projection {
@@ -51,16 +54,20 @@ impl Projection {
             seq: 0,
             phase: Phase::Idle,
             counts: [0; 4],
+            msgs: Msgs::new(),
         }
     }
 
     /// 折叠一条事件：只改本结构，返回值留空以便后续卡接脏区。
+    ///
+    /// 增量语义：每条事件只落到该落的表，已入表的行不重算、不改写。
     pub(crate) fn apply(&mut self, ev: &Event) {
         self.applied = self.applied.saturating_add(1);
         self.seq = self.seq.max(ev.seq);
         let slot = slot(ev.domain());
         self.counts[slot] = self.counts[slot].saturating_add(1);
         self.phase = next_phase(self.phase, &ev.body);
+        self.msgs.push(ev);
     }
 
     /// 已折叠事件数。
@@ -81,6 +88,11 @@ impl Projection {
     /// 某域已折叠的事件数（状态栏与诊断直接读）。
     pub(crate) fn count(&self, d: Domain) -> u64 {
         self.counts[slot(d)]
+    }
+
+    /// 消息表只读视图。
+    pub(crate) fn msgs(&self) -> &Msgs {
+        &self.msgs
     }
 }
 
@@ -188,5 +200,36 @@ mod tests {
         p.apply(&start(7));
         p.apply(&start(3));
         assert_eq!(p.seq(), 7);
+    }
+
+    fn delta(seq: u64, text: &str) -> Event {
+        ev(seq, Body::Cognition(Cognition::Delta { text: text.into() }))
+    }
+
+    /// 增量路径：新事件只追加自己的行，旧行逐字段不变（旧帧不重算）。
+    #[test]
+    fn appends_without_rewriting_history() {
+        let mut p = Projection::new();
+        for i in 1..=3u64 {
+            p.apply(&delta(i, "片段"));
+        }
+        let frozen = p.msgs().rows().to_vec();
+        assert_eq!(frozen.len(), 3);
+
+        p.apply(&delta(4, "新片"));
+        assert_eq!(&p.msgs().rows()[..3], frozen.as_slice());
+        assert_eq!(p.msgs().len(), 4);
+        assert_eq!(p.msgs().last().map(|m| m.seq), Some(4));
+    }
+
+    /// 非认知事件不占消息表：计数增加而表长度不变。
+    #[test]
+    fn control_events_leave_table_alone() {
+        let mut p = Projection::new();
+        p.apply(&start(1));
+        p.apply(&end(2));
+        assert!(p.msgs().is_empty());
+        assert_eq!(p.count(Domain::Control), 1);
+        assert_eq!(p.count(Domain::Outcome), 1);
     }
 }
