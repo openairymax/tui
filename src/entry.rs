@@ -402,6 +402,9 @@ async fn run_app<B: Backend>(
     // 的单调毫秒注入（调度层禁止自取时钟），故节拍判定可被虚拟时钟直接驱动。
     let base = Instant::now();
     let mut sched = Sched::new(Cfg::from_env());
+    // X8-06b：帧日志是可选诊断通道，开关关闭或路径不可用时整个对象不存在，
+    // 对帧节拍与常驻内存均无影响。
+    let mut frame_log = engine::framelog::FrameLog::from_env();
     // §6.1 #1：首帧耗时只上报一次；超预算告警，不阻塞、不重试。
     let mut first_drawn = false;
 
@@ -558,7 +561,11 @@ async fn run_app<B: Backend>(
                 }
             }
             timer.lap(engine::frame::Stage::Present);
-            sched.note_frame(&timer.finish());
+            let costs = timer.finish();
+            if let Some(sink) = frame_log.as_mut() {
+                sink.record(&costs);
+            }
+            sched.note_frame(&costs);
         }
         app.render_degraded = compose.degraded();
 
