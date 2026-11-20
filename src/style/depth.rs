@@ -12,6 +12,7 @@
 // 38;2 序列并错位解析（0.1.6h 乱色根因）。
 
 use ratatui::style::Color;
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// 终端色彩深度能力（0.1.6h 修复乱色：不支持 truecolor 时回退 256/16 色）
@@ -27,18 +28,47 @@ pub enum ColorDepth {
 
 /// 静态默认 Basic（2）：任何 init 之前先按最保守 16 色走，
 /// 避免 256/16 色终端收到 38;2 序列错位解析（0.1.6h 乱色根因）。
+///
+/// 生产期色深由启动阶段一次写入、渲染线程随后只读，用原子足够；单测
+/// 并行执行时进程级可变状态互相污染（一个用例改色深会改变另一个用例
+/// 的渲染输出），故测试期退化为线程本地，让每个用例只见自己的设置。
+#[cfg(not(test))]
 static DEPTH: AtomicU8 = AtomicU8::new(2);
+#[cfg(test)]
+thread_local! {
+    static DEPTH: std::cell::Cell<u8> = std::cell::Cell::new(2);
+}
+
+#[cfg(not(test))]
+fn store(code: u8) {
+    DEPTH.store(code, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn store(code: u8) {
+    DEPTH.with(|slot| slot.set(code));
+}
+
+#[cfg(not(test))]
+fn load() -> u8 {
+    DEPTH.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn load() -> u8 {
+    DEPTH.with(std::cell::Cell::get)
+}
 
 impl ColorDepth {
     pub(super) fn set(self) {
-        DEPTH.store(self as u8, Ordering::Relaxed);
+        store(self as u8);
     }
 
     /// 判别值 ↔ 深度映射必须与 enum 声明顺序一致（TrueColor=0/256=1/
     /// Basic=2），曾与判别值倒置导致 truecolor 终端落到 16 色、Basic
     /// 终端收到 truecolor 序列（W3 测试捕获的潜伏映射 bug）。
     pub fn current() -> ColorDepth {
-        match DEPTH.load(Ordering::Relaxed) {
+        match load() {
             0 => ColorDepth::TrueColor,
             1 => ColorDepth::Color256,
             _ => ColorDepth::Basic,

@@ -28,6 +28,7 @@
 //   4. 默认深色。
 
 use ratatui::style::Color;
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
 mod depth;
@@ -44,21 +45,47 @@ pub enum ThemeMode {
     Light,
 }
 
+/// 主题态的进程内单一权威：生产期由探测线程写入、渲染线程读取，故用
+/// 原子；单测并行执行时进程级可变状态会互相污染（一个用例切主题就会
+/// 改变另一个用例的渲染输出），因此测试期退化为线程本地，让每个用例
+/// 只见自己设置的视图。
+#[cfg(not(test))]
 static CURRENT: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+thread_local! {
+    static CURRENT: std::cell::Cell<u8> = std::cell::Cell::new(0);
+}
+
+#[cfg(not(test))]
+fn store(code: u8) {
+    CURRENT.store(code, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn store(code: u8) {
+    CURRENT.with(|slot| slot.set(code));
+}
+
+#[cfg(not(test))]
+fn load() -> u8 {
+    CURRENT.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn load() -> u8 {
+    CURRENT.with(std::cell::Cell::get)
+}
 
 impl ThemeMode {
     pub fn set(self) {
-        CURRENT.store(
-            match self {
-                ThemeMode::Dark => 0,
-                ThemeMode::Light => 1,
-            },
-            Ordering::Relaxed,
-        );
+        store(match self {
+            ThemeMode::Dark => 0,
+            ThemeMode::Light => 1,
+        });
     }
 
     pub fn current() -> ThemeMode {
-        match CURRENT.load(Ordering::Relaxed) {
+        match load() {
             1 => ThemeMode::Light,
             _ => ThemeMode::Dark,
         }
