@@ -251,7 +251,7 @@ mod tests {
             .collect();
         assert_eq!(cfgs.len(), 4, "只有配置键展开，任务身份与判据不混入");
         assert!(evs.iter().any(
-            |e| matches!(&e.body, Body::Control(Control::State { name }) if name == "running")
+            |e| matches!(&e.body, Body::Control(Control::State { name, .. }) if name == "running")
         ));
         assert!(cfgs.iter().any(|c| matches!(
             c,

@@ -18,6 +18,10 @@
 //   notice/heartbeat CLI 本地造帧，载荷分别只有 message 与 state。
 // 两种状态放法都读，先 data 后顶层：同一状态不许因链路不同落到不同分支。
 //
+// 任务身份（task_id）随状态与取消一起带出：任务表按身份寻址，身份只认帧
+// 载荷，客户端不拿会话号或运行号去冒充。快照帧通常没有身份——它描述的是
+// 「这次运行」，身份缺席即留空，由投影决定用不用。
+//
 // 取消单列而不并进普通状态：cancelled 携带「谁、为什么」的追溯，界面要能
 // 说清中断来源，与 submitted→executing 这类推进不是同一类呈现。
 // 通知无级别字段，一律 Info：错误另有 error 帧，按文本猜级别只会误导。
@@ -51,9 +55,7 @@ pub(crate) fn read(kind: &str, p: &Value, seq: u64) -> Option<Control> {
     match kind {
         "control_request" => ask(p),
         "task_state" => state(p),
-        "run_start" => Some(Control::State {
-            name: "running".into(),
-        }),
+        "run_start" => start(p),
         "snapshot" => snap(p),
         "notice" => note(p),
         "heartbeat" => Some(Control::Beat { seq }),
@@ -88,20 +90,33 @@ fn ask(p: &Value) -> Option<Control> {
     })
 }
 
-/// 任务状态迁移；cancelled 归取消，其余归状态。
+/// 任务状态迁移；cancelled 归取消，其余归状态。两者都带任务身份。
 fn state(p: &Value) -> Option<Control> {
     let name = field(p, "state")?;
+    let id = field(p, "task_id").unwrap_or_default();
     if name == CANCEL {
         return Some(Control::Cancel {
+            id,
             reason: field(p, "reason").unwrap_or_default(),
         });
     }
-    Some(Control::State { name })
+    Some(Control::State { id, name })
 }
 
-/// 续传快照携带的当前状态。
+/// 开跑帧：类型本身即「已进入运行」，任务身份随帧下发（可缺席）。
+fn start(p: &Value) -> Option<Control> {
+    Some(Control::State {
+        id: field(p, "task_id").unwrap_or_default(),
+        name: "running".into(),
+    })
+}
+
+/// 续传快照携带的当前状态；快照描述运行而非任务，通常没有任务身份。
 fn snap(p: &Value) -> Option<Control> {
-    field(p, "state").map(|name| Control::State { name })
+    field(p, "state").map(|name| Control::State {
+        id: field(p, "task_id").unwrap_or_default(),
+        name,
+    })
 }
 
 /// CLI 本地提示：契约只有 message，没有级别。
@@ -159,7 +174,7 @@ mod tests {
         );
     }
 
-    /// 状态迁移两种载荷放法都能读。
+    /// 状态迁移两种载荷放法都能读；任务身份随帧带出，缺席时为空。
     #[test]
     fn state_reads_both_shapes() {
         let nested = json!({
@@ -170,18 +185,21 @@ mod tests {
         assert_eq!(
             read("task_state", &nested, SEQ),
             Some(Control::State {
+                id: "t1".into(),
                 name: "executing".into()
             })
         );
         assert_eq!(
             read("task_state", &flat, SEQ),
             Some(Control::State {
+                id: String::new(),
                 name: "planned".into()
             })
         );
         assert_eq!(
             read("task_state", &json!({"data": {"state": "submitted"}}), SEQ),
             Some(Control::State {
+                id: String::new(),
                 name: "submitted".into()
             })
         );
@@ -193,6 +211,7 @@ mod tests {
         let p = json!({
             "type": "task_state",
             "data": {
+                "task_id": "t9",
                 "state": "cancelled",
                 "reason": "user",
                 "cancelled_by": "tui",
@@ -202,23 +221,34 @@ mod tests {
         assert_eq!(
             read("task_state", &p, SEQ),
             Some(Control::Cancel {
+                id: "t9".into(),
                 reason: "user".into()
             })
         );
         assert_eq!(
             read("task_state", &json!({"state": "cancelled"}), SEQ),
             Some(Control::Cancel {
+                id: String::new(),
                 reason: String::new()
             })
         );
     }
 
-    /// 运行开始即 running；快照取其 state；缺 state 的快照不收。
+    /// 运行开始即 running，任务身份取 run_start 的 task_id；快照取其 state。
     #[test]
     fn start_and_snapshot() {
+        let start = json!({"data": {"task_id": "t3", "model": "m"}});
+        assert_eq!(
+            read("run_start", &start, SEQ),
+            Some(Control::State {
+                id: "t3".into(),
+                name: "running".into()
+            })
+        );
         assert_eq!(
             read("run_start", &json!({"run": "r1"}), SEQ),
             Some(Control::State {
+                id: String::new(),
                 name: "running".into()
             })
         );
@@ -226,6 +256,7 @@ mod tests {
         assert_eq!(
             read("snapshot", &snap, SEQ),
             Some(Control::State {
+                id: String::new(),
                 name: "running".into()
             })
         );
