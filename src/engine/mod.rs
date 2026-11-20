@@ -44,6 +44,7 @@ pub(crate) mod sched;
 pub(crate) mod screen;
 pub(crate) mod selfhost;
 pub(crate) mod term;
+pub(crate) mod timer;
 pub(crate) mod toast;
 pub(crate) mod view;
 pub(crate) mod window;
