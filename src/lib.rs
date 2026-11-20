@@ -12,6 +12,7 @@ mod app;
 mod budget;
 mod client;
 mod engine;
+mod feature;
 mod gccp;
 mod ime;
 mod keys;
