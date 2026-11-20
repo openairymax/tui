@@ -341,19 +341,9 @@ async fn run_tui(
     // （exec 语义，同一终端由 CLI 接管；与 CLI 的 /tui 命令构成双向互切，
     // 无进程嵌套）。exec 失败（CLI 缺失等）时保留错误提示正常退出。
     if app.switch_to_cli {
-        // 原语义：AIRY_HOME/HOME 均缺失时按 PATH 查找 airy_cli（不能落到
-        // paths::airy_home() 的相对回退，否则会去 ./.airymaxrt/bin 找）。
-        let env_present =
-            std::env::var_os("AIRY_HOME").is_some() || std::env::var_os("HOME").is_some();
-        let cli_bin = if env_present {
-            crate::paths::airy_home()
-                .join("bin")
-                .join("airy_cli")
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "airy_cli".to_string()
-        };
+        // 解析规则与事件源共用一处（engine::event::pipe::cli_bin）：AIRY_HOME/
+        // HOME 均缺失时按 PATH 查找，不落 paths::airy_home() 的相对回退。
+        let cli_bin = engine::event::pipe::cli_bin();
         info!("Switching to CLI: {}", cli_bin);
         #[cfg(unix)]
         {

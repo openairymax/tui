@@ -28,6 +28,7 @@ pub(crate) mod boot;
 pub(crate) mod cache;
 pub(crate) mod compose;
 pub(crate) mod evolution;
+pub(crate) mod event;
 pub(crate) mod exit;
 pub(crate) mod flag;
 pub(crate) mod fold;
