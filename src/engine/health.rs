@@ -443,6 +443,9 @@ impl ErrAgg {
 
     /// 记录一条原始错误，返回其归类（调用方用于错误卡片）。
     /// 无结构化载荷的旧路径；判定规则见 `record_wire`。
+    /// 生产路径一律带 wire 载荷（app::health 走 `record_wire`），此便捷入口
+    /// 仅测试与 golden 样本使用。
+    #[cfg(test)]
     pub(crate) fn record(&mut self, raw: &str, now_ms: u64) -> Cause {
         self.record_wire(None, raw, now_ms)
     }

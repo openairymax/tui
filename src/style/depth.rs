@@ -36,7 +36,7 @@ pub enum ColorDepth {
 static DEPTH: AtomicU8 = AtomicU8::new(2);
 #[cfg(test)]
 thread_local! {
-    static DEPTH: std::cell::Cell<u8> = std::cell::Cell::new(2);
+    static DEPTH: std::cell::Cell<u8> = const { std::cell::Cell::new(2) };
 }
 
 #[cfg(not(test))]

@@ -20,6 +20,9 @@ const SH_TIMEOUT: Duration = Duration::from_secs(3);
 /// 自托管面板翻页步长（行）。
 const SH_PAGE: usize = 10;
 
+/// 翻页步长须为正：零步长会让翻页键变成空操作，负值在 usize 下无处可去。
+const _: () = assert!(SH_PAGE >= 5);
+
 impl App {
     /// 发起一轮自托管快照拉取（已在途则跳过）。
     pub fn start_selfhost(&mut self) {
@@ -123,10 +126,5 @@ mod tests {
     #[test]
     fn timeout_budget_is_bounded() {
         assert!(SH_TIMEOUT.as_secs() <= 5);
-    }
-
-    #[test]
-    fn page_step_is_positive() {
-        assert!(SH_PAGE >= 5);
     }
 }

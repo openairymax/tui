@@ -289,7 +289,6 @@ impl GatewayClient {
             needs_criteria,
             plan_unavailable,
             verification,
-            ..Default::default()
         })
     }
 

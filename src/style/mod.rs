@@ -53,7 +53,7 @@ pub enum ThemeMode {
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 #[cfg(test)]
 thread_local! {
-    static CURRENT: std::cell::Cell<u8> = std::cell::Cell::new(0);
+    static CURRENT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(not(test))]

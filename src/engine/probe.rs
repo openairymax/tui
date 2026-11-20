@@ -51,6 +51,10 @@ pub(crate) struct Caps {
 
 impl Caps {
     /// 明暗结论的布尔投影；未探明时 `None`（调用方不得猜）。
+    ///
+    /// 生产消费方（entry）直接匹配 `scheme` 以取得来源，投影仅供判定口径
+    /// 的单测断言，避免测试自行解构元组。
+    #[cfg(test)]
     pub(crate) fn dark(&self) -> Option<bool> {
         self.scheme.map(|(s, _)| s == Scheme::Dark)
     }
