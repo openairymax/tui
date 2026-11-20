@@ -31,6 +31,7 @@ pub(crate) mod evolution;
 pub(crate) mod exit;
 pub(crate) mod fold;
 pub(crate) mod frame;
+pub(crate) mod framelog;
 pub(crate) mod grid;
 pub(crate) mod guard;
 pub(crate) mod health;
