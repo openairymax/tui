@@ -26,11 +26,12 @@ on:
 permissions:
   contents: read
 
-# 跨仓依赖统一钉在集成线：sdk-rust / agentrt / commons 属同一产品线，必须
-# 同版取用；main 是发版线，落后于集成线时不满足 tui 的协议 API。改线只改
-# 这一处，三个 checkout 一起动，避免各腿钉出不同组合。
+# 跨仓取用点：sdk-rust 的 run-stream API 在集成线；agentrt 的 VERSION 与
+# IME 词典在主线（集成线尚无该词典）。两者各自显式钉住，不跟随默认分支
+# 浮动——任一处缺符号或缺数据，整条流水线都会红。改线只改这里。
 env:
-  AIRY_REF: dev/hubs-01
+  SDK_REF: dev/hubs-01
+  AGENTRT_REF: main
 
 concurrency:
   group: build-test-${{ github.ref }}
@@ -58,7 +59,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openairymax/sdk-rust
-          ref: ${{ env.AIRY_REF }}
+          ref: ${{ env.SDK_REF }}
           path: sdk/sdk-rust
 
       # 版本 SSoT（agentrt/VERSION）
@@ -66,7 +67,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openairymax/agentrt
-          ref: ${{ env.AIRY_REF }}
+          ref: ${{ env.AGENTRT_REF }}
           path: agentrt
 
       # 协议 schema SSoT（commons/include/airy_run_stream.h）
@@ -74,7 +75,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openairymax/commons
-          ref: ${{ env.AIRY_REF }}
+          ref: ${{ env.SDK_REF }}
           path: agentrt/commons
 
       - uses: dtolnay/rust-toolchain@stable
@@ -117,21 +118,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openairymax/sdk-rust
-          ref: ${{ env.AIRY_REF }}
+          ref: ${{ env.SDK_REF }}
           path: sdk/sdk-rust
 
       - name: Checkout agentrt
         uses: actions/checkout@v4
         with:
           repository: openairymax/agentrt
-          ref: ${{ env.AIRY_REF }}
+          ref: ${{ env.AGENTRT_REF }}
           path: agentrt
 
       - name: Checkout commons
         uses: actions/checkout@v4
         with:
           repository: openairymax/commons
-          ref: ${{ env.AIRY_REF }}
+          ref: ${{ env.SDK_REF }}
           path: agentrt/commons
 
       - uses: dtolnay/rust-toolchain@stable
