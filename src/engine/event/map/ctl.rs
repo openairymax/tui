@@ -39,6 +39,9 @@ use super::{at, field};
 /// task_state 的取消取值（agent_task_contract.h）。
 const CANCEL: &str = "cancelled";
 
+/// 任务门禁状态：运行暂停并等待人给结构化答案，载荷整体原样呈递。
+const GATES: [&str; 2] = ["needs_intent", "needs_criteria"];
+
 /// run_start 随帧下发的服务端裁决配置键（agent_run_exec.c 的 run_start 段）。
 const CFG_KEYS: [&str; 4] = ["model", "mode", "mode_reason", "gccp_confirmed"];
 
@@ -95,7 +98,7 @@ fn ask(p: &Value) -> Option<Control> {
     })
 }
 
-/// 任务状态迁移；cancelled 归取消，其余归状态。两者都带任务身份。
+/// 任务状态迁移；cancelled 归取消，门禁归门禁，其余归状态。
 fn state(p: &Value) -> Option<Control> {
     let name = field(p, "state")?;
     let id = field(p, "task_id").unwrap_or_default();
@@ -103,6 +106,12 @@ fn state(p: &Value) -> Option<Control> {
         return Some(Control::Cancel {
             id,
             reason: field(p, "reason").unwrap_or_default(),
+        });
+    }
+    if GATES.contains(&name.as_str()) {
+        return Some(Control::Gate {
+            name,
+            payload: at(p, "data").cloned().unwrap_or(Value::Null),
         });
     }
     Some(Control::State { id, name })
@@ -136,7 +145,7 @@ fn note(p: &Value) -> Option<Control> {
 mod tests {
     use super::{known, read};
     use crate::engine::event::model::{Control, Level};
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     const SEQ: u64 = 11;
 
@@ -251,6 +260,40 @@ mod tests {
                 id: String::new(),
                 reason: String::new()
             })
+        );
+    }
+
+    /// 门禁与普通状态分开：载荷整体随行，语义层不再向网关补问。
+    #[test]
+    fn gate_carries_payload() {
+        let p = json!({
+            "type": "task_state",
+            "data": {
+                "task_id": "t2",
+                "state": "needs_intent",
+                "mode": "task",
+                "goal": "补齐目标"
+            }
+        });
+        assert_eq!(
+            read("task_state", &p, SEQ),
+            Some(Control::Gate {
+                name: "needs_intent".into(),
+                payload: json!({
+                    "task_id": "t2",
+                    "state": "needs_intent",
+                    "mode": "task",
+                    "goal": "补齐目标"
+                })
+            })
+        );
+        assert_eq!(
+            read("task_state", &json!({"state": "needs_criteria"}), SEQ),
+            Some(Control::Gate {
+                name: "needs_criteria".into(),
+                payload: Value::Null,
+            }),
+            "无载荷也要收下门禁本身"
         );
     }
 

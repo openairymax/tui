@@ -8,7 +8,7 @@
 // D-15 的每一帧都携带 `type`，但渲染层不该按字符串各自猜语义：同一类事情
 // 若在两个组件里被归成不同类别，状态栏与主区就会各说各话。归域只在本模块
 // 做一次，下游只认四域：
-//   control   —— 需要人或对端裁决、确认的状态（审批/取消/状态/配置/通知/心跳）
+//   control   —— 需要人或对端裁决、确认的状态（审批/取消/状态/门禁/配置/通知/心跳）
 //   cognition —— 思考的中间态（思维链/计划/正文增量与定稿/评审）
 //   execution —— 对系统产生的动作（工具目录/调用/结果）
 //   outcome   —— 一轮运行的收口（终态/失败/失败详情）
@@ -102,6 +102,11 @@ pub(crate) enum Control {
     Cancel { id: String, reason: String },
     /// 运行状态迁移（idle/running/done/…）；`id` 是任务身份，缺席时为空。
     State { id: String, name: String },
+    /// 任务门禁：运行暂停并等待人给结构化答案（needs_intent/needs_criteria）。
+    ///
+    /// 与普通状态分开：门禁不是一次迁移，而是一张必须由人落定的卡片；
+    /// `payload` 是服务端给的原始对象，语义层直接呈递，不在映射层拆字段。
+    Gate { name: String, payload: Value },
     /// 配置项告知（键 + 原始值）。
     Cfg { key: String, value: Value },
     /// 一般通知：级别 + 文本。
@@ -219,6 +224,10 @@ mod tests {
             Control::State {
                 id: "t1".into(),
                 name: "running".into(),
+            },
+            Control::Gate {
+                name: "needs_intent".into(),
+                payload: json!({"goal": "补齐目标"}),
             },
             Control::Cfg {
                 key: "theme".into(),

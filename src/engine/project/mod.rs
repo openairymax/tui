@@ -16,6 +16,10 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::collections::BTreeMap;
+
+use serde_json::Value;
+
 use super::event::model::{Body, Control, Domain, Event, Outcome};
 
 pub(crate) mod approvals;
@@ -44,8 +48,23 @@ pub(crate) enum Phase {
     Closed,
 }
 
+/// 门禁：暂停原因 + 服务端原始对象（呈递层不再向网关追问）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Gate {
+    pub(crate) name: String,
+    pub(crate) payload: Value,
+}
+
+/// 失败：机器原因、人话、下一步动作（D-10 原样承接）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Fault {
+    pub(crate) reason: String,
+    pub(crate) text: String,
+    pub(crate) next: String,
+}
+
 /// 折叠结果：水位 + 计数 + 相位 + 消息/任务/工具/审批表 + 待刷新行。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Projection {
     applied: u64,
     seq: u64,
@@ -57,6 +76,9 @@ pub(crate) struct Projection {
     approvals: Approvals,
     dirty: Dirty,
     terminal: Option<String>,
+    gate: Option<Gate>,
+    fault: Option<Fault>,
+    cfg: BTreeMap<String, Value>,
 }
 
 impl Projection {
@@ -73,6 +95,9 @@ impl Projection {
             approvals: Approvals::new(),
             dirty: Dirty::new(),
             terminal: None,
+            gate: None,
+            fault: None,
+            cfg: BTreeMap::new(),
         }
     }
 
@@ -89,6 +114,18 @@ impl Projection {
         match &ev.body {
             Body::Control(Control::State { name, .. }) if name == "running" => {
                 self.terminal = None;
+                self.gate = None;
+                self.fault = None;
+                self.cfg.clear();
+            }
+            Body::Control(Control::Gate { name, payload }) => {
+                self.gate = Some(Gate {
+                    name: name.clone(),
+                    payload: payload.clone(),
+                });
+            }
+            Body::Control(Control::Cfg { key, value }) => {
+                self.cfg.insert(key.clone(), value.clone());
             }
             Body::Outcome(Outcome::End { data, .. }) => {
                 self.terminal = if data.is_empty() {
@@ -96,6 +133,13 @@ impl Projection {
                 } else {
                     Some(data.clone())
                 };
+            }
+            Body::Outcome(Outcome::Err { reason, text, next }) => {
+                self.fault = Some(Fault {
+                    reason: reason.clone(),
+                    text: text.clone(),
+                    next: next.clone(),
+                });
             }
             _ => {}
         }
@@ -125,6 +169,21 @@ impl Projection {
     /// 本轮终态载荷原文（服务端 run_end 的 data 段）；未收口或未带载荷为空。
     pub(crate) fn terminal(&self) -> Option<&str> {
         self.terminal.as_deref()
+    }
+
+    /// 当前门禁：运行暂停并等人作答；新一轮开跑时清空。
+    pub(crate) fn gate(&self) -> Option<&Gate> {
+        self.gate.as_ref()
+    }
+
+    /// 本轮失败：尚未被下一轮开跑清除前有效。
+    pub(crate) fn fault(&self) -> Option<&Fault> {
+        self.fault.as_ref()
+    }
+
+    /// 开跑配置：服务端裁决下发的键值（model/mode/mode_reason/gccp_confirmed）。
+    pub(crate) fn cfg(&self, key: &str) -> Option<&Value> {
+        self.cfg.get(key)
     }
 
     /// 某域已折叠的事件数（状态栏与诊断直接读）。
@@ -201,6 +260,7 @@ fn next_phase(cur: Phase, body: &Body) -> Phase {
 mod tests {
     use super::{Phase, Projection};
     use crate::engine::event::model::{Body, Cognition, Control, Domain, Event, Outcome};
+    use serde_json::json;
 
     fn ev(seq: u64, body: Body) -> Event {
         Event { seq, ts: 0, body }
@@ -267,6 +327,56 @@ mod tests {
         assert_eq!(p.terminal(), Some("{\"status\":\"completed\"}"));
         p.apply(&start(3));
         assert_eq!(p.terminal(), None);
+    }
+
+    /// 门禁、失败与开跑配置各就各位，并在下一轮开跑时一起清空。
+    #[test]
+    fn gate_fault_cfg_follow_run_boundary() {
+        let mut p = Projection::new();
+        p.apply(&start(1));
+        p.apply(&ev(
+            2,
+            Body::Control(Control::Cfg {
+                key: "mode".into(),
+                value: json!("task"),
+            }),
+        ));
+        p.apply(&ev(
+            3,
+            Body::Control(Control::Gate {
+                name: "needs_criteria".into(),
+                payload: json!({"goal": "g"}),
+            }),
+        ));
+        assert_eq!(p.cfg("mode").and_then(|v| v.as_str()), Some("task"));
+        let gate = p.gate().expect("门禁");
+        assert_eq!(
+            (gate.name.as_str(), &gate.payload),
+            ("needs_criteria", &json!({"goal": "g"}))
+        );
+
+        p.apply(&ev(
+            4,
+            Body::Outcome(Outcome::Err {
+                reason: "upstream".into(),
+                text: "上游不可达".into(),
+                next: "retry".into(),
+            }),
+        ));
+        let fault = p.fault().expect("失败");
+        assert_eq!(
+            (
+                fault.reason.as_str(),
+                fault.text.as_str(),
+                fault.next.as_str()
+            ),
+            ("upstream", "上游不可达", "retry")
+        );
+
+        p.apply(&start(5));
+        assert!(p.gate().is_none(), "新一轮不留旧门禁");
+        assert!(p.fault().is_none(), "新一轮不留旧失败");
+        assert!(p.cfg("mode").is_none(), "新一轮不留旧配置");
     }
 
     /// 收口是稳定终态：收口后的杂项事件不把它改回运行中。
