@@ -11,10 +11,9 @@
 // 行尾 CR 一律剥掉：CLI 只写 LF，但 Windows 侧若经文本模式中转会出现 CRLF，
 // 剥除对合法帧无损，对非法帧的判断留给 X1-04。
 //
-// 只做切分，不做语义：不判 JSON、不限长度、不校验 UTF-8、不计序号。逐行上限
-// 与超限丢弃在 X1-03（因此这里用逐块扫描而非 read_until：后者无上界，遇恶意
-// 长行会一路吃到 OOM）；UTF-8 半字符处理在 X1-02b（本模块按字节产出，整行
-// 到齐后多字节序列必然完整，下游不会看到半个字符）。
+// 只做切分，不做语义：不判 JSON、不限长度、不计序号。逐行上限与超限丢弃在
+// X1-03（因此这里用逐块扫描而非 read_until：后者无上界，遇恶意长行会一路吃到
+// OOM）；UTF-8 处置见下。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -32,6 +31,20 @@ impl<R: BufRead> Lines<R> {
             src,
             pend: Vec::new(),
         }
+    }
+
+    /// 产出下一行文本：非法或截断的 UTF-8 序列以 U+FFFD 顶替，不 panic、
+    /// 不吞行，后续行照常产出。是否为坏帧归 X1-04 判（它拿到的是同一行的
+    /// 文本，不再关心编码细节）。
+    ///
+    /// 「半字符回推」发生在字节层：换行是单字节 ASCII，字符边界永远不会与
+    /// 行边界冲突；跨读被切开的半个字符由 `pend` 原样保留，整行到齐后再解码，
+    /// 因此无需再维护一份文本解码器的暂存状态。对端真的把字符写残时，唯一
+    /// 正确的处置就是顶替——把残字节推到下一行只会污染下一帧。
+    pub(crate) fn text(&mut self) -> io::Result<Option<String>> {
+        Ok(self
+            .next()?
+            .map(|raw| String::from_utf8_lossy(&raw).into_owned()))
     }
 
     /// 产出下一整行；上游结束且无残行时返回 `None`。
@@ -159,5 +172,34 @@ mod tests {
         let text = "中文：完成\n".as_bytes();
         let got = lines(text);
         assert_eq!(got, vec![text[..text.len() - 1].to_vec()]);
+    }
+
+    /// 读缓冲（3 字节）正好把「流」切开：文本层仍拿到完整字符。
+    #[test]
+    fn text_survives_multibyte_split() {
+        let mut src = Lines::new(BufReader::with_capacity(
+            3,
+            Cursor::new("流式：完成\n".as_bytes().to_vec()),
+        ));
+        assert_eq!(src.text().expect("可读").as_deref(), Some("流式：完成"));
+        assert_eq!(src.text().expect("可读"), None);
+    }
+
+    /// 行尾字符被对端写残（只有前导字节）：顶替为 U+FFFD，下一行不受牵连。
+    #[test]
+    fn text_replaces_truncated_tail() {
+        let raw = vec![b'a', 0xE4, 0xB8, b'\n', b'b', b'\n'];
+        let mut src = Lines::new(Cursor::new(raw));
+        assert_eq!(src.text().expect("可读").as_deref(), Some("a\u{FFFD}"));
+        assert_eq!(src.text().expect("可读").as_deref(), Some("b"));
+    }
+
+    /// 非法字节（非 UTF-8 前导）：整行顶替而不中断流。
+    #[test]
+    fn text_replaces_invalid_bytes() {
+        let raw = vec![0xFF, b'\n', b'x', b'\n'];
+        let mut src = Lines::new(Cursor::new(raw));
+        assert_eq!(src.text().expect("可读").as_deref(), Some("\u{FFFD}"));
+        assert_eq!(src.text().expect("可读").as_deref(), Some("x"));
     }
 }
