@@ -113,6 +113,11 @@ impl Watch {
         }
     }
 
+    /// 下一个期望序号（续收握手的水位基）。
+    pub(crate) fn next(&self) -> u64 {
+        self.tracker.next()
+    }
+
     /// 缺帧次数。
     pub(crate) fn gaps(&self) -> u64 {
         self.gaps

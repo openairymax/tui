@@ -12,6 +12,7 @@
 //   - approval：tool.pending / tool.approve（尽力而为语义）
 //   - stream：agent.run_stream 事件消费 + SSE 缓冲边界
 //   - hall：hall.* 读侧 RPC + hall.watch 长连接
+//   - event：事件/投影 API（D-15 子进程），读侧 RPC 的替代入口
 //   - types：wire → Rust 反序列化契约
 //
 // 传输层分工：agentrt-rs 协议客户端是流式执行轮的唯一通道（端点与 v1
@@ -23,6 +24,7 @@ use reqwest::Client as HttpClient;
 use std::time::{Duration, Instant};
 
 mod approval;
+pub(crate) mod event;
 mod hall;
 mod stream;
 mod types;
