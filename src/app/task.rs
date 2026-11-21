@@ -675,6 +675,14 @@ impl App {
                 log::info!("流式错误帧归入暂停态：{}", msg);
                 Ok(r)
             }
+            // 门禁（needs_intent/needs_criteria）同样是停等收口：确认信息
+            // 已在结果里，错误帧文案只入日志，不能覆盖成失败卡片。
+            (Some(msg), Ok(r))
+                if r.needs_intent.is_some() || r.needs_criteria.is_some() =>
+            {
+                log::info!("流式错误帧归入门禁态：{}", msg);
+                Ok(r)
+            }
             (Some(msg), Ok(_)) => Err(anyhow::anyhow!("{}", msg)),
             (_, other) => other,
         };

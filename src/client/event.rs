@@ -49,7 +49,7 @@ use crate::engine::event::map;
 use crate::engine::event::model::{Body, Control, Event};
 use crate::engine::event::pipe::{Feed, Spec, STOP_GRACE};
 use crate::engine::event::seq::Watch;
-use crate::engine::project::Projection;
+use crate::engine::project::{Gate, Projection};
 
 /// 折叠游标与丢弃计数：读线程写，渲染侧读。
 ///
@@ -223,6 +223,11 @@ impl EventClient {
     /// 当前投影快照：克隆后与后续帧无关，渲染侧可放心跨帧持有。
     pub(crate) fn snapshot(&self) -> Projection {
         lock(&self.inner.state).proj.clone()
+    }
+
+    /// 摘取本轮门禁：结算时消费一次，避免同一门禁跨轮重复呈递。
+    pub(crate) fn take_gate(&self) -> Option<Gate> {
+        lock(&self.inner.state).proj.take_gate()
     }
 
     /// 折叠游标与丢弃计数（状态栏与诊断直接读）。

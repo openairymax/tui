@@ -176,6 +176,11 @@ impl Projection {
         self.gate.as_ref()
     }
 
+    /// 摘取门禁：门禁只在本轮结算时消费一次，避免跨轮重复呈递。
+    pub(crate) fn take_gate(&mut self) -> Option<Gate> {
+        self.gate.take()
+    }
+
     /// 本轮失败：尚未被下一轮开跑清除前有效。
     pub(crate) fn fault(&self) -> Option<&Fault> {
         self.fault.as_ref()

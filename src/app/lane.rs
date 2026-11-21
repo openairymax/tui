@@ -169,7 +169,7 @@ impl App {
         let Some(mut t) = self.lane.take() else {
             return;
         };
-        let Some(ev) = self.ev.as_ref() else {
+        let Some(ev) = self.ev.clone() else {
             self.settle_lane(Err(anyhow!("事件管道已断开")));
             return;
         };
@@ -187,10 +187,21 @@ impl App {
             self.lane = Some(t);
             return;
         }
-        let res = match (snap.terminal(), snap.fault()) {
-            (Some(raw), _) => lane_result(raw, &t.final_text),
-            (None, Some(f)) => Err(anyhow!("{}", f.text)),
-            (None, None) if snap.phase() == Phase::Closed => {
+        // 门禁优先于终态与断流：服务端给出 needs_intent/needs_criteria 后会
+        // 关闭 run-stream 等待客户端确认，这是本轮的停等收口而非失败。
+        let gate = ev.take_gate().map(|g| (g.name, g.payload));
+        let res = match (gate, snap.terminal(), snap.fault()) {
+            (Some((name, payload)), _, _) => {
+                let mut v = json!({});
+                if !t.final_text.is_empty() {
+                    v["response"] = json!(t.final_text);
+                }
+                v[name.as_str()] = payload;
+                lane_result(&v.to_string(), &t.final_text)
+            }
+            (None, Some(raw), _) => lane_result(raw, &t.final_text),
+            (None, None, Some(f)) => Err(anyhow!("{}", f.text)),
+            (None, None, None) if snap.phase() == Phase::Closed => {
                 let mut v = json!({});
                 if !t.final_text.is_empty() {
                     v["response"] = json!(t.final_text);
