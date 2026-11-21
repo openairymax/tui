@@ -570,6 +570,7 @@ async fn resume_without_token_queries_server_turns() {
     let mut app = App::new("agents/main.agent.yaml");
     app.task_state = TaskState::Paused;
     app.resume_token = None;
+    attach_pipe(&mut app);
 
     app.submit_input("继续").expect("continue");
     assert!(app.is_busy(), "应发起 agent.turns 断点查询");
