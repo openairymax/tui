@@ -41,12 +41,25 @@ pub(crate) fn read(kind: &str, p: &Value) -> Option<Outcome> {
 }
 
 /// 终态：status 是唯一事实源；data 段整体随行，供语义层取会话/用量/判据。
+/// 身份（会话/任务/计划）在帧信封上，data 段只带统计量，投影时并入，
+/// 保证终态载荷自带定位信息（§23.1.5 终态三件套的一条事实源）。
 fn end(p: &Value) -> Option<Outcome> {
-    let data = p
-        .pointer("/data")
-        .map(|d| d.to_string())
-        .unwrap_or_default();
-    field(p, "status").map(|status| Outcome::End { status, data })
+    let mut data = p.pointer("/data").cloned().unwrap_or_default();
+    if let Value::Object(m) = &mut data {
+        for (dst, src) in [
+            ("session_id", "session_id"),
+            ("task_id", "run_id"),
+            ("plan_id", "plan_id"),
+        ] {
+            if let (false, Some(v)) = (m.contains_key(dst), p.get(src)) {
+                m.insert(dst.to_string(), v.clone());
+            }
+        }
+    }
+    field(p, "status").map(|status| Outcome::End {
+        status,
+        data: data.to_string(),
+    })
 }
 
 /// 失败三件套：说明是收下的前提（reason/next 缺失另有回退）。
@@ -115,6 +128,31 @@ mod tests {
         );
         assert_eq!(read("run_end", &json!({"data": {}})), None);
         assert_eq!(read("run_end", &json!({"data": {"status": ""}})), None);
+    }
+
+    /// 身份在帧信封上：投影时并入 data，终态载荷自带会话/任务/计划号。
+    #[test]
+    fn end_merges_envelope_identity() {
+        let Some(Outcome::End { data, .. }) = read(
+            "run_end",
+            &json!({
+                "run_id": "task-1",
+                "session_id": "sess-1",
+                "plan_id": "plan-1",
+                "data": {"status": "completed"}
+            }),
+        ) else {
+            panic!("终态帧应被收下");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&data).unwrap(),
+            json!({
+                "status": "completed",
+                "session_id": "sess-1",
+                "task_id": "task-1",
+                "plan_id": "plan-1"
+            })
+        );
     }
 
     /// 失败三件套按 D-10 原样取用：原因、人话、动作各就各位。

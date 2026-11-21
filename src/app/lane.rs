@@ -42,6 +42,8 @@ pub(super) struct LaneTurn {
     msgs: usize,
     tools: Vec<Status>,
     final_text: String,
+    /// 本轮会话号：服务端终态 data 段未带时据此补齐（结果结构必填）
+    sid: String,
 }
 
 impl App {
@@ -100,7 +102,7 @@ impl App {
             rx,
             kind,
             task: None,
-            session_id: sid,
+            session_id: sid.clone(),
             stream_rx: None,
             tool_rx: None,
         });
@@ -109,6 +111,7 @@ impl App {
             msgs,
             tools,
             final_text: String::new(),
+            sid,
         });
         self.lane_tx = Some(tx);
         self.clear_stream();
@@ -197,16 +200,16 @@ impl App {
                     v["response"] = json!(t.final_text);
                 }
                 v[name.as_str()] = payload;
-                lane_result(&v.to_string(), &t.final_text)
+                lane_result(&v.to_string(), &t.final_text, &t.sid)
             }
-            (None, Some(raw), _) => lane_result(raw, &t.final_text),
+            (None, Some(raw), _) => lane_result(raw, &t.final_text, &t.sid),
             (None, None, Some(f)) => Err(anyhow!("{}", f.text)),
             (None, None, None) if snap.phase() == Phase::Closed => {
                 let mut v = json!({});
                 if !t.final_text.is_empty() {
                     v["response"] = json!(t.final_text);
                 }
-                lane_result(&v.to_string(), &t.final_text)
+                lane_result(&v.to_string(), &t.final_text, &t.sid)
             }
             _ => {
                 self.lane = Some(t);
@@ -269,10 +272,18 @@ impl App {
     }
 }
 
-/// 终态载荷 → 结构化结果：缺 response 时用流式终局文本回填，缺状态按完成计。
-fn lane_result(raw: &str, final_text: &str) -> Result<RunResponse> {
+/// 终态载荷 → 结构化结果：会话号与 response 为结构必填，缺失时按本轮补齐
+/// （服务端 run_end 的 data 段只带统计量，身份在帧信封上）；状态缺省按完成计。
+fn lane_result(raw: &str, final_text: &str, sid: &str) -> Result<RunResponse> {
     let mut v: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!({}));
-    if v.get("response").is_none() && !final_text.is_empty() {
+    if v.get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .is_empty()
+    {
+        v["session_id"] = json!(sid);
+    }
+    if v.get("response").is_none() {
         v["response"] = json!(final_text);
     }
     serde_json::from_value(v).map_err(|e| anyhow!("终态载荷无法解析：{e}"))
@@ -285,5 +296,18 @@ fn first_err(text: &str) -> String {
         String::new()
     } else {
         format!(" · {line}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lane_result;
+
+    /// 终态 data 段只带统计量：会话号与正文由本轮补齐，结构解析不得失败。
+    #[test]
+    fn lane_result_fills_identity() {
+        let r = lane_result(r#"{"status":"completed"}"#, "", "sess-1").unwrap();
+        assert_eq!(r.session_id, "sess-1");
+        assert_eq!(r.response, "");
     }
 }
