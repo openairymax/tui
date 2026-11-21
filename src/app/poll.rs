@@ -532,7 +532,7 @@ impl App {
                 tool: r.tool.clone(),
                 agent_id: String::new(),
                 params: r.target.clone(),
-                created_at: Some(r.asked as i64),
+                created_at: Some(r.asked),
             });
             self.add_message(
                 MessageRole::System,
