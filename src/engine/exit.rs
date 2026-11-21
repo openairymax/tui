@@ -25,6 +25,7 @@ pub(crate) enum Code {
     #[cfg_attr(not(test), allow(dead_code))]
     Auth,
     /// 网络/网关不可达。
+    #[cfg_attr(not(test), allow(dead_code))]
     Net,
     /// 权限拒绝。
     #[cfg_attr(not(test), allow(dead_code))]

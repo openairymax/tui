@@ -182,6 +182,7 @@ impl MirrorSkillStore {
     }
 
     /// 纯内存镜像后端（离线/单测）：不触网、不落盘。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn volatile() -> Self {
         Self {
             mirror: Arc::new(Mutex::new(Vec::new())),
