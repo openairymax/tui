@@ -60,7 +60,11 @@ fn merge_hall_events(
     }
     if !fresh.is_empty() {
         // 先排序再记键：LRU 按时间序淘汰，留下的是最新 256 个键
-        fresh.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| event_order(a).cmp(&event_order(b))));
+        fresh.sort_by(|a, b| {
+            a.ts_utc
+                .cmp(&b.ts_utc)
+                .then_with(|| event_order(a).cmp(&event_order(b)))
+        });
         for ev in &fresh {
             if let Some(key) = event_key(ev) {
                 seen.push_back(key.to_string());
@@ -70,7 +74,11 @@ fn merge_hall_events(
             seen.pop_front();
         }
         local.extend(fresh);
-        local.sort_by(|a, b| a.ts_utc.cmp(&b.ts_utc).then_with(|| event_order(a).cmp(&event_order(b))));
+        local.sort_by(|a, b| {
+            a.ts_utc
+                .cmp(&b.ts_utc)
+                .then_with(|| event_order(a).cmp(&event_order(b)))
+        });
         local.dedup_by(|a, b| !a.file_id.is_empty() && a.file_id == b.file_id);
     }
     if local.len() > HALL_EVENTS_MAX {
@@ -138,8 +146,7 @@ impl App {
                     );
                     return;
                 }
-                let mut text =
-                    format!("决策链「{}」（{} 条事件，gseq 因果序）", tid, events.len());
+                let mut text = format!("决策链「{}」（{} 条事件，gseq 因果序）", tid, events.len());
                 for e in events.iter().take(64) {
                     text.push_str(&format!("\n  {}", crate::panels::events::event_line(e, 96)));
                 }
@@ -160,38 +167,17 @@ impl App {
         }
     }
 
-    /// 消费运维命令的异步结果并渲染进对话区。
+    /// 消费运维命令的查询应答并渲染进对话区。
+    ///
+    /// 两类在途：/daemons（每域一条 `ops.daemon.{i}`，收齐后一次性成表）
+    /// 与通用单方法（`ops.call`）。应答按 id 摘取；管道已退出则如实报错，
+    /// 不让命令卡在「检查中」。
     pub fn poll_ops(&mut self) {
-        let Some(mut rx) = self.ops_pending.take() else {
-            return;
-        };
-        let recv = rx.try_recv();
-        if recv.is_ok() {
-            self.mark_landed(Lane::Poll);
-        }
-        match recv {
-            Ok(outcome) => match outcome {
-                OpsOutcome::Daemons(results) => {
-                    let online = results.iter().filter(|(_, r)| r.is_ok()).count();
-                    let mut text =
-                        format!("daemon 在线状态（{} / {} 在线）", online, results.len());
-                    for (ns, r) in results {
-                        // /daemons 与 5s 保活探测同源（都是真实 RPC），结果一并
-                        // 回填健康表；只在状态迁移时记错误，避免重复刷屏。
-                        let ok = r.is_ok();
-                        let err = r.as_ref().err().map(|e| e.to_string());
-                        self.note_dep(&ns, ok, self.clock_ms, err.as_deref());
-                        let (icon, st) = if ok {
-                            ("✓", "在线")
-                        } else {
-                            ("✗", "离线")
-                        };
-                        text.push_str(&format!("\n  {} {} {}", icon, st, ns));
-                    }
-                    self.sync_banner(self.clock_ms);
-                    self.add_message(MessageRole::System, text);
-                }
-                OpsOutcome::Call(Ok(v)) => {
+        match self.ops_q.take() {
+            None => {}
+            Some(OpsStage::Call) => match self.take_query("ops.call") {
+                Some(Ok(v)) => {
+                    self.mark_landed(Lane::Poll);
                     // C-19：/models 与 /rpc llm.slots_get 同一份带 slots 的结果，
                     // 顺手刷新徽标判据，避免用户必须重启 TUI 才看到新槽位。
                     self.absorb_slots(&v);
@@ -201,18 +187,74 @@ impl App {
                         format!("{} 结果：\n{}", self.ops_label, pretty),
                     );
                 }
-                OpsOutcome::Call(Err(e)) => {
+                Some(Err(e)) => {
+                    self.mark_landed(Lane::Poll);
                     self.add_message(
                         MessageRole::System,
                         format!("{} 调用失败：{}", self.ops_label, e),
                     );
                 }
+                None if !self.pipe_alive() => {
+                    self.add_message(
+                        MessageRole::System,
+                        format!("{} 调用失败：事件管道不可用", self.ops_label),
+                    );
+                }
+                None => self.ops_q = Some(OpsStage::Call),
             },
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                self.ops_pending = Some(rx);
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+            Some(st @ OpsStage::Daemons { .. }) => self.poll_ops_daemons(st),
         }
+    }
+
+    /// /daemons 聚合应答收集：全部到齐后一次性渲染，缺应答保留在途。
+    fn poll_ops_daemons(&mut self, st: OpsStage) {
+        let OpsStage::Daemons {
+            mut pending,
+            mut results,
+        } = st
+        else {
+            return;
+        };
+        let mut i = 0;
+        while i < pending.len() {
+            if let Some(r) = self.take_query(&pending[i].1) {
+                let (ns, _) = pending.remove(i);
+                results.push((ns, r));
+            } else {
+                i += 1;
+            }
+        }
+        if pending.is_empty() {
+            self.mark_landed(Lane::Poll);
+            self.land_ops_daemons(results);
+            return;
+        }
+        if !self.pipe_alive() {
+            self.add_message(MessageRole::System, "daemon 检查失败：事件管道不可用");
+            return;
+        }
+        self.ops_q = Some(OpsStage::Daemons { pending, results });
+    }
+
+    /// /daemons 结果落地：在线统计 + 健康表回填 + 对话区成表。
+    fn land_ops_daemons(&mut self, results: Vec<(String, Result<serde_json::Value, String>)>) {
+        let online = results.iter().filter(|(_, r)| r.is_ok()).count();
+        let mut text = format!("daemon 在线状态（{} / {} 在线）", online, results.len());
+        for (ns, r) in results {
+            // /daemons 与 5s 保活探测同源（都是真实查询），结果一并回填
+            // 健康表；只在状态迁移时记错误，避免重复刷屏。
+            let ok = r.is_ok();
+            let err = r.as_ref().err().cloned();
+            self.note_dep(&ns, ok, self.clock_ms, err.as_deref());
+            let (icon, st) = if ok {
+                ("✓", "在线")
+            } else {
+                ("✗", "离线")
+            };
+            text.push_str(&format!("\n  {} {} {}", icon, st, ns));
+        }
+        self.sync_banner(self.clock_ms);
+        self.add_message(MessageRole::System, text);
     }
 
     /// hall 面板（看板/事件流）数据拉取：面板激活时按节拍下发查询帧。
@@ -260,9 +302,8 @@ impl App {
     /// 查询应答落地：看板整体替换，事件流增量合并（按 file_id 去重入列）。
     fn land_hall(&mut self, board: bool, reply: Result<serde_json::Value, String>) {
         if board {
-            let parsed = reply.and_then(|v| {
-                serde_json::from_value::<HallBoard>(v).map_err(|e| e.to_string())
-            });
+            let parsed = reply
+                .and_then(|v| serde_json::from_value::<HallBoard>(v).map_err(|e| e.to_string()));
             match parsed {
                 Ok(b) => {
                     self.hall_board = Some(b);
@@ -512,10 +553,7 @@ impl App {
                     grid::clip(&r.target, 160)
                 ),
             );
-            self.add_log(
-                "INFO",
-                format!("权限审批待决议: {} ({})", r.tool, r.id),
-            );
+            self.add_log("INFO", format!("权限审批待决议: {} ({})", r.tool, r.id));
         }
     }
 
