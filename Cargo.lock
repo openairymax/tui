@@ -41,7 +41,6 @@ dependencies = [
  "log",
  "pulldown-cmark",
  "ratatui",
- "reqwest",
  "rustc-hash",
  "serde",
  "serde_json",
