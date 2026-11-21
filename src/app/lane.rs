@@ -55,6 +55,7 @@ impl App {
                 self.lane_err = None;
                 // 管道就绪即水合记忆/技能镜像（一条 mem.recent 喂两个镜像）
                 self.refresh_mem_mirrors();
+                self.refresh_toolcat();
                 true
             }
             Err(e) => {

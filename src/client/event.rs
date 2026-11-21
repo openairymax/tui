@@ -25,13 +25,13 @@
 // 看到 EOF。`Clone` 只复制句柄（Arc），最后一个句柄丢弃才停子进程；后台任务
 // 可以安全持有一份而不延长会话寿命。
 //
-// 运行轮与审批已全部收敛到本模块（`app::lane` 唯一入口），网关只保留观察面
-// 读侧 RPC：rpc_call 4（tool.* 1、agent.turns 1、telemetry 1、llm.get_stats 1）。
-// mem.*、hall.*、运维命令、健康探测与槽位快照读侧已迁到 query 帧，剩余
-// 面板级读按域续迁。
+// 运行轮与审批已全部收敛到本模块（`app::lane` 唯一入口）。观察面读也已
+// 全部迁到 query 帧——tool.list、agent.turns、telemetry、llm.get_stats、
+// mem.*、hall.*、运维命令、健康探测与槽位快照均经事件管道取值，网关读侧
+// RPC 清零，`GatewayClient` 只剩空壳待退役（X1-29a）。
 //
-// 门禁口径按客户端入口计（当前共 4 处），基线见
-// scripts/gate/rpc-sites.baseline，只许下调；上限为 0（X1-29a）。
+// 门禁口径按客户端入口计（当前共 0 处），基线见
+// scripts/gate/rpc-sites.baseline，上限为 0（X1-29a）。
 
 #![cfg_attr(not(test), allow(dead_code))]
 

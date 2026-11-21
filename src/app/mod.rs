@@ -165,8 +165,8 @@ pub struct App {
     /// 演化指标快照（0.1.20 W8）：think_d 上报至 monit observe 表，经
     /// gateway 只读转发；None = 尚未取得首轮结果。
     pub(crate) evo: Option<crate::engine::evolution::Snapshot>,
-    /// 演化指标拉取在途结果（主循环节拍触发，poll_evo 消费）。
-    evo_rx: Option<tokio::sync::oneshot::Receiver<crate::engine::evolution::Snapshot>>,
+    /// 演化指标查询在途（主循环节拍触发，poll_evo 摘取；query 帧）。
+    evo_q: bool,
     /// 演化面板滚动偏移（正文首行下标，0 = 顶部）。
     pub evo_scroll: usize,
     /// 演化指标最近一次落地时刻（主循环注入的单调 ms）。
@@ -174,8 +174,8 @@ pub struct App {
     /// 自托管快照（0.1.21 D-1）：llm.get_stats 的端点/请求/错误面 +
     /// 本机显存；None = 尚未取得首轮结果。不可用时 live=false 且清空旧值。
     pub(crate) selfhost: Option<crate::engine::selfhost::Snapshot>,
-    /// 自托管拉取在途结果（open_selfhost / poll_selfhost 续拉）。
-    selfhost_rx: Option<tokio::sync::oneshot::Receiver<crate::engine::selfhost::Snapshot>>,
+    /// 自托管查询在途（open_selfhost / poll_selfhost 续拉；query 帧）。
+    sh_q: bool,
     /// 自托管面板滚动偏移（正文首行下标，0 = 顶部）。
     pub selfhost_scroll: usize,
     /// 自托管快照最近一次落地时刻（主循环注入的单调 ms）。
@@ -197,6 +197,8 @@ pub struct App {
     mem_q: Option<command::MemStage>,
     /// 记忆/技能镜像水合在途（一条 mem.recent 同时喂两个镜像）。
     mem_hydrate_q: bool,
+    /// 工具目录查询在途（query 帧 id=toolcat.list，管道就绪后一次）。
+    toolcat_q: bool,
     /// 主循环注入的单调时刻（毫秒）——应用层不自行读时钟。
     pub clock_ms: u64,
     /// 本轮对话发起时 LLM 后端是否不可达（§6.12 #5）：落定时据此标注
@@ -416,8 +418,7 @@ impl App {
             skills_backend.backend_name(),
             skills_backend.len()
         );
-        // D-11：工具可见性以 daemon 目录为准，后台拉一次（失败不阻塞会话）。
-        toolcat::start(gateway.clone());
+        // D-11：工具可见性以 daemon 目录为准，管道挂接后经查询帧拉一次。
         Self {
             agent_file: agent_file.to_string(),
             messages: VecDeque::with_capacity(MAX_CHAT_MESSAGES),
@@ -458,11 +459,11 @@ impl App {
             health_q: None,
             health_scroll: 0,
             evo: None,
-            evo_rx: None,
+            evo_q: false,
             evo_scroll: 0,
             evo_at_ms: 0,
             selfhost: None,
-            selfhost_rx: None,
+            sh_q: false,
             selfhost_scroll: 0,
             selfhost_at_ms: 0,
             last_tool_trace: Vec::new(),
@@ -473,6 +474,7 @@ impl App {
             backend_at_ms: 0,
             mem_q: None,
             mem_hydrate_q: false,
+            toolcat_q: false,
             clock_ms: 0,
             fallback: false,
             leader: Leader::new(),

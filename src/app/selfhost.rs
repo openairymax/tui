@@ -7,15 +7,10 @@
 // 显存（nvidia-smi）附在同一快照上。失败原因原样保留——面板据此显示降级，
 // 不回显上一轮端点数值。时刻由主循环注入，本层不自行读时钟。
 
-use std::time::Duration;
-
-use crate::engine::selfhost::{snapshot, unavailable};
 use crate::engine::sched::Lane;
+use crate::engine::selfhost::{snapshot, unavailable};
 
 use super::*;
-
-/// 单次拉取超时：llm_d 统计只是内存快照，留 3s 已比常规往返宽裕。
-const SH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 自托管面板翻页步长（行）。
 const SH_PAGE: usize = 10;
@@ -24,50 +19,40 @@ const SH_PAGE: usize = 10;
 const _: () = assert!(SH_PAGE >= 5);
 
 impl App {
-    /// 发起一轮自托管快照拉取（已在途则跳过）。
+    /// 发起一轮自托管快照拉取（已在途则跳过）。应答时限由 CLI 侧 3s
+    /// 查询窗口保证，客户端不另设超时。
     pub fn start_selfhost(&mut self) {
-        if self.selfhost_rx.is_some() {
+        if self.sh_q {
             return;
         }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let r = tokio::time::timeout(
-                SH_TIMEOUT,
-                gw.rpc_call("llm.get_stats", serde_json::json!({})),
-            )
-            .await;
-            let mut snap = match r {
-                Ok(Ok(v)) => snapshot(&v),
-                Ok(Err(e)) => unavailable(format!("llm.get_stats 失败：{e}")),
-                Err(_) => unavailable(format!("请求超时（{}s）", SH_TIMEOUT.as_secs())),
-            };
-            if snap.live {
-                snap.vram = vram_usage();
-            }
-            let _ = tx.send(snap);
-        });
-        self.selfhost_rx = Some(rx);
+        match self.send_query("sh.stats", "llm.get_stats", &serde_json::json!({})) {
+            Ok(()) => self.sh_q = true,
+            Err(e) => self.selfhost = Some(unavailable(format!("llm.get_stats 失败：{e}"))),
+        }
     }
 
-    /// 消费快照；面板仍打开时续拉下一轮（在飞/排队随时间变化）。
+    /// 摘取快照；面板仍打开时续拉下一轮（在飞/排队随时间变化）。
     pub fn poll_selfhost(&mut self, now_ms: u64) {
-        let Some(mut rx) = self.selfhost_rx.take() else {
+        if !self.sh_q {
             return;
+        }
+        let mut snap = match self.take_query("sh.stats") {
+            Some(Ok(v)) => snapshot(&v),
+            Some(Err(e)) => unavailable(format!("llm.get_stats 失败：{e}")),
+            None if !self.pipe_alive() => {
+                unavailable("llm.get_stats 未应答（事件管道不可用）".to_string())
+            }
+            None => return,
         };
-        match rx.try_recv() {
-            Ok(snap) => {
-                self.selfhost = Some(snap);
-                self.selfhost_at_ms = now_ms;
-                self.mark_landed(Lane::Poll);
-                if self.active_panel == ActivePanel::SelfHost {
-                    self.start_selfhost();
-                }
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                self.selfhost_rx = Some(rx);
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        self.sh_q = false;
+        if snap.live {
+            snap.vram = vram_usage();
+        }
+        self.selfhost = Some(snap);
+        self.selfhost_at_ms = now_ms;
+        self.mark_landed(Lane::Poll);
+        if self.active_panel == ActivePanel::SelfHost {
+            self.start_selfhost();
         }
     }
 
@@ -116,14 +101,4 @@ fn vram_usage() -> Option<(u64, u64)> {
         return None;
     }
     Some((used, total))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn timeout_budget_is_bounded() {
-        assert!(SH_TIMEOUT.as_secs() <= 5);
-    }
 }
