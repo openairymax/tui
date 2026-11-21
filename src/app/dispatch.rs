@@ -78,9 +78,18 @@ impl App {
             .and_then(|m| m.get("content").and_then(|c| c.as_str()))
             .unwrap_or("")
             .to_string();
+        // goal 取用户原文（与 CLI 同一语义）：增强 prompt 仅作 messages 末条
+        // 进入 opts，避免把客户端自带的系统提示当成目标文本交给服务端裁决。
+        // 续跑轮不带历史，goal 保持为空，上下文全部来自令牌。
+        let goal = match (&kind, &resume) {
+            (PendingKind::StreamRound { input }, None) if !input.trim().is_empty() => {
+                input.clone()
+            }
+            _ => prompt,
+        };
         self.start_turn(
             kind,
-            &prompt,
+            &goal,
             TurnArgs {
                 messages,
                 resume,
