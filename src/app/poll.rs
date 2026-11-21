@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 
+use crate::app::command::OpsStage;
 use crate::budget::MAX_DEDUPE_KEYS;
 use crate::engine::grid;
 
@@ -230,7 +231,7 @@ impl App {
             return;
         }
         if !self.pipe_alive() {
-            self.add_message(MessageRole::System, "daemon 检查失败：事件管道不可用");
+            self.add_message(MessageRole::System, "daemon 检查失败：事件管道不可用".to_string());
             return;
         }
         self.ops_q = Some(OpsStage::Daemons { pending, results });
