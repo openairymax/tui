@@ -342,7 +342,7 @@ fn approval_write_failure_fails_closed() {
     let before = app.messages.len();
     app.approve_request("allow");
     assert_eq!(app.messages.len(), before + 1, "空队列再入只提示");
-    assert!(app.messages.last().unwrap().content.contains("没有待决议"));
+    assert!(app.messages.back().unwrap().content.contains("没有待决议"));
 }
 
 /// §6.12 #5：降级完成的回复带「· via fallback」角标且标记只消费一次；
