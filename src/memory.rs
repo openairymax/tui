@@ -28,8 +28,6 @@ use std::sync::{Arc, Mutex};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::client::GatewayClient;
-
 /// 镜像保留上限（渲染/召回窗口；网关侧容量由 mem_d 自行管理）。
 const MAX_RECORDS: usize = 2000;
 
@@ -75,8 +73,10 @@ pub trait ConversationMemory: Send + Sync {
     fn recent(&self, n: usize) -> Vec<MemoryRecord>;
     /// 记忆条数
     fn len(&self) -> usize;
-    /// 从权威后端重新水合镜像（网关可用时）。纯内存后端 no-op。
-    fn refresh(&self) {}
+    /// 水合接口：把 `mem.recent` 的查询结果落地到镜像（App 经事件管道
+    /// 下发 query 帧后调用）。解析失败或离线时保持现状并置就绪——历史
+    /// 还原闸门不因后端不可用而永挂。
+    fn ingest_recent(&self, _result: &serde_json::Value) {}
     /// 水合就绪闸门（D-14）：镜像已从权威后端加载完成。纯内存后端恒就绪。
     fn is_ready(&self) -> bool {
         true
@@ -92,13 +92,11 @@ pub trait ConversationMemory: Send + Sync {
 
 /// 网关记忆后端（TUI 唯一后端）。
 ///
-/// 权威存储为网关记忆服务 mem_d（`mem.*` RPC，与 CLI 同一后端）；
-/// 本结构持有的 mirror 是渲染/召回的同步读缓存：启动与面板打开时水合。
-/// 无 tokio 运行时（单测）时降级为纯内存 volatile。写入不在本结构职责内
+/// 权威存储为网关记忆服务 mem_d（`mem.*`，与 CLI 同一后端）；本结构持有的
+/// mirror 是渲染/召回的同步读缓存：启动与面板打开时由 App 下发查询水合。
+/// 单测/离线可用 `volatile`（纯内存、不落盘）。写入不在本结构职责内
 /// （0.1.21 X1-28a：TUI 只读）。
 pub struct GatewayMemory {
-    /// 网关客户端（refresh 用水合；None = volatile 降级）
-    client: Option<GatewayClient>,
     /// 同步读缓存（旧→新有序，recent 时反向取）
     mirror: Arc<Mutex<Vec<MemoryRecord>>>,
     /// 水合完成标志（会话历史还原的就绪闸门，D-14）
@@ -110,23 +108,12 @@ pub struct GatewayMemory {
 impl GatewayMemory {
     /// 构造网关记忆后端。
     ///
-    /// 需处于 tokio 运行时内（`run_tui` 的 App::new）；同步上下文（单测）
-    /// 无运行时，自动降级为纯内存镜像（volatile，不触网、不落盘）。
-    pub fn new(client: GatewayClient) -> Self {
-        let handle = match tokio::runtime::Handle::try_current() {
-            Ok(h) => h,
-            Err(_) => {
-                log::warn!("memory: 无 tokio 运行时，记忆降级为纯内存镜像（volatile）");
-                return Self::volatile();
-            }
-        };
-        let mirror: Arc<Mutex<Vec<MemoryRecord>>> = Arc::new(Mutex::new(Vec::new()));
-        let ready = Arc::new(AtomicBool::new(false));
-        handle.spawn(hydrate(client.clone(), mirror.clone(), ready.clone()));
+    /// 传输不在此处：水合查询由 App 经事件管道（query 帧）下发，结果经
+    /// `ingest_recent` 落地。单测等同步上下文使用 volatile。
+    pub fn new() -> Self {
         Self {
-            client: Some(client),
-            mirror,
-            ready,
+            mirror: Arc::new(Mutex::new(Vec::new())),
+            ready: Arc::new(AtomicBool::new(false)),
             backend: "gateway",
         }
     }
@@ -134,7 +121,6 @@ impl GatewayMemory {
     /// 纯内存镜像后端（离线/单测）：不触网、不落盘。
     pub fn volatile() -> Self {
         Self {
-            client: None,
             mirror: Arc::new(Mutex::new(Vec::new())),
             ready: Arc::new(AtomicBool::new(true)),
             backend: "volatile",
@@ -228,17 +214,11 @@ impl ConversationMemory for GatewayMemory {
         self.mirror.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    fn refresh(&self) {
-        let (Some(client), Ok(handle)) =
-            (self.client.as_ref(), tokio::runtime::Handle::try_current())
-        else {
+    fn ingest_recent(&self, result: &serde_json::Value) {
+        if self.backend == "volatile" {
             return;
-        };
-        handle.spawn(hydrate(
-            client.clone(),
-            self.mirror.clone(),
-            self.ready.clone(),
-        ));
+        }
+        apply_recent(&self.mirror, &self.ready, result);
     }
 
     fn is_ready(&self) -> bool {
@@ -268,25 +248,14 @@ impl ConversationMemory for GatewayMemory {
     }
 }
 
-/// 从网关记忆服务水合镜像：`mem.recent` 取最近 HYDRATE_LIMIT 条，按
-/// created_at 升序重建镜像（旧→新）。失败时保持镜像现状（离线可用）；
-/// 无论成败都置就绪标志——历史还原闸门不能因网关不可用而永挂。
-async fn hydrate(
-    client: GatewayClient,
-    mirror: Arc<Mutex<Vec<MemoryRecord>>>,
-    ready: Arc<AtomicBool>,
-) {
-    let params = serde_json::json!({ "limit": HYDRATE_LIMIT });
-    let result = match client.rpc_call("mem.recent", params).await {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("memory: mem.recent 水合失败（离线，镜像保持现状）: {}", e);
-            ready.store(true, Ordering::Relaxed);
-            return;
-        }
-    };
+/// 把 `mem.recent` 的查询结果落地到镜像（按 created_at 升序重建，旧→新）。
+///
+/// 同步、无 IO：查询由 App 经事件管道下发，本函数只解析。失败（无
+/// records / 离线空结果）时保持镜像现状，并一律置就绪——历史还原闸门
+/// 不能因网关不可用而永挂。
+fn apply_recent(mirror: &Mutex<Vec<MemoryRecord>>, ready: &AtomicBool, result: &serde_json::Value) {
+    ready.store(true, Ordering::Relaxed);
     let Some(items) = result.get("records").and_then(|v| v.as_array()) else {
-        ready.store(true, Ordering::Relaxed);
         return;
     };
     let mut recs: Vec<(i64, MemoryRecord)> = Vec::with_capacity(items.len());
@@ -330,7 +299,6 @@ async fn hydrate(
     let n = list.len();
     let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
     *guard = list;
-    ready.store(true, Ordering::Relaxed);
     log::info!("memory: 自网关水合 {} 条记忆（mem.recent）", n);
 }
 
@@ -416,10 +384,10 @@ pub(crate) fn epoch_to_iso(secs: i64) -> String {
         .unwrap_or_else(|| Local::now().format("%Y-%m-%dT%H:%M:%S").to_string())
 }
 
-/// 构造记忆模块：TUI 唯一后端为网关记忆服务（`mem.*` RPC，与 CLI 同一
-/// 存储）；无 tokio 运行时时降级为纯内存镜像（不落盘）。
-pub fn build_memory(gateway: &GatewayClient) -> Box<dyn ConversationMemory> {
-    Box::new(GatewayMemory::new(gateway.clone()))
+/// 构造记忆模块：TUI 唯一后端为网关记忆服务（`mem.*`，与 CLI 同一存储）。
+/// 读取由 App 经事件管道水合（query 帧），本构造函数不做 IO。
+pub fn build_memory() -> Box<dyn ConversationMemory> {
+    Box::new(GatewayMemory::new())
 }
 
 #[cfg(test)]

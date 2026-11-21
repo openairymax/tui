@@ -184,15 +184,15 @@ impl App {
         } else {
             self.active_panel = panel;
             if panel == ActivePanel::Memory {
-                // 打开面板时从网关 mem.* 重新水合镜像（异步回投，不阻塞渲染）；
+                // 打开面板时经查询帧重新水合镜像（应答回投，不阻塞渲染）；
                 // 记忆唯一权威后端是 mem_d，TUI 仅持同步读缓存。
-                self.memory.refresh();
+                self.refresh_mem_mirrors();
                 self.memory_view.reset();
             }
             if panel == ActivePanel::Plugins {
                 // 技能库与记忆同源（mem.* + kind=skill 分区）：打开面板时
                 // 重新水合，反映 CLI 侧或其它会话新沉淀的技能。
-                self.skills.refresh();
+                self.refresh_mem_mirrors();
                 // 整表滚动随面板重开复位（缺口④：视图态不跨面板驻留）
                 self.plugins_scroll = 0;
             }

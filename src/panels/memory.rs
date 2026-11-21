@@ -97,7 +97,7 @@ fn last_page_start(total: usize) -> usize {
 /// 渲染对话记忆库视图：数据取 `App::memory_snapshot()` 的只读快照（TUI 唯一
 /// 后端 = 网关记忆服务 mem_d，经 gateway `mem.*` 水合的同步读缓存，与 CLI
 /// 同一存储）。按来源（标签）分组展示记忆链。内容整段缓存，条数与页码未变
-/// 时零重建；打开面板时由 `App::toggle_panel` 触发一次 `refresh()` 重新水合。
+/// 时零重建；打开面板时由 `App::toggle_panel` 下发一次 `mem.recent` 查询水合。
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
