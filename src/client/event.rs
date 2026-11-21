@@ -5,9 +5,8 @@
 //
 // 事件客户端（0.1.21 X1-25a，§23.1.5）：TUI 侧唯一的事件/投影数据入口。
 //
-// 与 `GatewayClient` 的读调用点不同，本模块不向 daemon 发任何 RPC：它起一个
-// `airy_cli --events ndjson` 子进程（D-15 出口），把 stdout 的 NDJSON 帧按
-// 既有链路折进投影，渲染侧只读快照。
+// 本模块不向 daemon 发任何 RPC：它起一个 `airy_cli --events ndjson` 子进程
+// （D-15 出口），把 stdout 的 NDJSON 帧按既有链路折进投影，渲染侧只读快照。
 //
 //   管道 → Frames（语法过滤，X1-04）
 //        → Envelope（契约校验，X1-05）
@@ -28,7 +27,7 @@
 // 运行轮与审批已全部收敛到本模块（`app::lane` 唯一入口）。观察面读也已
 // 全部迁到 query 帧——tool.list、agent.turns、telemetry、llm.get_stats、
 // mem.*、hall.*、运维命令、健康探测与槽位快照均经事件管道取值，网关读侧
-// RPC 清零，`GatewayClient` 只剩空壳待退役（X1-29a）。
+// RPC 清零，网关直连客户端已删除（X1-29a）。
 //
 // 门禁口径按客户端入口计（当前共 0 处），基线见
 // scripts/gate/rpc-sites.baseline，上限为 0（X1-29a）。

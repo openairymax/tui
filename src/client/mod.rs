@@ -3,95 +3,17 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// AgentRT gateway 通信客户端（TUI 侧，退役中）。
+// AgentRT 通信契约（TUI 侧）。
 //
-// 运行轮已全部改由事件管道（event 子模块 + airy_cli）承载，观察面读也统一
-// 走 query 帧；本模块只剩健康探针与通用 rpc_call（传输骨架）及 types 契约。
-// 分层如下：
-//   - 本模块：连接构造、健康探针、通用 rpc_call（传输骨架）
+// 运行轮已全部改由事件管道承载；观察面读也统一走 query 帧（D-15）。本模块
+// 不再持有任何 HTTP/RPC 传输，只保留 wire → Rust 的反序列化契约：
 //   - event：事件/投影 API（D-15 子进程），运行轮与审批的唯一入口
 //   - types：wire → Rust 反序列化契约
 //
-// 传输层分工：事件帧与观察面查询均由 airy_cli 产出；reqwest 仅承担健康
-// 探针等尚未迁出的读侧 JSON-RPC。
-
-use anyhow::{Context, Result};
-use log::debug;
-use reqwest::Client as HttpClient;
-use std::time::Duration;
+// 原 `GatewayClient`（reqwest 直连 health_check / rpc_call）已随读侧清零删除，
+// 避免再出现绕过事件管道的旁路。
 
 pub(crate) mod event;
 mod types;
 
 pub use types::*;
-
-/// Gateway 读侧客户端（观察面）。
-///
-/// reqwest::Client 内部为 Arc 连接池，Clone 成本低；后台探测任务使用
-/// 独立副本，与主循环渲染解耦。
-#[derive(Clone)]
-pub struct GatewayClient {
-    base_url: String,
-    http: HttpClient,
-}
-
-impl GatewayClient {
-    pub fn new(base_url: &str) -> Result<Self> {
-        let base_url = base_url.trim_end_matches('/').to_string();
-        let ua = format!("agentrt-tui/{}", env!("AIRY_RT_VERSION"));
-        let http = HttpClient::builder()
-            .timeout(Duration::from_secs(60))
-            .user_agent(ua)
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        Ok(Self { base_url, http })
-    }
-
-    pub async fn health_check(&self) -> Result<HealthResponse> {
-        // gateway 实际端点：GET /health → {"status":"healthy","service":"gateway"}
-        let url = format!("{}/health", self.base_url);
-        debug!("GET {}", url);
-        // 健康检查必须快速失败（2s 超时），否则离线时阻塞 TUI 启动
-        let resp = tokio::time::timeout(Duration::from_secs(2), self.http.get(&url).send())
-            .await
-            .context("Gateway health check timed out (2s)")??;
-        let status = resp.status();
-        let body = resp.text().await?;
-        debug!("← health {} ({} bytes)", status, body.len());
-        serde_json::from_str(&body).context("Failed to parse health response")
-    }
-
-    /// 通用 JSON-RPC 调用（POST /），返回 result 节点（无 result 时返回 Null）。
-    ///
-    /// 公开给运维命令（/daemons /agents /tools /models /mem /rpc）复用；
-    /// 方法须在 gateway 转发白名单内（agent.* / tool.* / llm.* / mem.* / hall.* 等）。
-    pub async fn rpc_call(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let url = format!("{}/", self.base_url);
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": method,
-            "params": params,
-        });
-        let resp = self.http.post(&url).json(&request).send().await?;
-        let body = resp.text().await?;
-        let json: serde_json::Value =
-            serde_json::from_str(&body).context("Failed to parse JSON-RPC response")?;
-        if let Some(err) = json.get("error") {
-            let msg = err
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            anyhow::bail!("{}: {}", method, msg);
-        }
-        Ok(json
-            .get("result")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null))
-    }
-}

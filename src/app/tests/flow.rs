@@ -3,7 +3,7 @@
 
 use super::*;
 use super::super::*;
-use crate::memory::GatewayMemory;
+use crate::memory::MirrorMemory;
 use std::time::Duration;
 
 /// 接入真实事件管道的会话角色子进程（复用 client::event 的测试夹具）。
@@ -33,8 +33,7 @@ fn attach_pipe(app: &mut App) {
 #[tokio::test]
 async fn session_tabs_new_and_switch_roundtrip() {
     let _h = crate::test_env::Home::new("session-tabs");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
 
     // 初始：仅主会话（槽 0）
     assert_eq!(app.session_view().tab_count(), 1);
@@ -92,8 +91,7 @@ async fn session_tabs_new_and_switch_roundtrip() {
 #[test]
 fn begin_busy_marks_request_start() {
     let _h = crate::test_env::Home::new("b2-busy");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
 
     app.loading = false;
     app.begin_busy();
@@ -110,8 +108,7 @@ fn begin_busy_marks_request_start() {
 #[test]
 fn notice_is_drained_exactly_once() {
     let _h = crate::test_env::Home::new("u14-notice");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.notice = Some(crate::app::Notice {
         title: "Airymax".to_string(),
         body: "回合完成".to_string(),
@@ -126,8 +123,7 @@ fn notice_is_drained_exactly_once() {
 #[tokio::test]
 async fn stream_delta_lands_on_arrival_and_settles() {
     let _h = crate::test_env::Home::new("b2-reveal");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.loading = true;
 
     let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -181,8 +177,7 @@ async fn stream_delta_lands_on_arrival_and_settles() {
 #[test]
 fn ctrl_c_exit_guard_window() {
     let _h = crate::test_env::Home::new("exit-guard");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     let t0 = Instant::now();
 
     assert!(!app.confirm_exit(t0), "首次误触不得退出");
@@ -207,8 +202,7 @@ fn ctrl_c_exit_guard_window() {
 #[tokio::test]
 async fn ctrl_c_key_needs_two_presses() {
     let _h = crate::test_env::Home::new("exit-guard-key");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     let key = crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('c'),
         crossterm::event::KeyModifiers::CONTROL,
@@ -231,8 +225,7 @@ async fn ctrl_c_key_needs_two_presses() {
 #[test]
 fn boot_probe_applies_late_result() {
     let _h = crate::test_env::Home::new("boot-probe");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.take_landed();
 
     app.apply_probe(Ok(crate::client::HealthResponse {
@@ -268,8 +261,7 @@ fn boot_probe_applies_late_result() {
 #[test]
 fn last_code_picks_latest_complete_block() {
     let _h = crate::test_env::Home::new("leader-code");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.add_message(
         MessageRole::Agent,
         "先看这段：\n```rust\nlet a = 1;\n```\n".into(),
@@ -292,8 +284,7 @@ fn last_code_picks_latest_complete_block() {
 #[test]
 fn leader_hint_waits_delay_and_cancels() {
     let _h = crate::test_env::Home::new("leader-hint");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     let delay = Duration::from_millis(crate::budget::LEADER_HINT_DELAY_MS);
     let t0 = std::time::Instant::now();
     app.leader_press();
@@ -315,8 +306,7 @@ fn leader_hint_waits_delay_and_cancels() {
 #[test]
 fn approval_write_failure_fails_closed() {
     let _h = crate::test_env::Home::new("approval-write-fail");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     attach_pipe(&mut app);
     let ev = app.ev.clone().expect("事件管道已接入");
     ev.stop(Duration::from_millis(50)).expect("停止可完成");
@@ -350,9 +340,8 @@ fn approval_write_failure_fails_closed() {
 #[test]
 fn fallback_badge_is_transient_and_once() {
     let _h = crate::test_env::Home::new("fallback-badge");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
-    app.memory = Box::new(GatewayMemory::volatile());
+    let mut app = App::new("agents/main.agent.yaml");
+    app.memory = Box::new(MirrorMemory::volatile());
     app.fallback = true;
 
     let run = |body: &str| RunResponse {
@@ -396,8 +385,7 @@ fn fallback_badge_is_transient_and_once() {
 #[test]
 fn plugins_scroll_clamps() {
     let _h = crate::test_env::Home::new("plugins-scroll");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.plugins_pgup();
     assert_eq!(app.plugins_scroll, 0, "顶部 PgUp 不得回绕");
     app.plugins_pgdn();
@@ -411,9 +399,8 @@ fn plugins_scroll_clamps() {
 #[test]
 fn tool_result_body_lands_in_history() {
     let _h = crate::test_env::Home::new("hist-trace");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
-    app.memory = Box::new(GatewayMemory::volatile());
+    let mut app = App::new("agents/main.agent.yaml");
+    app.memory = Box::new(MirrorMemory::volatile());
 
     let trace = crate::client::ToolTrace {
         tool: "fs_read".to_string(),
@@ -458,8 +445,7 @@ fn tool_result_body_lands_in_history() {
 #[test]
 fn busy_secs_snapshot_publishes_on_interval() {
     let _h = crate::test_env::Home::new("busy-secs-throttle");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
 
     app.begin_busy();
     assert_eq!(app.busy_shown_secs, 0.0, "busy 启动即归零");
@@ -513,9 +499,8 @@ fn paused_run() -> RunResponse {
 fn paused_run_enters_three_choice_state() {
     use crate::gccp::{FlowPhase, TaskState};
     let _h = crate::test_env::Home::new("c14-paused");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
-    app.memory = Box::new(GatewayMemory::volatile());
+    let mut app = App::new("agents/main.agent.yaml");
+    app.memory = Box::new(MirrorMemory::volatile());
     app.task_mode = true;
     app.set_flow_phase(FlowPhase::Executing);
 
@@ -541,8 +526,7 @@ fn paused_run_enters_three_choice_state() {
 fn pause_state_follows_task_events() {
     use crate::gccp::{FlowPhase, TaskState};
     let _h = crate::test_env::Home::new("c15-pause-events");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.task_mode = true;
     app.set_flow_phase(FlowPhase::Executing);
 
@@ -563,9 +547,8 @@ fn pause_state_follows_task_events() {
 fn failed_run_enters_failed_state() {
     use crate::gccp::TaskState;
     let _h = crate::test_env::Home::new("c14-failed");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
-    app.memory = Box::new(GatewayMemory::volatile());
+    let mut app = App::new("agents/main.agent.yaml");
+    app.memory = Box::new(MirrorMemory::volatile());
     app.task_mode = true;
 
     app.apply_chat_result(
@@ -584,8 +567,7 @@ fn failed_run_enters_failed_state() {
 async fn resume_without_token_queries_server_turns() {
     use crate::gccp::TaskState;
     let _h = crate::test_env::Home::new("c14-no-token");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.task_state = TaskState::Paused;
     app.resume_token = None;
 
@@ -604,8 +586,7 @@ async fn resume_without_token_queries_server_turns() {
 async fn apply_turn_state_resumes_with_server_token() {
     use crate::gccp::TaskState;
     let _h = crate::test_env::Home::new("c14-turns");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.task_state = TaskState::Paused;
     app.resume_token = None;
     attach_pipe(&mut app);
@@ -625,8 +606,7 @@ async fn apply_turn_state_resumes_with_server_token() {
 async fn resume_with_token_dispatches_resume() {
     use crate::gccp::TaskState;
     let _h = crate::test_env::Home::new("c14-resume");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.task_state = TaskState::Paused;
     app.resume_token = Some("tok-2".to_string());
     attach_pipe(&mut app);
@@ -647,8 +627,7 @@ async fn resume_with_token_dispatches_resume() {
 fn view_failed_steps_lists_switch_reason() {
     use crate::gccp::TaskState;
     let _h = crate::test_env::Home::new("c14-steps");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.task_state = TaskState::Failed;
     app.last_tool_trace = vec![crate::client::ToolTrace {
         tool: "shell_run".to_string(),

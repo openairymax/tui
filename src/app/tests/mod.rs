@@ -23,8 +23,7 @@ use super::*;
 
 fn app_with_ime() -> (crate::test_env::Home, App) {
     let home = crate::test_env::Home::new("ime");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     assert!(app.ime_engine.is_some(), "App 应加载内置 IME 引擎");
     app.ime_toggle();
     assert!(app.ime_active, "Ctrl+1 应进入拼音态");

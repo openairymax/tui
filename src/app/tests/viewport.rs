@@ -40,8 +40,7 @@ fn render_tool_event_parses_sse_json() {
 #[test]
 fn b11_scroll_clamps_to_chat_scroll_max() {
     let _h = crate::test_env::Home::new("b11-scroll-clamp");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
 
     app.chat_scroll_max = 0;
     app.scroll_up();
@@ -73,8 +72,7 @@ fn b11_scroll_clamps_to_chat_scroll_max() {
 #[test]
 fn b11_wheel_lines_follows_modifiers() {
     let _h = crate::test_env::Home::new("b11-wheel-lines");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.page_step = 9;
     assert_eq!(app.wheel_lines(false, false), 3);
     assert_eq!(app.wheel_lines(true, false), 9, "Shift = 翻页步长");
@@ -87,8 +85,7 @@ fn b11_wheel_lines_follows_modifiers() {
 #[test]
 fn b11_toggle_mouse_capture_flips_state() {
     let _h = crate::test_env::Home::new("b11-mouse-toggle");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     assert!(!app.mouse_capture, "默认关");
     assert!(app.toggle_mouse_capture());
     assert!(app.mouse_capture);
@@ -100,8 +97,7 @@ fn b11_toggle_mouse_capture_flips_state() {
 #[test]
 fn b11_focus_open_snapshots_last_reply() {
     let _h = crate::test_env::Home::new("b11-focus-open");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
 
     app.focus_open();
     assert_ne!(app.active_panel, ActivePanel::Focus, "无回复不切面板");
@@ -133,8 +129,7 @@ fn b11_focus_open_snapshots_last_reply() {
 #[test]
 fn b11_focus_scroll_clamps() {
     let _h = crate::test_env::Home::new("b11-focus-scroll");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.page_step = 4;
 
     app.focus_scroll_max = 0;
@@ -167,8 +162,7 @@ fn b11_focus_scroll_clamps() {
 #[test]
 fn paste_fold_threshold_boundary() {
     let _h = crate::test_env::Home::new("paste-fold-boundary");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     let limit = crate::budget::MAX_PASTE_FOLD_BYTES;
 
     let exact = "a".repeat(limit);
@@ -193,8 +187,7 @@ fn paste_fold_threshold_boundary() {
 #[test]
 fn paste_fold_utf8_safe() {
     let _h = crate::test_env::Home::new("paste-fold-utf8");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     let body = "中文".repeat(crate::budget::MAX_PASTE_FOLD_BYTES / 6 + 1);
 
     app.input_paste(&body);
@@ -207,8 +200,7 @@ fn paste_fold_utf8_safe() {
 #[test]
 fn paste_fold_multi_and_stale() {
     let _h = crate::test_env::Home::new("paste-fold-multi");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     let limit = crate::budget::MAX_PASTE_FOLD_BYTES;
 
     let first = "x\n".repeat(limit + 1);
@@ -238,8 +230,7 @@ fn paste_fold_multi_and_stale() {
 #[test]
 fn add_message_caps_oversized_cell() {
     let _h = crate::test_env::Home::new("cell-cap");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     let body = format!("HEAD{}TAIL", "x".repeat(crate::budget::MAX_TOOL_TEXT_BYTES));
 
     app.add_message(MessageRole::Agent, body.clone());
@@ -259,8 +250,7 @@ fn add_message_caps_oversized_cell() {
 #[test]
 fn toasts_stay_bounded_and_expire() {
     let _h = crate::test_env::Home::new("toast-cap");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     for i in 0..5 {
         app.toast(format!("提示 {i}"));
     }

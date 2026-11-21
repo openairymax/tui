@@ -29,15 +29,11 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
 use crate::app::{App, MessageRole};
-use crate::client::GatewayClient;
 
 /// 标准视口宽（100 列：宽屏分支全部展开，与 §6.9 断点 46/52/72/80 兼容）。
 pub(crate) const W: u16 = 100;
 /// 标准视口高。
 pub(crate) const H: u16 = 32;
-
-/// 不可达端口：客户端只做构造，不发起连接；用于隔离任何真实网关。
-const GW: &str = "http://127.0.0.1:9";
 
 /// 测试夹具：持有临时 AIRY_HOME 守卫（串行化 ENV_LOCK）与真实应用状态。
 /// 守卫必须在断言 panic 时也能清理环境，因此由结构体 Drop 负责。
@@ -50,8 +46,7 @@ impl Fixture {
     /// `tag` 仅用于临时目录前缀，便于排查残留。
     pub(crate) fn new(tag: &str) -> Self {
         let home = crate::test_env::Home::new(tag);
-        let gw = GatewayClient::new(GW).expect("离线网关客户端");
-        let mut app = App::new("agents/main.agent.yaml", gw);
+        let mut app = App::new("agents/main.agent.yaml");
         // 首次启动时 `WizardState::new` 会因临时 HOME 缺少 model.yaml 置位，
         // 向导会全屏接管渲染；golden 断言的是常规界面，故显式关闭。
         app.wizard.active = false;

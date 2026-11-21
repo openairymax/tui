@@ -30,8 +30,7 @@ fn seed_model(name: &str) {
 }
 
 fn app() -> App {
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    App::new("agents/main.agent.yaml", gw)
+    App::new("agents/main.agent.yaml")
 }
 
 #[test]

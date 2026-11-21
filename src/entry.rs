@@ -6,7 +6,8 @@
 // AgentRT TUI - Main entry point
 //
 // Terminal-based user interface for AgentRT.
-// Communicates with the gateway via HTTP API for all runtime operations.
+// Communicates with the gateway through the event pipe (airy_cli) for all
+// runtime operations and observation reads.
 //
 // 职责边界（0.1.18 拆分）：本文件只管启动编排（日志/主题/参数/网关连接、
 // F8 exec 切 CLI）与主循环骨架（渲染节拍、鼠标捕获执行点、事件分派）；
@@ -33,7 +34,6 @@ use std::time::{Duration, Instant};
 
 use crate::app::{ActivePanel, App};
 use crate::budget::FIRST_FRAME_BUDGET_MS;
-use crate::client::GatewayClient;
 use crate::engine::boot::Boot;
 use crate::engine::sched::{Beat, Cfg, Lane, Sched};
 // 本模块从 main.rs 迁入库后，原先在 crate 根可直接命名的模块需显式引入；
@@ -205,30 +205,15 @@ pub async fn run() {
     cli.agent_file = resolve_agent_file(&cli.agent_file);
     info!("  agent_file resolved = {}", cli.agent_file);
 
-    // ── Phase 2: Gateway client ──
-    // 连接探测在 run_tui 内统一完成（health_check 2s 快速失败），
-    // 避免启动阶段重复检查、离线时阻塞 UI 首帧。
-    info!("Connecting to gateway at {}...", gateway_url);
-    let gateway = match GatewayClient::new(&gateway_url) {
-        Ok(gw) => {
-            info!("HTTP client initialized (base={})", gateway_url);
-            gw
-        }
-        Err(e) => {
-            error!("Failed to create HTTP client: {}", e);
-            error!("  → Check that gateway_url is valid: '{}'", gateway_url);
-            error!("  → Hint: is the gateway running? Try: airymaxrt start");
-            eprintln!("\n❌ Cannot create HTTP client: {}\n", e);
-            let code = engine::exit::Code::Net;
-            eprintln!("❌ {}（退出码 {}）\n", code.human(), code.code());
-            std::process::exit(code.code());
-        }
-    };
+    // ── Phase 2: Gateway 连接 ──
+    // 传输全部由事件管道承载（D-15）：启动期探测在 run_tui 内经 ping 查询帧
+    // 完成，离线时同样不阻塞首帧。
+    info!("Using gateway at {} via event pipe", gateway_url);
 
     // ── Phase 3: Start TUI ──
     info!("Setting up terminal (raw mode + renderer)...");
 
-    let tui_result = run_tui(&cli, gateway, &boot).await;
+    let tui_result = run_tui(&cli, &boot).await;
 
     // ── Phase 4: Shutdown diagnostics ──
     let total_time = start_time.elapsed();
@@ -256,11 +241,7 @@ pub async fn run() {
     }
 }
 
-async fn run_tui(
-    cli: &Cli,
-    gateway: GatewayClient,
-    boot: &Boot,
-) -> Result<engine::exit::Code> {
+async fn run_tui(cli: &Cli, boot: &Boot) -> Result<engine::exit::Code> {
     // T-03（P0-8）：崩溃瞬间先还原终端再打印 panic 报文，用户保住 shell。
     engine::term::install_panic_hook();
 
@@ -296,11 +277,11 @@ async fn run_tui(
     info!("Terminal initialized. Starting event loop.");
 
     // Create app state
-    let mut app = App::new(&cli.agent_file, gateway);
-    // 事件管道（X1-26c）：运行轮经 airy_cli 事件流下发。挂接失败不拦启动，
-    // 保留网关直连并记录原因（诊断面板可读）。
+    let mut app = App::new(&cli.agent_file);
+    // 事件管道（X1-26c）：运行轮与观察面读均经 airy_cli 事件流下发。挂接
+    // 失败不拦启动，记录原因（诊断面板可读）；此后交互按管道不可用降级。
     if !app.attach_lane() {
-        info!("Event pipe unavailable; falling back to gateway RPC for turns");
+        info!("Event pipe unavailable; interactive requests stay offline");
     }
 
     // 会话布局恢复（0.1.21 D-14）：sessions.json 只存 tab 结构与标题，
