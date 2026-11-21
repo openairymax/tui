@@ -4,72 +4,51 @@
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
 // 演化指标编排（0.1.20 W8）：调度 gateway `airy_sys_telemetry_metrics` 的
-// 只读拉取，把结果交给 engine::evolution 解析。本层只做真实 RPC 的发起与
+// 只读拉取，把结果交给 engine::evolution 解析。本层只做查询帧的发起与
 // 结果转交；失败原因原样保留，不合成指标也不猜测成因。时刻由主循环注入。
 
-use std::time::Duration;
-
-use crate::engine::evolution::{snapshot, Snapshot};
+use crate::engine::evolution::{snapshot, unavailable};
 use crate::engine::sched::Lane;
 
 use super::*;
-
-/// 单次拉取超时：gateway 需转发 monit，留出比健康探测更宽的窗口。
-const EVO_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 演化面板翻页步长（行）。
 const EVO_PAGE: usize = 10;
 
 impl App {
-    /// 发起一轮演化指标拉取（已在途则跳过）。
+    /// 发起一轮演化指标拉取（已在途则跳过）。单次查询的应答时限由 CLI
+    /// 侧 3s 窗口保证，客户端不另设超时。
     pub fn start_evo(&mut self) {
-        if self.evo_rx.is_some() {
+        if self.evo_q {
             return;
         }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let r = tokio::time::timeout(
-                EVO_TIMEOUT,
-                gw.rpc_call("airy_sys_telemetry_metrics", serde_json::json!({})),
-            )
-            .await;
-            let snap = match r {
-                Ok(Ok(v)) => snapshot(&v),
-                Ok(Err(e)) => Snapshot {
-                    available: false,
-                    reason: e.to_string(),
-                    items: Vec::new(),
-                },
-                Err(_) => Snapshot {
-                    available: false,
-                    reason: format!("请求超时（{}s）", EVO_TIMEOUT.as_secs()),
-                    items: Vec::new(),
-                },
-            };
-            let _ = tx.send(snap);
-        });
-        self.evo_rx = Some(rx);
+        match self.send_query(
+            "evo.metrics",
+            "airy_sys_telemetry_metrics",
+            &serde_json::json!({}),
+        ) {
+            Ok(()) => self.evo_q = true,
+            Err(e) => self.evo = Some(unavailable(&e)),
+        }
     }
 
-    /// 消费拉取结果；面板仍打开时续拉下一轮（指标随时间变化）。
+    /// 摘取拉取结果；面板仍打开时续拉下一轮（指标随时间变化）。
     pub fn poll_evo(&mut self, now_ms: u64) {
-        let Some(mut rx) = self.evo_rx.take() else {
+        if !self.evo_q {
             return;
+        }
+        let snap = match self.take_query("evo.metrics") {
+            Some(Ok(v)) => snapshot(&v),
+            Some(Err(e)) => unavailable(&e),
+            None if !self.pipe_alive() => unavailable("事件管道不可用"),
+            None => return,
         };
-        match rx.try_recv() {
-            Ok(snap) => {
-                self.evo = Some(snap);
-                self.evo_at_ms = now_ms;
-                self.mark_landed(Lane::Poll);
-                if self.active_panel == ActivePanel::Evolution {
-                    self.start_evo();
-                }
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                self.evo_rx = Some(rx);
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        self.evo_q = false;
+        self.evo = Some(snap);
+        self.evo_at_ms = now_ms;
+        self.mark_landed(Lane::Poll);
+        if self.active_panel == ActivePanel::Evolution {
+            self.start_evo();
         }
     }
 

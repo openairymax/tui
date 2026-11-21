@@ -466,14 +466,27 @@ impl App {
         // 打字机 reveal 追平。动画只作用于流式期间，**不构成落定门控**：
         // 关闭动画（默认）时上屏与落定同刻；开启动画时落定会丢弃未播完的
         // 余量，用户感知为"结果到达即完成"，而非"等动画播完"。
-        let outcome = match p.rx.try_recv() {
-            Ok(o) => o,
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                self.pending = Some(p);
-                return true;
+        // D-15：TurnState 的结果来自查询帧应答（不经 oneshot）。应答未到
+        // 即原样放回；管道已退出则按失败落定，避免 loading 悬死。
+        let outcome = if matches!(&p.kind, PendingKind::TurnState) {
+            match self.take_query("turns.get") {
+                Some(r) => PendingOutcome::Turns(r.map_err(|e| anyhow!(e))),
+                None if !self.pipe_alive() => PendingOutcome::Turns(Err(anyhow!("事件管道不可用"))),
+                None => {
+                    self.pending = Some(p);
+                    return true;
+                }
             }
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                PendingOutcome::Run(Err(anyhow!("LLM 后台任务异常终止")))
+        } else {
+            match p.rx.try_recv() {
+                Ok(o) => o,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    self.pending = Some(p);
+                    return true;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    PendingOutcome::Run(Err(anyhow!("LLM 后台任务异常终止")))
+                }
             }
         };
         // 取走 kind（p 已具所有权），先清 loading，再应用结果；pending 在上方

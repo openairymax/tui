@@ -84,6 +84,34 @@ impl App {
         }
         self.mem_hydrate_q = false;
     }
+
+    /// 工具目录加载（D-11）：tool.list 查询帧，管道就绪后一次。
+    ///
+    /// 目录是增强信息，失败只记日志：调用方按原始 tool_id 呈现，不隐藏行。
+    /// 管道不可用时不置在途标记，下次挂接可重试。
+    pub(super) fn refresh_toolcat(&mut self) {
+        if self.toolcat_q {
+            return;
+        }
+        match self.send_query("toolcat.list", "tool.list", &serde_json::json!({})) {
+            Ok(()) => self.toolcat_q = true,
+            Err(e) => log::warn!("toolcat: tool.list 下发失败：{e}"),
+        }
+    }
+
+    /// 工具目录应答落地（主循环每帧调用，无在途时早退）。
+    pub fn poll_toolcat(&mut self) {
+        if !self.toolcat_q {
+            return;
+        }
+        match self.take_query("toolcat.list") {
+            Some(Ok(v)) => crate::app::toolcat::absorb(&v),
+            Some(Err(e)) => log::warn!("toolcat: tool.list 失败：{e}"),
+            None if !self.pipe_alive() => log::warn!("toolcat: tool.list 未应答（事件管道已退出）"),
+            None => return,
+        }
+        self.toolcat_q = false;
+    }
 }
 
 /// query_result 载荷 → 结果或错误文本（契约见 cli_ev.h）。

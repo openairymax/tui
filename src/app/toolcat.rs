@@ -73,46 +73,18 @@ pub fn event_line(tool: &str, args: &str, ok: bool) -> String {
     }
 }
 
-/// 后台拉取一次目录（App 启动时调用）。失败只记日志：目录是增强信息，
-/// 不能阻塞会话；未知工具仍按原始 id 呈现。
-///
-/// 用独立线程 + 单线程运行时执行，而非 tokio::spawn：App::new 可能在同步
-/// 上下文（单测、启动早期）被调用，此时 tokio::spawn 会直接 panic；独立
-/// 线程也让目录拉取的生命周期与会话主运行时解耦。进程内只拉一次。
-pub fn start(gw: crate::client::GatewayClient) {
-    static STARTED: OnceLock<()> = OnceLock::new();
-    if STARTED.set(()).is_err() {
+/// 用 tool.list 应答装载目录。gateway 可能回数组，也可能回 C-16 目录对象
+/// `{tools:[...]}`；两者都认。空/异形应答按「未加载」处理：目录是增强
+/// 信息，不能把空表当成「所有工具都未登记」。
+pub fn absorb(v: &Value) {
+    let items = v
+        .get("tools")
+        .and_then(Value::as_array)
+        .or_else(|| v.as_array());
+    let Some(items) = items else {
+        log::warn!("toolcat: tool.list 应答无目录字段");
         return;
-    }
-    let spawned = std::thread::Builder::new()
-        .name("toolcat".to_string())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    log::warn!("toolcat: runtime unavailable: {e}");
-                    return;
-                }
-            };
-            match rt.block_on(gw.rpc_call("tool.list", serde_json::json!({}))) {
-                Ok(v) => {
-                    // gateway 可能回数组，也可能回 C-16 目录对象 {tools:[...]}。
-                    let items = v
-                        .get("tools")
-                        .and_then(|t| t.as_array())
-                        .cloned()
-                        .or_else(|| v.as_array().cloned())
-                        .unwrap_or_default();
-                    log::info!("toolcat: tool.list -> {} entries", items.len());
-                    load(&items);
-                }
-                Err(e) => log::warn!("toolcat: tool.list unavailable: {e}"),
-            }
-        });
-    if let Err(e) = spawned {
-        log::warn!("toolcat: spawn thread failed: {e}");
-    }
+    };
+    log::info!("toolcat: tool.list -> {} entries", items.len());
+    load(items);
 }

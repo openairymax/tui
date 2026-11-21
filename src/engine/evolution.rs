@@ -104,7 +104,8 @@ fn number(v: &Value) -> f64 {
     v.as_f64().unwrap_or(f64::NAN)
 }
 
-fn unavailable(reason: &str) -> Snapshot {
+/// 不可用快照：失败原因原样保留，面板据此显示降级；不合成指标。
+pub(crate) fn unavailable(reason: &str) -> Snapshot {
     Snapshot {
         available: false,
         reason: reason.to_string(),

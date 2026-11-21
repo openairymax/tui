@@ -101,25 +101,29 @@ impl App {
     }
 
     /// D-12：向网关查询暂停回合，取回重启后仍可续跑的令牌。
-    /// 走后台任务，避免 UI 线程在服务重启窗口被阻塞。
+    ///
+    /// 观察面读走查询帧（D-15）：`agent.turns` 经事件管道下发，应答由
+    /// poll_pending 摘取后按 TurnState 落定；本地不再持有网关客户端调用。
     pub(super) fn start_turns_pending(&mut self) {
-        let gateway = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let r = gateway.rpc_call("agent.turns", serde_json::json!({})).await;
-            let _ = tx.send(PendingOutcome::Turns(r));
-        });
         log::info!("start_turns_pending: 查询 agent.turns 断点");
-        self.begin_busy();
-        self.set_task_control(TaskControl::Running);
-        self.pending = Some(PendingTurn {
-            rx,
-            kind: PendingKind::TurnState,
-            task: Some(task),
-            session_id: String::new(),
-            stream_rx: None,
-            tool_rx: None,
-        });
+        match self.send_query("turns.get", "agent.turns", &serde_json::json!({})) {
+            Ok(()) => {
+                // 占位句柄：TurnState 的结果来自查询应答而非 oneshot，rx
+                // 只为满足 PendingTurn 形状；该通道不参与落定判定。
+                let (_tx, rx) = tokio::sync::oneshot::channel();
+                self.pending = Some(PendingTurn {
+                    rx,
+                    kind: PendingKind::TurnState,
+                    task: None,
+                    session_id: String::new(),
+                    stream_rx: None,
+                    tool_rx: None,
+                });
+                self.begin_busy();
+                self.set_task_control(TaskControl::Running);
+            }
+            Err(e) => self.apply_turn_state(Err(anyhow!(e))),
+        }
     }
 
     /// 发起任务执行轮（C-15 统一入口）：GRAD 确认后带 `mode="task"` 与

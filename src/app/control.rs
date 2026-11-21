@@ -152,6 +152,8 @@ impl App {
                 self.task_mode = false;
             }
             PendingKind::TurnState => {
+                // 丢弃可能已落地的查询应答，避免残留在查询表里
+                let _ = self.take_query("turns.get");
                 self.add_message(MessageRole::System, "已中止断点查询。".to_string());
             }
         }
