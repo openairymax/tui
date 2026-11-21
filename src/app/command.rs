@@ -317,10 +317,10 @@ impl App {
                     self.add_message(MessageRole::System, format!("记忆检索失败：{e}"));
                 }
                 None if !self.pipe_alive() => {
-                    self.add_message(MessageRole::System, "记忆检索失败：事件管道不可用");
+                    self.add_message(MessageRole::System, "记忆检索失败：事件管道不可用".to_string());
                 }
                 None if self.clock_ms > deadline_ms => {
-                    self.add_message(MessageRole::System, "记忆检索失败：检索超时");
+                    self.add_message(MessageRole::System, "记忆检索失败：检索超时".to_string());
                 }
                 None => {
                     self.mem_q = Some(MemStage::Search { query, deadline_ms });
@@ -412,11 +412,11 @@ impl App {
             return;
         }
         if !self.pipe_alive() {
-            self.add_message(MessageRole::System, "记忆检索失败：事件管道不可用");
+            self.add_message(MessageRole::System, "记忆检索失败：事件管道不可用".to_string());
             return;
         }
         if self.clock_ms > deadline_ms {
-            self.add_message(MessageRole::System, "记忆检索失败：检索超时");
+            self.add_message(MessageRole::System, "记忆检索失败：检索超时".to_string());
             return;
         }
         self.mem_q = Some(MemStage::Gets {
