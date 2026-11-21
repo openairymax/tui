@@ -155,33 +155,39 @@ impl App {
     }
 
     /// /chain 命令：无参数列出 hall_store 任务（最新在前）；带 task_id 回放该任务
-    /// 全部类别事件（按 gseq 因果序 = 决策链）。数据经 gateway hall.tasks/hall.replay。
+    /// 全部类别事件（按 gseq 因果序 = 决策链）。
     ///
-    /// 结果异步返回：先给"读取中"提示，poll_chain 消费后渲染进对话区。
+    /// 读经观察面 query 帧下发（hall.tasks / hall.replay），应答由 poll_chain
+    /// 摘取后渲染进对话区——命令本身不再持有网关客户端。
     pub(super) fn cmd_chain(&mut self, input: &str) {
         let arg = input[6..].trim().to_string();
         if self.chain_pending.is_some() {
             self.add_message(MessageRole::System, "决策链查询进行中，请稍候…".to_string());
             return;
         }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
         self.chain_task = arg.clone();
-        if arg.is_empty() {
+        let list = arg.is_empty();
+        let sent = if list {
             self.add_message(MessageRole::System, "正在读取任务列表…".to_string());
-            tokio::spawn(async move {
-                let _ = tx.send(ChainOutcome::Tasks(gw.hall_tasks().await));
-            });
+            self.send_query("chain.tasks", "hall.tasks", &serde_json::json!({}))
         } else {
             self.add_message(
                 MessageRole::System,
                 format!("正在回放决策链（task_id={}）…", arg),
             );
-            tokio::spawn(async move {
-                let _ = tx.send(ChainOutcome::Events(gw.hall_replay(&arg, None).await));
-            });
+            self.send_query(
+                "chain.replay",
+                "hall.replay",
+                &serde_json::json!({ "task_id": arg }),
+            )
+        };
+        match sent {
+            Ok(()) => self.chain_pending = Some(list),
+            Err(e) => self.add_message(
+                MessageRole::System,
+                format!("决策链查询下发失败：{}", e),
+            ),
         }
-        self.chain_pending = Some(rx);
     }
 
     /// /daemons：14 个 daemon 命名空间经 gateway health_check 聚合在线
@@ -262,7 +268,6 @@ impl App {
     pub fn open_trace(&mut self) {
         self.active_panel = ActivePanel::Trace;
         self.trace_scroll = 0;
-        self.stop_hall_watch();
     }
 
     /// 工具轨迹面板滚动（↑ ↓ / PgUp PgDn，Esc 返回对话区）。

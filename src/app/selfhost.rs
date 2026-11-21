@@ -75,7 +75,6 @@ impl App {
     pub fn open_selfhost(&mut self) {
         self.active_panel = ActivePanel::SelfHost;
         self.selfhost_scroll = 0;
-        self.stop_hall_watch();
         self.start_selfhost();
     }
 

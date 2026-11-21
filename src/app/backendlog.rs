@@ -71,7 +71,6 @@ impl App {
     pub fn open_dlogs(&mut self) {
         self.active_panel = ActivePanel::BackendLog;
         self.backend_logs_scroll = 0;
-        self.stop_hall_watch();
         self.start_dlogs();
     }
 

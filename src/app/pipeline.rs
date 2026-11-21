@@ -3,25 +3,12 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 后台请求流水线类型：在途请求种类、句柄、结果载荷，以及看板/事件流
-// 轮询与运维命令的结果包。请求在 tokio 任务中执行，结果经 oneshot 回传。
+// 后台请求流水线类型：在途请求种类、句柄、结果载荷，以及运维命令的结果包。
+// 请求在 tokio 任务中执行，结果经 oneshot 回传。
 
 use anyhow::Result;
 
-use crate::client::{GccpQuestion, HallBoard, HallEvent, HallTask, RunResponse};
-
-
-/// hall 面板轮询结果（看板/事件流二选一）。
-pub(super) enum HallPollOutcome {
-    Board(Result<HallBoard>),
-    Events(Result<Vec<HallEvent>>),
-}
-
-/// /chain 决策链查询结果（任务列表 / 单任务事件链）。
-pub(super) enum ChainOutcome {
-    Tasks(Result<Vec<HallTask>>),
-    Events(Result<Vec<HallEvent>>),
-}
+use crate::client::{GccpQuestion, RunResponse};
 
 /// 运维命令结果（/daemons 聚合 / 通用方法调用）。
 pub(super) enum OpsOutcome {

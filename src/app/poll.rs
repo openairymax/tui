@@ -12,7 +12,7 @@ use crate::engine::grid;
 
 use super::*;
 
-/// 事件流面板本地缓存上限（M5 W4）：SSE 增量 + RPC 兜底两路数据合并后
+/// 事件流面板本地缓存上限（M5 W4）：查询节拍增量与本地合并两路数据
 /// 保留最新 N 条（渲染 take 256，缓存留余量防抖动）。
 const HALL_EVENTS_MAX: usize = 1024;
 
@@ -29,12 +29,12 @@ fn event_order(e: &HallEvent) -> (u64, u64) {
     (if e.gseq > 0 { e.gseq } else { e.seq }, e.seq)
 }
 
-/// 合并本地事件与拉取/推送事件（M5 W4）。
+/// 合并本地事件与查询拉取事件（M5 W4）。
 ///
 /// hall_events 保持升序（渲染层 rev 展示最新在前）；合并按 (ts_utc, gseq)
 /// 稳定全局序（与 gateway hall.replay/hall.stream 同一排序口径），以
-/// file_id 去重（事件文件 id 全局唯一）。SSE 增量与 RPC 全量两路数据在
-/// gateway 侧同为扁平事件形态（SSoT），此处即可用同一合并逻辑收敛。
+/// file_id 去重（事件文件 id 全局唯一）。每次查询拉取与本地缓存同形态
+/// （gateway 侧 SSoT），此处即可用同一合并逻辑收敛。
 ///
 /// `seen` 是跨轮次的有界去重键 LRU（§6.10 #5）：本地窗口只保留最新
 /// HALL_EVENTS_MAX 条，窗口外的旧事件若被 RPC 全量重放，仅靠窗口内去重
@@ -80,76 +80,83 @@ fn merge_hall_events(
 }
 
 impl App {
-    /// 消费 /chain 的异步结果并渲染进对话区。
+    /// 摘取 /chain 的查询应答并渲染进对话区（观察面读经 query 帧）。
     pub fn poll_chain(&mut self) {
-        let Some(mut rx) = self.chain_pending.take() else {
+        let Some(list) = self.chain_pending else {
             return;
         };
-        let recv = rx.try_recv();
-        if recv.is_ok() {
-            self.mark_landed(Lane::Poll);
-        }
-        match recv {
-            Ok(outcome) => match outcome {
-                ChainOutcome::Tasks(Ok(tasks)) => {
-                    if tasks.is_empty() {
-                        self.add_message(
-                            MessageRole::System,
-                            "决策链为空：暂无任务文件（$AIRY_HOME/data/agentrt/hall）。"
-                                .to_string(),
-                        );
-                        return;
-                    }
-                    let mut text = format!("任务列表（{} 个，最新在前）", tasks.len());
-                    for t in tasks.iter().take(20) {
-                        text.push_str(&format!(
-                            "\n  {} · {} 事件 · {}",
-                            t.task_id, t.event_count, t.latest_ts
-                        ));
-                    }
-                    if tasks.len() > 20 {
-                        text.push_str(&format!(
-                            "\n  … 另有 {} 个（/chain <task_id> 查看决策链）",
-                            tasks.len() - 20
-                        ));
-                    } else {
-                        text.push_str("\n  /chain <task_id> 查看决策链");
-                    }
-                    self.add_message(MessageRole::System, text);
-                }
-                ChainOutcome::Tasks(Err(e)) => {
-                    self.add_message(MessageRole::System, format!("任务列表读取失败：{}", e));
-                }
-                ChainOutcome::Events(Ok(events)) => {
-                    let tid = self.chain_task.clone();
-                    if events.is_empty() {
-                        self.add_message(
-                            MessageRole::System,
-                            format!("决策链为空：任务「{}」暂无事件。", tid),
-                        );
-                        return;
-                    }
-                    let mut text =
-                        format!("决策链「{}」（{} 条事件，gseq 因果序）", tid, events.len());
-                    for e in events.iter().take(64) {
-                        text.push_str(&format!("\n  {}", crate::panels::events::event_line(e, 96)));
-                    }
-                    if events.len() > 64 {
-                        text.push_str(&format!(
-                            "\n  … 另有 {} 条（详见 F7 事件流面板）",
-                            events.len() - 64
-                        ));
-                    }
-                    self.add_message(MessageRole::System, text);
-                }
-                ChainOutcome::Events(Err(e)) => {
-                    self.add_message(MessageRole::System, format!("决策链读取失败：{}", e));
-                }
-            },
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                self.chain_pending = Some(rx);
+        let id = if list { "chain.tasks" } else { "chain.replay" };
+        let Some(reply) = self.take_query(id) else {
+            // 管道已退出：应答永远不会到达，清掉在途标记，避免命令永久卡住
+            if !self.pipe_alive() {
+                self.chain_pending = None;
             }
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+            return;
+        };
+        self.chain_pending = None;
+        self.mark_landed(Lane::Poll);
+        match reply {
+            Ok(v) if list => {
+                let tasks: Vec<HallTask> = v
+                    .get("tasks")
+                    .and_then(|t| serde_json::from_value(t.clone()).ok())
+                    .unwrap_or_default();
+                if tasks.is_empty() {
+                    self.add_message(
+                        MessageRole::System,
+                        "决策链为空：暂无任务文件（$AIRY_HOME/data/agentrt/hall）。".to_string(),
+                    );
+                    return;
+                }
+                let mut text = format!("任务列表（{} 个，最新在前）", tasks.len());
+                for t in tasks.iter().take(20) {
+                    text.push_str(&format!(
+                        "\n  {} · {} 事件 · {}",
+                        t.task_id, t.event_count, t.latest_ts
+                    ));
+                }
+                if tasks.len() > 20 {
+                    text.push_str(&format!(
+                        "\n  … 另有 {} 个（/chain <task_id> 查看决策链）",
+                        tasks.len() - 20
+                    ));
+                } else {
+                    text.push_str("\n  /chain <task_id> 查看决策链");
+                }
+                self.add_message(MessageRole::System, text);
+            }
+            Ok(v) => {
+                let events: Vec<HallEvent> = v
+                    .get("events")
+                    .and_then(|e| serde_json::from_value(e.clone()).ok())
+                    .unwrap_or_default();
+                let tid = self.chain_task.clone();
+                if events.is_empty() {
+                    self.add_message(
+                        MessageRole::System,
+                        format!("决策链为空：任务「{}」暂无事件。", tid),
+                    );
+                    return;
+                }
+                let mut text =
+                    format!("决策链「{}」（{} 条事件，gseq 因果序）", tid, events.len());
+                for e in events.iter().take(64) {
+                    text.push_str(&format!("\n  {}", crate::panels::events::event_line(e, 96)));
+                }
+                if events.len() > 64 {
+                    text.push_str(&format!(
+                        "\n  … 另有 {} 条（详见 F7 事件流面板）",
+                        events.len() - 64
+                    ));
+                }
+                self.add_message(MessageRole::System, text);
+            }
+            Err(e) if list => {
+                self.add_message(MessageRole::System, format!("任务列表读取失败：{}", e));
+            }
+            Err(e) => {
+                self.add_message(MessageRole::System, format!("决策链读取失败：{}", e));
+            }
         }
     }
 
@@ -208,15 +215,12 @@ impl App {
         }
     }
 
-    /// hall 面板（看板/事件流）数据拉取：面板激活时刷新。
+    /// hall 面板（看板/事件流）数据拉取：面板激活时按节拍下发查询帧。
     ///
     /// 看板 = hall.board（work_hall 持久化实例 + 在线 agent）；
     /// 事件流 = hall.stream（全局 gseq 因果序，最新 512 条）。
-    /// 数据经 gateway 统一转发，任何前端看到同一份状态。
-    ///
-    /// M5 W4 数据源统一：hall.watch SSE 推送内容被真实消费——事件流面板
-    /// 增量插入（实时上屏，RPC pull 仅作节拍兜底合并）；看板是聚合快照，
-    /// 推送只作刷新触发（提前 pull），与 RPC 轮询互补。
+    /// 观察面读统一走 D-15 query 帧：CLI 同步取值后回 query_result，应答按
+    /// id 暂存，本函数摘取后更新面板缓存（不自建 SSE/HTTP 连接）。
     ///
     /// `due` 由主循环传入（`Beats::has(Beat::Hall)`）：拉取节拍归 L4 调度表，
     /// 此处不再自持 1s 节流时钟（0.1.18 §5A.3 W4）。
@@ -225,93 +229,76 @@ impl App {
             return;
         }
         let want_board = self.active_panel == ActivePanel::Board;
-        // hall.watch 推送消费（2026-08-21 事件驱动；M5 W4 内容级消费）
-        if let Some(rx) = &mut self.hall_watch_rx {
-            if want_board {
-                // 看板为聚合快照：任何推送只作刷新触发（跳过节流提前 pull）
-                let mut pushed = false;
-                while rx.try_recv().is_ok() {
-                    pushed = true;
+        // 在途应答：摘到即落地；管道已退出则该请求永远不会应答，放弃等待
+        if let Some(q_board) = self.hall_q {
+            let id = if q_board { "hall.board" } else { "hall.stream" };
+            match self.take_query(id) {
+                Some(reply) => {
+                    self.hall_q = None;
+                    self.land_hall(q_board, reply);
                 }
-                if pushed {
-                    self.hall_force = true;
+                None if !self.pipe_alive() => self.hall_q = None,
+                // 上一请求仍在途：即使节拍到期也不重复下发（慢请求不丢）
+                None => return,
+            }
+        }
+        // 节拍门控：Beat::Hall 到期才发起拉取（事件流面板的刷新即此查询节拍）
+        if self.hall_q.is_some() || !due {
+            return;
+        }
+        let (id, params) = if want_board {
+            ("hall.board", serde_json::json!({}))
+        } else {
+            ("hall.stream", serde_json::json!({ "limit": 512 }))
+        };
+        match self.send_query(id, id, &params) {
+            Ok(()) => self.hall_q = Some(want_board),
+            Err(e) => self.set_hall_error(id, &e),
+        }
+    }
+
+    /// 查询应答落地：看板整体替换，事件流增量合并（按 file_id 去重入列）。
+    fn land_hall(&mut self, board: bool, reply: Result<serde_json::Value, String>) {
+        if board {
+            let parsed = reply.and_then(|v| {
+                serde_json::from_value::<HallBoard>(v).map_err(|e| e.to_string())
+            });
+            match parsed {
+                Ok(b) => {
+                    self.hall_board = Some(b);
+                    self.mark_landed(Lane::Panel);
+                    self.clear_hall_error("hall.board");
                 }
-            } else {
-                // 事件流：推送内容即事件（与 hall.stream 同形态），增量入列
-                let mut incoming: Vec<HallEvent> = Vec::new();
-                while let Ok(raw) = rx.try_recv() {
-                    if let Ok(evt) = serde_json::from_str::<HallEvent>(&raw) {
-                        incoming.push(evt);
-                    }
+                Err(e) => {
+                    self.set_hall_error("hall.board", &e);
+                    log::warn!("hall.board 拉取失败: {}", e);
                 }
-                if !incoming.is_empty() {
+            }
+            return;
+        }
+        match reply {
+            Ok(v) => {
+                let evts: Vec<HallEvent> = v
+                    .get("events")
+                    .and_then(|e| serde_json::from_value(e.clone()).ok())
+                    .unwrap_or_default();
+                if !evts.is_empty() {
                     self.mark_landed(Lane::Panel);
                 }
-                merge_hall_events(&mut self.hall_events, incoming, &mut self.hall_seen);
+                merge_hall_events(&mut self.hall_events, evts, &mut self.hall_seen);
+                self.clear_hall_error("hall.stream");
+            }
+            Err(e) => {
+                self.set_hall_error("hall.stream", &e);
+                log::warn!("hall.stream 拉取失败: {}", e);
             }
         }
-        // 消费在途结果（pull 结果与本地合并去重，避免覆盖 SSE 增量）
-        let mut in_flight = false;
-        if let Some(mut rx) = self.hall_poll_rx.take() {
-            match rx.try_recv() {
-                Ok(HallPollOutcome::Board(r)) => match r {
-                    Ok(b) => {
-                        self.hall_board = Some(b);
-                        self.mark_landed(Lane::Panel);
-                        self.clear_hall_error("hall.board");
-                    }
-                    Err(e) => {
-                        self.set_hall_error("hall.board", &e);
-                        log::warn!("hall.board 拉取失败: {}", e);
-                    }
-                },
-                Ok(HallPollOutcome::Events(r)) => match r {
-                    Ok(evts) => {
-                        if !evts.is_empty() {
-                            self.mark_landed(Lane::Panel);
-                        }
-                        merge_hall_events(&mut self.hall_events, evts, &mut self.hall_seen);
-                        self.clear_hall_error("hall.stream");
-                    }
-                    Err(e) => {
-                        self.set_hall_error("hall.stream", &e);
-                        log::warn!("hall.stream 拉取失败: {}", e);
-                    }
-                },
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    // 上次请求仍在途：保留接收端，本轮不再发起新请求
-                    in_flight = true;
-                    self.hall_poll_rx = Some(rx);
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
-            }
-        }
-        // 上一请求仍在途：跳过本轮——即使节拍到期也不重复 spawn 覆盖
-        // 在途接收端（否则慢请求结果丢失、gateway 每次节拍被多发一次无效请求）
-        if in_flight {
-            return;
-        }
-        // 节拍门控：Beat::Hall 到期才发起拉取（事件流面板的实时增量由 SSE
-        // 驱动，本 pull 仅作兜底）
-        if !due {
-            return;
-        }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            if want_board {
-                let _ = tx.send(HallPollOutcome::Board(gw.hall_board().await));
-            } else {
-                let _ = tx.send(HallPollOutcome::Events(gw.hall_stream(512).await));
-            }
-        });
-        self.hall_poll_rx = Some(rx);
     }
 
     /// hall 拉取失败：记录失败态（board.rs 区分"正在加载"与"失败/离线"）
     /// 并在状态变化时追加一条 F3 日志——内容相同不重复刷屏（离线时轮询
     /// 每秒重试一次，日志只记一次变化，文件日志仍逐条记录）。
-    fn set_hall_error(&mut self, source: &str, err: &anyhow::Error) {
+    fn set_hall_error(&mut self, source: &str, err: &str) {
         let msg = format!("{} 拉取失败：{}", source, err);
         let changed = self.hall_error.as_deref() != Some(msg.as_str());
         self.hall_error = Some(msg.clone());
@@ -338,23 +325,6 @@ impl App {
     /// 取走 hall 显式刷新请求（读后清零）。主循环据此调用调度器的节拍提前。
     pub fn take_hall_force(&mut self) -> bool {
         std::mem::take(&mut self.hall_force)
-    }
-
-    /// 订阅 hall.watch SSE 推送流（2026-08-21 事件流驱动；Board/Events 面板
-    /// 激活时调用）。收到任何推送事件 → 立即刷新（跳过 1s 节流），轮询保留
-    /// 为断连/离线兜底。
-    pub fn start_hall_watch(&mut self) {
-        if self.hall_watch_rx.is_none() {
-            self.hall_watch_rx = Some(self.gateway.hall_watch_events());
-            log::debug!("hall.watch: SSE 推送订阅已启动");
-        }
-    }
-
-    /// 停止 hall.watch SSE 订阅（离开面板时调用；drop 接收端使 watch 任务退出）。
-    pub fn stop_hall_watch(&mut self) {
-        if self.hall_watch_rx.take().is_some() {
-            log::debug!("hall.watch: SSE 推送订阅已停止");
-        }
     }
 
     /* ---- 2026-08-17：F6/F7 面板交互（光标 + 过滤）---- */

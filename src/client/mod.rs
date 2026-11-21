@@ -5,16 +5,15 @@
 //
 // AgentRT gateway 通信客户端（TUI 侧，退役中）。
 //
-// 运行轮已全部改由事件管道（event 子模块 + airy_cli）承载，本模块只剩观察面
-// 的读侧 RPC：健康探针、hall.*、types 契约。
+// 运行轮已全部改由事件管道（event 子模块 + airy_cli）承载，观察面读也统一
+// 走 query 帧；本模块只剩健康探针与通用 rpc_call（传输骨架）及 types 契约。
 // 分层如下：
 //   - 本模块：连接构造、健康探针、通用 rpc_call（传输骨架）
-//   - hall：hall.* 读侧 RPC + hall.watch 长连接
 //   - event：事件/投影 API（D-15 子进程），运行轮与审批的唯一入口
 //   - types：wire → Rust 反序列化契约
 //
-// 传输层分工：事件帧由 airy_cli 产出；reqwest 仅承担读侧 JSON-RPC 与
-// hall.watch 长连接。
+// 传输层分工：事件帧与观察面查询均由 airy_cli 产出；reqwest 仅承担健康
+// 探针等尚未迁出的读侧 JSON-RPC。
 
 use anyhow::{Context, Result};
 use log::debug;
@@ -22,7 +21,6 @@ use reqwest::Client as HttpClient;
 use std::time::Duration;
 
 pub(crate) mod event;
-mod hall;
 mod types;
 
 pub use types::*;

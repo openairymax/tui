@@ -71,12 +71,10 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::F(6) => {
             app.active_panel = ActivePanel::Board;
             app.force_hall_refresh();
-            app.start_hall_watch();
         }
         KeyCode::F(7) => {
             app.active_panel = ActivePanel::Events;
             app.force_hall_refresh();
-            app.start_hall_watch();
         }
         // Ctrl+1：内置拼音输入法切换（busy 插入对话场景同样可用）
         KeyCode::Char('1') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
@@ -207,8 +205,6 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         // §6.2 #6：等待期 Esc 同时请求中断，立即呈递「已请求中断…」。
         KeyCode::Esc => {
             app.active_panel = ActivePanel::Chat;
-            // busy 态同样必须停 SSE（订阅泄漏同源修复）
-            app.stop_hall_watch();
             app.interrupt_task();
         }
         // ── 插入对话（2.3.7）：任务执行中输入文本 ──

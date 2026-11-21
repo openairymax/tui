@@ -96,9 +96,6 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Esc if app.active_panel != ActivePanel::Chat => {
             debug!("Panel: Esc → return to Chat");
             app.active_panel = ActivePanel::Chat;
-            // 与 toggle_panel 同源：离开 Board/Events 必须停 SSE，
-            // 否则订阅泄漏，后台持续收流（空闲态 Esc 路径）。
-            app.stop_hall_watch();
         }
         KeyCode::F(1) => {
             debug!("Panel: toggle Help");
@@ -122,16 +119,14 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         }
         KeyCode::F(6) => {
             debug!("Panel: toggle Board");
-            // 进入看板：强制立即刷新 + 订阅 hall.watch SSE 推送
+            // 进入看板：强制立即刷新（查询节拍提前到下一帧）
             app.active_panel = ActivePanel::Board;
             app.force_hall_refresh();
-            app.start_hall_watch();
         }
         KeyCode::F(7) => {
             debug!("Panel: toggle Events");
             app.active_panel = ActivePanel::Events;
             app.force_hall_refresh();
-            app.start_hall_watch();
         }
         // F8：切换到 CLI（airy_cli）——恢复终端后 exec 替换进程
         KeyCode::F(8) => {

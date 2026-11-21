@@ -77,7 +77,6 @@ impl App {
     pub fn open_evo(&mut self) {
         self.active_panel = ActivePanel::Evolution;
         self.evo_scroll = 0;
-        self.stop_hall_watch();
         self.start_evo();
     }
 
