@@ -44,6 +44,7 @@ mod panel;
 mod pipeline;
 mod plugins;
 mod poll;
+mod query;
 mod selfhost;
 mod session;
 mod session_store;
@@ -52,8 +53,8 @@ mod task_store;
 mod text;
 pub(crate) mod toolcat;
 
-use config::*;
 pub(crate) use config::cfg_actions;
+use config::*;
 pub(crate) use daemonlog::log_dir;
 pub(crate) use health::dep_cn;
 pub use mode::{sanitize_reply, ModeMarker, StreamSanitizer};
@@ -192,8 +193,10 @@ pub struct App {
     backend_rx: Option<tokio::sync::oneshot::Receiver<Vec<LogEntry>>>,
     /// 后端日志最近一次落地时刻（主循环注入的单调 ms，BACKEND_REFRESH_MS 节拍用）。
     pub backend_at_ms: u64,
-    /// /mem 检索在途结果（cmd_mem_search 发起，poll_mem 消费；0.1.20 批次五）。
-    mem_rx: Option<tokio::sync::oneshot::Receiver<command::MemOutcome>>,
+    /// /mem 检索在途状态（cmd_mem_search 发起，poll_mem 推进；0.1.20 批次五）。
+    mem_q: Option<command::MemStage>,
+    /// 记忆/技能镜像水合在途（一条 mem.recent 同时喂两个镜像）。
+    mem_hydrate_q: bool,
     /// 主循环注入的单调时刻（毫秒）——应用层不自行读时钟。
     pub clock_ms: u64,
     /// 本轮对话发起时 LLM 后端是否不可达（§6.12 #5）：落定时据此标注
@@ -397,17 +400,17 @@ pub struct App {
 
 impl App {
     pub fn new(agent_file: &str, gateway: GatewayClient) -> Self {
-        // 记忆后端需在 gateway move 进 Self 之前取一份 clone
-        // （TUI 记忆统一走网关 mem.*，与 CLI 同一后端）。
-        let memory_backend = memory::build_memory(&gateway);
+        // TUI 记忆统一走网关 mem.*（与 CLI 同一后端）；水合由事件管道的
+        // query 帧驱动（attach_lane 之后下发 mem.recent），此处只建镜像。
+        let memory_backend = memory::build_memory();
         log::info!(
-            "memory: backend={} {} records hydrated",
+            "memory: backend={} {} records mirrored (hydrate via query)",
             memory_backend.backend_name(),
             memory_backend.len()
         );
         // 技能库同源：统一走网关 mem.*（metadata.kind="skill" 分区），
-        // 与 CLI 共享同一记忆后端；同样需在 gateway move 前进 Self 前构造。
-        let skills_backend = skills::build_skill_store(&gateway);
+        // 与 CLI 共享同一记忆后端；同一条水合查询喂两个镜像。
+        let skills_backend = skills::build_skill_store();
         log::info!(
             "skills: backend={} {} skills loaded",
             skills_backend.backend_name(),
@@ -468,7 +471,8 @@ impl App {
             backend_logs_scroll: 0,
             backend_rx: None,
             backend_at_ms: 0,
-            mem_rx: None,
+            mem_q: None,
+            mem_hydrate_q: false,
             clock_ms: 0,
             fallback: false,
             leader: Leader::new(),
@@ -714,46 +718,6 @@ impl App {
             }
         }
         crate::markdown::last_fenced(&self.streaming_text)
-    }
-
-    /// 下发一帧观察面查询（D-15 扩展，kind=query）。
-    ///
-    /// 面板读只经事件管道取值，不自建 HTTP、不持有网关客户端；应答按 id
-    /// 暂存，由各 poll_* 用 `take_query` 摘取。管道不可用即如实报错。
-    pub(super) fn send_query(
-        &mut self,
-        id: &str,
-        method: &str,
-        params: &serde_json::Value,
-    ) -> Result<(), String> {
-        let Some(ev) = self.ev.as_ref() else {
-            return Err("事件管道不可用".to_string());
-        };
-        ev.query(id, method, params).map_err(|e| e.to_string())
-    }
-
-    /// 摘取一条查询应答：Ok(原始 result) / Err(错误文本)；None = 尚未应答。
-    pub(super) fn take_query(&self, id: &str) -> Option<Result<serde_json::Value, String>> {
-        let v = self.ev.as_ref()?.take_query(id)?;
-        Some(query_reply(v))
-    }
-
-    /// 事件管道是否仍在（查询在途判定用）。管道已退出即在途请求永远不会应答。
-    pub(super) fn pipe_alive(&self) -> bool {
-        self.ev.as_ref().is_some_and(|ev| ev.alive())
-    }
-}
-
-/// query_result 载荷 → 结果或错误文本（契约见 cli_ev.h）。
-fn query_reply(v: serde_json::Value) -> Result<serde_json::Value, String> {
-    if v.get("ok").and_then(|ok| ok.as_bool()).unwrap_or(false) {
-        Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
-    } else {
-        Err(v
-            .get("error")
-            .and_then(|e| e.as_str())
-            .unwrap_or("查询失败")
-            .to_string())
     }
 }
 

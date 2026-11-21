@@ -183,10 +183,7 @@ impl App {
         };
         match sent {
             Ok(()) => self.chain_pending = Some(list),
-            Err(e) => self.add_message(
-                MessageRole::System,
-                format!("决策链查询下发失败：{}", e),
-            ),
+            Err(e) => self.add_message(MessageRole::System, format!("决策链查询下发失败：{}", e)),
         }
     }
 
@@ -291,50 +288,171 @@ impl App {
     ///
     /// mem.search 只回 record_id + score（正文不随行），与 C CLI 同法逐条
     /// mem.get 补齐后在对话区呈现可读命中列表；失败原因原样回显，不臆造。
+    /// 两段查询都经观察面 query 帧下发（mem.search / mem.get），应答由
+    /// poll_mem 摘取，命令本身不再持有网关客户端。
     pub(super) fn cmd_mem_search(&mut self, query: &str) {
-        if self.mem_rx.is_some() {
+        if self.mem_q.is_some() {
             self.toast("记忆检索进行中，请稍候");
             return;
         }
-        let gw = self.gateway.clone();
-        let q = query.to_string();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let _ = tx.send(mem_fetch(gw, &q).await);
-        });
-        self.mem_rx = Some(rx);
+        let params = serde_json::json!({ "query": query, "limit": MEM_HITS_MAX });
+        match self.send_query("mem.search", "mem.search", &params) {
+            Ok(()) => {
+                self.mem_q = Some(MemStage::Search {
+                    query: query.to_string(),
+                    deadline_ms: self.clock_ms + MEM_TIMEOUT_MS,
+                });
+            }
+            Err(e) => {
+                self.add_message(MessageRole::System, format!("记忆检索失败：{e}"));
+            }
+        }
     }
 
-    /// 消费 /mem 检索回包（主循环每帧调用）。
+    /// 推进 /mem 检索（主循环每帧调用）：search 应答 → 并行 get → 汇总渲染。
     pub fn poll_mem(&mut self) {
-        let Some(mut rx) = self.mem_rx.take() else {
+        match self.mem_q.take() {
+            None => {}
+            Some(MemStage::Search { query, deadline_ms }) => match self.take_query("mem.search") {
+                Some(Ok(v)) => self.mem_begin_gets(query, v),
+                Some(Err(e)) => {
+                    self.add_message(MessageRole::System, format!("记忆检索失败：{e}"));
+                }
+                None if !self.pipe_alive() => {
+                    self.add_message(MessageRole::System, "记忆检索失败：事件管道不可用");
+                }
+                None if self.clock_ms > deadline_ms => {
+                    self.add_message(MessageRole::System, "记忆检索失败：检索超时");
+                }
+                None => {
+                    self.mem_q = Some(MemStage::Search { query, deadline_ms });
+                }
+            },
+            Some(st @ MemStage::Gets { .. }) => self.mem_collect_gets(st),
+        }
+    }
+
+    /// search 应答落地：解析命中 id，逐条下发 mem.get（id 由序号派生）。
+    fn mem_begin_gets(&mut self, query: String, v: serde_json::Value) {
+        let raw = v
+            .get("results")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let total = v
+            .get("total")
+            .and_then(|t| t.as_u64())
+            .unwrap_or(raw.len() as u64);
+        let mut pending: Vec<(String, String, f64)> = Vec::new();
+        for (i, h) in raw.iter().take(MEM_HITS_MAX).enumerate() {
+            let Some(rid) = h.get("record_id").and_then(|r| r.as_str()) else {
+                continue;
+            };
+            let score = h.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+            let id = format!("mem.get.{i}");
+            let params = serde_json::json!({ "record_id": rid });
+            if let Err(e) = self.send_query(&id, "mem.get", &params) {
+                self.add_message(MessageRole::System, format!("记忆检索失败：{e}"));
+                return;
+            }
+            pending.push((id, rid.to_string(), score));
+        }
+        if pending.is_empty() {
+            self.add_message(
+                MessageRole::System,
+                mem_hits_text(&MemHits {
+                    query,
+                    hits: Vec::new(),
+                    total,
+                }),
+            );
+            return;
+        }
+        self.mem_q = Some(MemStage::Gets {
+            query,
+            total,
+            pending,
+            hits: Vec::new(),
+            deadline_ms: self.clock_ms + MEM_TIMEOUT_MS,
+        });
+    }
+
+    /// mem.get 应答收集：全部到齐后渲染；缺应答则保留在途状态。
+    fn mem_collect_gets(&mut self, st: MemStage) {
+        let MemStage::Gets {
+            query,
+            total,
+            mut pending,
+            mut hits,
+            deadline_ms,
+        } = st
+        else {
             return;
         };
-        match rx.try_recv() {
-            Ok(MemOutcome::Hits(hits)) => {
-                self.add_message(MessageRole::System, mem_hits_text(&hits));
+        let mut i = 0;
+        while i < pending.len() {
+            if let Some(reply) = self.take_query(&pending[i].0) {
+                let (_, rid, score) = pending.remove(i);
+                let text = reply
+                    .ok()
+                    .and_then(|v| v.get("data").and_then(|d| d.as_str()).map(str::to_string))
+                    .unwrap_or_default();
+                hits.push(MemHit {
+                    score,
+                    record_id: rid,
+                    text,
+                });
+            } else {
+                i += 1;
             }
-            Ok(MemOutcome::Failed(reason)) => {
-                self.add_message(MessageRole::System, format!("记忆检索失败：{reason}"));
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => self.mem_rx = Some(rx),
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
         }
+        if pending.is_empty() {
+            self.add_message(
+                MessageRole::System,
+                mem_hits_text(&MemHits { query, hits, total }),
+            );
+            return;
+        }
+        if !self.pipe_alive() {
+            self.add_message(MessageRole::System, "记忆检索失败：事件管道不可用");
+            return;
+        }
+        if self.clock_ms > deadline_ms {
+            self.add_message(MessageRole::System, "记忆检索失败：检索超时");
+            return;
+        }
+        self.mem_q = Some(MemStage::Gets {
+            query,
+            total,
+            pending,
+            hits,
+            deadline_ms,
+        });
     }
 }
 
 // ── /mem 检索跟随（0.1.20 批次五）──────────────────────────────────────
 
 /// /mem 检索超时（检索 + 至多 MEM_HITS_MAX 次 mem.get 的整体预算）。
-const MEM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const MEM_TIMEOUT_MS: u64 = 8_000;
 
 /// 工具轨迹面板翻页步长（行）。
 const TRACE_PAGE: usize = 10;
 
-/// /mem 检索回包：命中列表或失败原因（原样保留）。
-pub(super) enum MemOutcome {
-    Hits(MemHits),
-    Failed(String),
+/// /mem 检索在途状态：先取命中 id（mem.search），再逐条补正文（mem.get）。
+pub(super) enum MemStage {
+    Search {
+        query: String,
+        deadline_ms: u64,
+    },
+    Gets {
+        query: String,
+        total: u64,
+        /// 未应答的 (query id, record_id, score)，保持命中顺序
+        pending: Vec<(String, String, f64)>,
+        hits: Vec<MemHit>,
+        deadline_ms: u64,
+    },
 }
 
 /// /mem 检索结果：query 原文 + 命中列表 + 检索声明的总数。
@@ -349,55 +467,6 @@ pub(super) struct MemHit {
     pub score: f64,
     pub record_id: String,
     pub text: String,
-}
-
-/// 一次完整检索：mem.search → 命中逐条 mem.get 补正文；正文取不到留空。
-async fn mem_fetch(gw: GatewayClient, query: &str) -> MemOutcome {
-    let search = tokio::time::timeout(
-        MEM_TIMEOUT,
-        gw.rpc_call(
-            "mem.search",
-            serde_json::json!({ "query": query, "limit": MEM_HITS_MAX }),
-        ),
-    )
-    .await;
-    let v = match search {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => return MemOutcome::Failed(e.to_string()),
-        Err(_) => return MemOutcome::Failed(format!("检索超时（{}s）", MEM_TIMEOUT.as_secs())),
-    };
-    let raw = v
-        .get("results")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let total = v
-        .get("total")
-        .and_then(|t| t.as_u64())
-        .unwrap_or(raw.len() as u64);
-    let mut hits = Vec::new();
-    for h in raw.iter().take(MEM_HITS_MAX) {
-        let Some(rid) = h.get("record_id").and_then(|r| r.as_str()) else {
-            continue;
-        };
-        let score = h.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
-        let text = gw
-            .rpc_call("mem.get", serde_json::json!({ "record_id": rid }))
-            .await
-            .ok()
-            .and_then(|v| v.get("data").and_then(|d| d.as_str()).map(str::to_string))
-            .unwrap_or_default();
-        hits.push(MemHit {
-            score,
-            record_id: rid.to_string(),
-            text,
-        });
-    }
-    MemOutcome::Hits(MemHits {
-        query: query.to_string(),
-        hits,
-        total,
-    })
 }
 
 /// 命中列表文本（对话区呈现）：总览 + 每命中「分数 · id · 正文首行」。

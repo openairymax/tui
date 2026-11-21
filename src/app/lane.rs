@@ -53,6 +53,8 @@ impl App {
                 log::info!("事件管道已挂接（pid={}）", ev.pid());
                 self.ev = Some(ev);
                 self.lane_err = None;
+                // 管道就绪即水合记忆/技能镜像（一条 mem.recent 喂两个镜像）
+                self.refresh_mem_mirrors();
                 true
             }
             Err(e) => {

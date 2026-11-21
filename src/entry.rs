@@ -486,6 +486,7 @@ async fn run_app<B: Backend>(
         // 自托管快照消费（/selfhost 或 Alt+S 打开期间续拉）。
         app.poll_selfhost(now_ms);
         // 批次五：/mem 检索结果与后端日志尾读快照消费（各自在途通道早退无开销）。
+        app.poll_mem_mirror();
         app.poll_mem();
         app.poll_dlogs(now_ms);
         // 启动期连接探测结果消费（§6.1 #1）：晚到即热修正连接态，不阻塞首绘。
