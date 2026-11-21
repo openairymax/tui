@@ -7,5 +7,5 @@ send_message 0
 cancel_session 0
 resolve_approval 0
 list_pending_approvals 0
-rpc_call 8
-total 10
+rpc_call 6
+total 8

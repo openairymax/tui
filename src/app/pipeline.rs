@@ -3,20 +3,12 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// 后台请求流水线类型：在途请求种类、句柄、结果载荷，以及运维命令的结果包。
-// 请求在 tokio 任务中执行，结果经 oneshot 回传。
+// 后台请求流水线类型：在途请求种类、句柄与结果载荷。请求在 tokio 任务中
+// 执行，结果经 oneshot 回传。观察面读不在此列（走事件管道 query 帧）。
 
 use anyhow::Result;
 
 use crate::client::{GccpQuestion, RunResponse};
-
-/// 运维命令结果（/daemons 聚合 / 通用方法调用）。
-pub(super) enum OpsOutcome {
-    /// 16 个 daemon 的 health_check 结果（ns, 结果）
-    Daemons(Vec<(String, Result<serde_json::Value>)>),
-    /// 单个 gateway 方法调用结果
-    Call(Result<serde_json::Value>),
-}
 
 /// /daemons 探测清单（0.1.9 M4 整编后口径）：14 个可经 gateway FWD 探测
 /// 的业务 daemon 命名空间。plugin/info/observe 为整编兼容别名（→tool/

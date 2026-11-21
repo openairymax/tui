@@ -187,48 +187,46 @@ impl App {
         }
     }
 
-    /// /daemons：14 个 daemon 命名空间经 gateway health_check 聚合在线
-    /// 状态（0.1.9 M4 整编口径，清单见 OPS_DAEMON_NS；gateway_d 自身以
+    /// /daemons：14 个 daemon 命名空间经 health_check 聚合在线状态
+    /// （0.1.9 M4 整编口径，清单见 OPS_DAEMON_NS；gateway_d 自身以
     /// 连接状态呈现）。
     ///
-    /// 结果异步返回：先给"检查中"提示，poll_ops 消费后渲染进对话区。
+    /// 每域一条查询帧（`ops.daemon.{i}`），应答由 poll_ops 汇总渲染。
     pub(super) fn cmd_daemons(&mut self) {
-        if self.ops_pending.is_some() {
+        if self.ops_q.is_some() {
             self.add_message(MessageRole::System, "运维命令执行中，请稍候…".to_string());
             return;
         }
         self.ops_label = "daemons".to_string();
         self.add_message(MessageRole::System, "正在检查 daemon 在线状态…".to_string());
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let mut results = Vec::new();
-            for ns in OPS_DAEMON_NS {
-                let r = gw
-                    .rpc_call(&format!("{}.health_check", ns), serde_json::json!({}))
-                    .await;
-                results.push((ns.to_string(), r));
+        let mut pending = Vec::new();
+        for (i, ns) in OPS_DAEMON_NS.iter().enumerate() {
+            let id = format!("ops.daemon.{i}");
+            let method = format!("{ns}.health_check");
+            if let Err(e) = self.send_query(&id, &method, &serde_json::json!({})) {
+                self.add_message(MessageRole::System, format!("daemon 检查下发失败：{}", e));
+                return;
             }
-            let _ = tx.send(OpsOutcome::Daemons(results));
+            pending.push((ns.to_string(), id));
+        }
+        self.ops_q = Some(OpsStage::Daemons {
+            pending,
+            results: Vec::new(),
         });
-        self.ops_pending = Some(rx);
     }
 
     /// 通用运维方法调用（/agents /tools /models /mem /rpc 共用）。
     pub(super) fn cmd_ops_call(&mut self, method: &str, params: serde_json::Value) {
-        if self.ops_pending.is_some() {
+        if self.ops_q.is_some() {
             self.add_message(MessageRole::System, "运维命令执行中，请稍候…".to_string());
             return;
         }
         self.ops_label = method.to_string();
         self.add_message(MessageRole::System, format!("正在调用 {} …", method));
-        let method_owned = method.to_string();
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let _ = tx.send(OpsOutcome::Call(gw.rpc_call(&method_owned, params).await));
-        });
-        self.ops_pending = Some(rx);
+        match self.send_query("ops.call", method, &params) {
+            Ok(()) => self.ops_q = Some(OpsStage::Call),
+            Err(e) => self.add_message(MessageRole::System, format!("{} 下发失败：{}", method, e)),
+        }
     }
 
     /// /rpc <ns>.<method> [json]：通用 JSON-RPC 直调（对齐 C CLI /rpc）。
@@ -467,6 +465,17 @@ pub(super) struct MemHit {
     pub score: f64,
     pub record_id: String,
     pub text: String,
+}
+
+/// 运维命令在途状态：/daemons 多方法聚合或通用单方法调用（poll_ops 推进）。
+pub(super) enum OpsStage {
+    /// /daemons：待应答 (ns, 查询 id) + 已到结果（保持清单顺序）
+    Daemons {
+        pending: Vec<(String, String)>,
+        results: Vec<(String, Result<serde_json::Value, String>)>,
+    },
+    /// 通用单方法调用（/rpc /agents /tools /models 等）
+    Call,
 }
 
 /// 命中列表文本（对话区呈现）：总览 + 每命中「分数 · id · 正文首行」。

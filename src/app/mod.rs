@@ -361,8 +361,8 @@ pub struct App {
     chain_pending: Option<bool>,
     /// /chain 请求的任务 id（" " 空串 = 任务列表，非空 = 该任务决策链）
     chain_task: String,
-    /// 运维命令（/daemons /agents /tools /models /mem /rpc）在途请求
-    ops_pending: Option<tokio::sync::oneshot::Receiver<OpsOutcome>>,
+    /// 运维命令在途状态（/daemons 聚合或通用单方法；cmd_* 发起，poll_ops 推进）。
+    ops_q: Option<command::OpsStage>,
     /// 运维命令的展示标签（方法名，错误渲染用）
     ops_label: String,
     /// 2026-08-17：F6 看板选中行索引（↑↓ 移动，Enter 查看决策链）
@@ -556,7 +556,7 @@ impl App {
             active_tab: None,
             chain_pending: None,
             chain_task: String::new(),
-            ops_pending: None,
+            ops_q: None,
             ops_label: String::new(),
             board_cursor: 0,
             board_filter: String::new(),
