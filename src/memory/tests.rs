@@ -10,7 +10,7 @@ use super::*;
 
 #[test]
 fn seed_recent_returns_newest_first() {
-    let mut m = GatewayMemory::volatile();
+    let mut m = MirrorMemory::volatile();
     m.seed("user", "我的名字是小明", "chat", None);
     m.seed("assistant", "你好，小明！", "chat", None);
     assert_eq!(m.len(), 2);
@@ -23,7 +23,7 @@ fn seed_recent_returns_newest_first() {
 #[test]
 fn seed_keeps_conversation() {
     // D-14：记录携带会话归属，供 sessions.json 删档后按 conv 还原。
-    let mut m = GatewayMemory::volatile();
+    let mut m = MirrorMemory::volatile();
     m.seed("user", "无归属", "chat", None);
     assert_eq!(m.recent(1)[0].conv, None, "无归属记录不得伪造会话");
     m.seed("user", "有归属", "chat", Some("conv_test"));
@@ -33,13 +33,13 @@ fn seed_keeps_conversation() {
 #[test]
 fn volatile_backend_is_ready() {
     // 纯内存后端无异步水合，历史还原闸门恒开。
-    let m = GatewayMemory::volatile();
+    let m = MirrorMemory::volatile();
     assert!(m.is_ready());
 }
 
 #[test]
 fn recall_finds_related_by_keyword() {
-    let mut m = GatewayMemory::volatile();
+    let mut m = MirrorMemory::volatile();
     m.seed("user", "我在做性能监控优化", "chat", None);
     m.seed("user", "今天天气不错", "chat", None);
     let hits = m.recall("性能监控", 3);
@@ -49,7 +49,7 @@ fn recall_finds_related_by_keyword() {
 
 #[test]
 fn recall_ignores_system_role() {
-    let mut m = GatewayMemory::volatile();
+    let mut m = MirrorMemory::volatile();
     m.seed("system", "请判断模式", "meta", None);
     m.seed("user", "帮我写代码", "chat", None);
     let hits = m.recall("判断模式", 3);
@@ -60,7 +60,7 @@ fn recall_ignores_system_role() {
 fn recall_excludes_self_feed() {
     // 防自我回灌（2026-08-26）：运行侧记下当前输入后 recall 同 query，
     // 不得把该输入自身作为"相关记忆"回灌（与 CLI cli_chat_memory.c 同语义）。
-    let mut m = GatewayMemory::volatile();
+    let mut m = MirrorMemory::volatile();
     m.seed("user", "性能监控优化方案", "chat", None); // 旧记录
     m.seed("user", "性能监控", "chat", None); // 当前输入（应被排除）
     let hits = m.recall("性能监控", 5);
@@ -76,7 +76,7 @@ fn recall_excludes_self_feed() {
 
 #[test]
 fn volatile_backend_name() {
-    let m = GatewayMemory::volatile();
+    let m = MirrorMemory::volatile();
     assert_eq!(m.backend_name(), "volatile");
 }
 
@@ -139,7 +139,7 @@ fn split_cli_turn_extracts_reasoning() {
 /// reasoning 提权（+0.3），注入内容仍须纯净。
 #[test]
 fn legacy_reasoning_never_reaches_recall() {
-    let m = GatewayMemory::volatile();
+    let m = MirrorMemory::volatile();
     {
         let mut g = m.mirror.lock().unwrap_or_else(|e| e.into_inner());
         g.push(MemoryRecord {

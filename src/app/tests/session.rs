@@ -5,7 +5,7 @@ use super::super::config::{load_saved_model, persist_model};
 use super::super::context::HistoryPolicy;
 use super::super::text::derive_session_title;
 use super::super::*;
-use crate::memory::{ConversationMemory, GatewayMemory};
+use crate::memory::{ConversationMemory, MirrorMemory};
 
 /// 模型名持久化往返：persist_model（写 model.yaml default_model）→ load_saved_model 一致。
 #[test]
@@ -37,8 +37,7 @@ fn model_load_missing_or_corrupt() {
 #[test]
 fn cmd_model_set_and_query() {
     let _h = crate::test_env::Home::new("cmd-model");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     assert!(app.model.is_empty());
     app.cmd_model("/model deepseek-flash");
     assert_eq!(app.model, "deepseek-flash");
@@ -52,11 +51,10 @@ fn cmd_model_set_and_query() {
 #[test]
 fn resume_session_restores_history() {
     let _home = crate::test_env::Home::new("resume");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     // 显式注入纯内存镜像后端（volatile：不触网、不落盘），隔离验证恢复
     // 逻辑本身——TUI 记忆统一走网关 mem.*，此处不依赖任何本地文件。
-    let mut mem = GatewayMemory::volatile();
+    let mut mem = MirrorMemory::volatile();
     mem.seed("user", "上次的问题", "chat", None);
     mem.seed("assistant", "上次的回答", "chat", None);
     mem.seed("system", "不应恢复的系统消息", "chat", None);
@@ -91,8 +89,7 @@ fn load_project_context_finds_agents_md() {
     let sub = dir.path().join("src/sub");
     std::fs::create_dir_all(&sub).expect("create sub");
 
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     assert!(app.load_project_context(Some(&sub)));
     assert!(app.project_context.contains("项目约定"));
     assert!(app.project_context.contains("AGENTS.md"));
@@ -120,8 +117,7 @@ fn derive_session_title_truncates_and_falls_back() {
 #[test]
 fn b1_gated_drops_history_for_new_topic() {
     let _h = crate::test_env::Home::new("b1-gated-new");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.add_message(MessageRole::User, "什么是阶跃函数？".to_string());
     app.add_message(MessageRole::Agent, "阶跃函数是一类不连续函数……".to_string());
     app.add_message(MessageRole::User, "介绍你自己".to_string());
@@ -136,8 +132,7 @@ fn b1_gated_drops_history_for_new_topic() {
 #[test]
 fn b1_gated_keeps_last_round_with_boundary_marks() {
     let _h = crate::test_env::Home::new("b1-gated-anaphora");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.add_message(MessageRole::User, "什么是阶跃函数？".to_string());
     app.add_message(MessageRole::Agent, "阶跃函数是一类不连续函数……".to_string());
     app.add_message(MessageRole::User, "那它的反函数呢".to_string());
@@ -172,8 +167,7 @@ fn b1_gated_keeps_last_round_with_boundary_marks() {
 #[test]
 fn b1_full_keeps_all_rounds_with_boundary_marks() {
     let _h = crate::test_env::Home::new("b1-full");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
+    let mut app = App::new("agents/main.agent.yaml");
     app.add_message(MessageRole::User, "第一轮问题".to_string());
     app.add_message(MessageRole::Agent, "第一轮回答".to_string());
     app.add_message(MessageRole::User, "第二轮问题".to_string());
@@ -201,9 +195,8 @@ fn b1_full_keeps_all_rounds_with_boundary_marks() {
 #[test]
 fn b1_prompt_declares_turn_boundary_and_marks_memory_turn() {
     let _h = crate::test_env::Home::new("b1-prompt");
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    let mut app = App::new("agents/main.agent.yaml", gw);
-    let mut mem = GatewayMemory::volatile();
+    let mut app = App::new("agents/main.agent.yaml");
+    let mut mem = MirrorMemory::volatile();
     mem.seed("assistant", "阶跃函数是不连续的函数", "chat,turn:1", None);
     app.memory = Box::new(mem);
 
@@ -232,7 +225,7 @@ fn b1_prompt_declares_turn_boundary_and_marks_memory_turn() {
 #[test]
 fn b1_memory_hit_carries_turn_annotation() {
     let _h = crate::test_env::Home::new("b1-hit-turn");
-    let mut mem = GatewayMemory::volatile();
+    let mut mem = MirrorMemory::volatile();
     // 词对无子串包含关系：recall 为子串匹配，"quicksort"/"sort" 这类
     // 包含词对会双命中，无法验证"仅一条命中"。
     mem.seed("assistant", "the sky is blue", "chat,turn:3", None);

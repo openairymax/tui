@@ -159,21 +159,21 @@ pub trait SkillStore: Send + Sync {
     fn seed(&mut self, skill: SkillRecord);
 }
 
-/// 网关技能后端（TUI 唯一后端）。
+/// 技能镜像后端（TUI 唯一后端）。
 ///
 /// 权威存储为网关记忆服务 mem_d（`mem.*`，与 CLI 同一后端，技能以
 /// `metadata.kind="skill"` 与对话记忆分区共存）；本结构持有的 mirror 是渲染/
 /// 召回的同步读缓存：启动与面板打开时由 App 下发查询水合。写入不在本结构
 /// 职责内（0.1.21 X1-28b：TUI 只读）。
-pub struct GatewaySkillStore {
+pub struct MirrorSkillStore {
     /// 同步读缓存（旧→新有序，list 时反向取）
     mirror: Arc<Mutex<Vec<SkillRecord>>>,
     /// 后端名（"gateway" / "volatile"），面板展示用
     backend: &'static str,
 }
 
-impl GatewaySkillStore {
-    /// 构造网关技能后端：不做 IO，水合由 App 的 query 帧驱动。
+impl MirrorSkillStore {
+    /// 构造技能镜像后端：不做 IO，水合由 App 的 query 帧驱动。
     pub fn new() -> Self {
         Self {
             mirror: Arc::new(Mutex::new(Vec::new())),
@@ -190,7 +190,7 @@ impl GatewaySkillStore {
     }
 }
 
-impl SkillStore for GatewaySkillStore {
+impl SkillStore for MirrorSkillStore {
     fn find(&self, query: &str, limit: usize) -> Vec<SkillRecord> {
         let tokens: Vec<String> = query
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
@@ -304,15 +304,15 @@ fn apply_recent(mirror: &Mutex<Vec<SkillRecord>>, result: &serde_json::Value) {
 /// 构造技能库后端：TUI 唯一后端为网关记忆服务（`mem.*`，与 CLI 同一
 /// 存储）；水合由 App 经事件管道驱动，本构造函数不做 IO。
 pub fn build_skill_store() -> Box<dyn SkillStore> {
-    Box::new(GatewaySkillStore::new())
+    Box::new(MirrorSkillStore::new())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn store() -> GatewaySkillStore {
-        GatewaySkillStore::volatile()
+    fn store() -> MirrorSkillStore {
+        MirrorSkillStore::volatile()
     }
 
     #[test]

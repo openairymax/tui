@@ -90,13 +90,13 @@ pub trait ConversationMemory: Send + Sync {
     fn seed(&mut self, role: &str, content: &str, tags: &str, conv: Option<&str>);
 }
 
-/// 网关记忆后端（TUI 唯一后端）。
+/// 记忆镜像后端（TUI 唯一后端）。
 ///
 /// 权威存储为网关记忆服务 mem_d（`mem.*`，与 CLI 同一后端）；本结构持有的
 /// mirror 是渲染/召回的同步读缓存：启动与面板打开时由 App 下发查询水合。
 /// 单测/离线可用 `volatile`（纯内存、不落盘）。写入不在本结构职责内
 /// （0.1.21 X1-28a：TUI 只读）。
-pub struct GatewayMemory {
+pub struct MirrorMemory {
     /// 同步读缓存（旧→新有序，recent 时反向取）
     mirror: Arc<Mutex<Vec<MemoryRecord>>>,
     /// 水合完成标志（会话历史还原的就绪闸门，D-14）
@@ -105,8 +105,8 @@ pub struct GatewayMemory {
     backend: &'static str,
 }
 
-impl GatewayMemory {
-    /// 构造网关记忆后端。
+impl MirrorMemory {
+    /// 构造记忆镜像后端。
     ///
     /// 传输不在此处：水合查询由 App 经事件管道（query 帧）下发，结果经
     /// `ingest_recent` 落地。单测等同步上下文使用 volatile。
@@ -128,7 +128,7 @@ impl GatewayMemory {
     }
 }
 
-impl ConversationMemory for GatewayMemory {
+impl ConversationMemory for MirrorMemory {
     fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit> {
         let tokens: Vec<&str> = query
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
@@ -387,7 +387,7 @@ pub(crate) fn epoch_to_iso(secs: i64) -> String {
 /// 构造记忆模块：TUI 唯一后端为网关记忆服务（`mem.*`，与 CLI 同一存储）。
 /// 读取由 App 经事件管道水合（query 帧），本构造函数不做 IO。
 pub fn build_memory() -> Box<dyn ConversationMemory> {
-    Box::new(GatewayMemory::new())
+    Box::new(MirrorMemory::new())
 }
 
 #[cfg(test)]

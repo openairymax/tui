@@ -255,14 +255,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{ConversationMemory, GatewayMemory};
+    use crate::memory::{ConversationMemory, MirrorMemory};
 
     /// 以 volatile 记忆库替换默认后端：投影口径与网关后端无关。
     fn app_with(records: &[(&str, &str, &str)]) -> App {
         let _home = crate::test_env::Home::new("memory-snapshot");
-        let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-        let mut app = App::new("agents/main.agent.yaml", gw);
-        let mut mem = GatewayMemory::volatile();
+        let mut app = App::new("agents/main.agent.yaml");
+        let mut mem = MirrorMemory::volatile();
         for (role, text, tags) in records {
             mem.seed(role, text, tags, None);
         }

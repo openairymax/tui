@@ -10,14 +10,13 @@
 use super::*;
 
 fn app() -> App {
-    let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-    App::new("agents/main.agent.yaml", gw)
+    App::new("agents/main.agent.yaml")
 }
 
 /// 以纯内存记忆后端构造（单测无 tokio 运行时，记忆不触网）。
 fn app_mem() -> App {
     let mut a = app();
-    a.memory = Box::new(crate::memory::GatewayMemory::volatile());
+    a.memory = Box::new(crate::memory::MirrorMemory::volatile());
     a
 }
 

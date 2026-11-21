@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::budget::{BACKEND_REFRESH_MS, MAX_TOOL_TEXT_BYTES, MEM_HITS_MAX, MEM_HIT_CLIP_CHARS};
 use crate::client::{
-    GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
-    RunResponse, ToolTrace,
+    GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval, RunResponse,
+    ToolTrace,
 };
 use crate::engine::health::{Banner, ErrAgg, HealthTable, Stamp, Timeline};
 use crate::engine::leader::Leader;
@@ -124,8 +124,6 @@ pub struct App {
     /// 滚动基于稳定的折叠视图，不再"一滚就展开导致视口跳变"。
     /// 0.1.18 B4：Alt+E 改用于打开思考链独立视图，本开关改由 Alt+O 切换。
     pub browse_expanded: bool,
-    /// Gateway client
-    pub gateway: GatewayClient,
     /// Connected status
     pub connected: bool,
     /// 连接三态（0.1.19 §6.6 #2）：在线 / 重连中·n / 已补账·k。
@@ -401,7 +399,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(agent_file: &str, gateway: GatewayClient) -> Self {
+    pub fn new(agent_file: &str) -> Self {
         // TUI 记忆统一走网关 mem.*（与 CLI 同一后端）；水合由事件管道的
         // query 帧驱动（attach_lane 之后下发 mem.recent），此处只建镜像。
         let memory_backend = memory::build_memory();
@@ -440,7 +438,6 @@ impl App {
             focus_scroll_max: 0,
             render_degraded: false,
             browse_expanded: false,
-            gateway,
             connected: false,
             link: crate::engine::link::Link::new(),
             gateway_version: None,

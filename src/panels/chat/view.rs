@@ -331,8 +331,7 @@ mod tests {
     /// 与 app 模块既有测试同一范式）。
     fn make_app() -> (App, crate::test_env::Home) {
         let home = crate::test_env::Home::new("chat-view");
-        let gw = crate::client::GatewayClient::new("http://127.0.0.1:1").expect("gateway client");
-        let app = App::new("agents/main.agent.yaml", gw);
+        let app = App::new("agents/main.agent.yaml");
         (app, home)
     }
 
