@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 # T-09（0.1.15 裁决）：收回 TUI 对运行时库的一切 FFI 直连——
 # memoryrovol feature 已删除；0.1.16 起记忆读写统一经 gateway mem.* RPC
-# （GatewayMemory，与 CLI 共享同一 mem_d 记忆库），无任何本地记忆存储。
+# （与 CLI 共享同一 mem_d 记忆库），无任何本地记忆存储。
 # 0.1.18 W8：内置拼音 IME 改为纯 Rust 引擎（src/ime.rs，直接消费
 # commons airy_ime.dat 词典格式），零 FFI、零静态库依赖，故原 ime
 # feature 开关一并删除（恒编入，无外部消费者）。
@@ -29,11 +29,6 @@ agentrt-rs = { path = "../sdk-rust" }
 # TUI framework
 ratatui = "0.28"
 crossterm = "0.28"
-
-# HTTP client for gateway communication
-# default-features=false：禁用默认 native-tls（openssl），改用纯 Rust rustls，
-# 消除运行时 libssl 依赖，x86/ARM/RISC-V 与 Windows/macOS 交叉编译一致。
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
