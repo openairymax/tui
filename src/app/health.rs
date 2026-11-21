@@ -178,7 +178,6 @@ impl App {
     pub fn open_health(&mut self) {
         self.active_panel = ActivePanel::Health;
         self.health_scroll = 0;
-        self.stop_hall_watch();
         self.start_health(true);
     }
 

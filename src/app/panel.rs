@@ -181,14 +181,8 @@ impl App {
     pub fn toggle_panel(&mut self, panel: ActivePanel) {
         if self.active_panel == panel {
             self.active_panel = ActivePanel::Chat;
-            self.stop_hall_watch();
         } else {
             self.active_panel = panel;
-            if panel == ActivePanel::Board || panel == ActivePanel::Events {
-                self.start_hall_watch();
-            } else {
-                self.stop_hall_watch();
-            }
             if panel == ActivePanel::Memory {
                 // 打开面板时从网关 mem.* 重新水合镜像（异步回投，不阻塞渲染）；
                 // 记忆唯一权威后端是 mem_d，TUI 仅持同步读缓存。
@@ -214,11 +208,10 @@ impl App {
     ///
     /// 思考链默认不上屏、不落长期记忆，本视图是唯一的按需查看入口，故用
     /// "打开"而非 toggle 语义：已在视图中时再按 Alt+E 只把滚动归零（回到
-    /// 最新思考链顶部），不会意外退回对话。离开 Board/Events 时须停 SSE。
+    /// 最新思考链顶部），不会意外退回对话。
     pub fn open_think_panel(&mut self) {
         self.active_panel = ActivePanel::Think;
         self.think_scroll = 0;
-        self.stop_hall_watch();
     }
 
     /// PgDn：记忆面板向更早方向翻一页（分组窗口懒加载，0.1.9 W8）。

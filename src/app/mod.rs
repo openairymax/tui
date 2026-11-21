@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::budget::{BACKEND_REFRESH_MS, MAX_TOOL_TEXT_BYTES, MEM_HITS_MAX, MEM_HIT_CLIP_CHARS};
 use crate::client::{
-    GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, PendingApproval,
+    GatewayClient, GccpQuestion, HallBoard, HallBoardEntry, HallEvent, HallTask, PendingApproval,
     RunResponse, ToolTrace,
 };
 use crate::engine::health::{Banner, ErrAgg, HealthTable, Stamp, Timeline};
@@ -340,15 +340,13 @@ pub struct App {
     /// 事件去重键 LRU（§6.10 #5）：file_id 有界缓存，挡 RPC 全量重放，
     /// 容量 MAX_DEDUPE_KEYS，长会话不随事件总量爬坡。
     hall_seen: VecDeque<String>,
-    /// hall 面板显式刷新请求（面板切换 / SSE 推送触发）。置位后由主循环取走并
+    /// hall 面板显式刷新请求（面板切换触发）。置位后由主循环取走并
     /// 把 Hall 节拍提前到下一帧——拉取的**时刻判定仍归 L4 调度器**，此处只记
     /// 「有刷新需求」，不另存一份时钟（0.1.18 §5A.3 W4 节拍权威）。
     hall_force: bool,
-    /// hall 面板在途请求（spawn 后异步返回，下次 poll_hall 消费结果）
-    hall_poll_rx: Option<tokio::sync::oneshot::Receiver<HallPollOutcome>>,
-    /// hall.watch SSE 推送流接收端（2026-08-21：事件流驱动，替代纯轮询；
-    /// Board/Events 面板激活时订阅，离开时 drop 以结束 watch 任务）
-    hall_watch_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// hall 面板在途查询（true = 看板，false = 事件流）。查询经事件管道
+    /// 下发，应答按 id 暂存，下次 poll_hall 摘取；同一时刻只允许一条在途。
+    hall_q: Option<bool>,
     /// hall 面板最近一次拉取失败信息（None = 尚无失败或上次已成功；
     /// board.rs 据此区分"正在加载"与"拉取失败/离线"两种空态）
     pub hall_error: Option<String>,
@@ -356,8 +354,8 @@ pub struct App {
     pub session_tabs: Vec<SessionTab>,
     /// 当前显示的 tab 索引（None = 主会话；Some(n) = session_tabs[n]）
     pub active_tab: Option<usize>,
-    /// /chain 在途请求（task_id 为空 = 任务列表）
-    chain_pending: Option<tokio::sync::oneshot::Receiver<ChainOutcome>>,
+    /// /chain 在途查询（true = 任务列表，false = 单任务决策链）
+    chain_pending: Option<bool>,
     /// /chain 请求的任务 id（" " 空串 = 任务列表，非空 = 该任务决策链）
     chain_task: String,
     /// 运维命令（/daemons /agents /tools /models /mem /rpc）在途请求
@@ -540,8 +538,7 @@ impl App {
             hall_events: Vec::new(),
             hall_seen: VecDeque::new(),
             hall_force: false,
-            hall_poll_rx: None,
-            hall_watch_rx: None,
+            hall_q: None,
             hall_error: None,
             session_tabs: vec![SessionTab {
                 title: String::new(),
@@ -717,6 +714,46 @@ impl App {
             }
         }
         crate::markdown::last_fenced(&self.streaming_text)
+    }
+
+    /// 下发一帧观察面查询（D-15 扩展，kind=query）。
+    ///
+    /// 面板读只经事件管道取值，不自建 HTTP、不持有网关客户端；应答按 id
+    /// 暂存，由各 poll_* 用 `take_query` 摘取。管道不可用即如实报错。
+    pub(super) fn send_query(
+        &mut self,
+        id: &str,
+        method: &str,
+        params: &serde_json::Value,
+    ) -> Result<(), String> {
+        let Some(ev) = self.ev.as_ref() else {
+            return Err("事件管道不可用".to_string());
+        };
+        ev.query(id, method, params).map_err(|e| e.to_string())
+    }
+
+    /// 摘取一条查询应答：Ok(原始 result) / Err(错误文本)；None = 尚未应答。
+    pub(super) fn take_query(&self, id: &str) -> Option<Result<serde_json::Value, String>> {
+        let v = self.ev.as_ref()?.take_query(id)?;
+        Some(query_reply(v))
+    }
+
+    /// 事件管道是否仍在（查询在途判定用）。管道已退出即在途请求永远不会应答。
+    pub(super) fn pipe_alive(&self) -> bool {
+        self.ev.as_ref().is_some_and(|ev| ev.alive())
+    }
+}
+
+/// query_result 载荷 → 结果或错误文本（契约见 cli_ev.h）。
+fn query_reply(v: serde_json::Value) -> Result<serde_json::Value, String> {
+    if v.get("ok").and_then(|ok| ok.as_bool()).unwrap_or(false) {
+        Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
+    } else {
+        Err(v
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("查询失败")
+            .to_string())
     }
 }
 
