@@ -276,6 +276,9 @@ impl App {
 /// （服务端 run_end 的 data 段只带统计量，身份在帧信封上）；状态缺省按完成计。
 fn lane_result(raw: &str, final_text: &str, sid: &str) -> Result<RunResponse> {
     let mut v: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!({}));
+    if !v.is_object() {
+        v = json!({});
+    }
     if v.get("session_id")
         .and_then(Value::as_str)
         .unwrap_or("")
