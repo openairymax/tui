@@ -2,10 +2,10 @@
 #
 # 每行一个方法及其当前生产调用点数；任务卡推进时只许下调。终局为 0
 # （X1-29a 退役 GatewayClient）。`total` 仅作汇总，门禁按逐项比对判定。
-health_check 2
+health_check 0
 send_message 0
 cancel_session 0
 resolve_approval 0
 list_pending_approvals 0
-rpc_call 6
-total 8
+rpc_call 4
+total 4

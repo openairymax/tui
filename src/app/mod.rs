@@ -158,8 +158,8 @@ pub struct App {
     pub(crate) timeline: Timeline,
     /// 最近一次时钟注入的处理结果（诊断导出读取）。
     pub(crate) stamp: Stamp,
-    /// 健康探测在途结果（主循环节拍触发，poll_health 消费）。
-    health_rx: Option<tokio::sync::oneshot::Receiver<Vec<health::Probe>>>,
+    /// 健康探测在途状态（主循环节拍触发，poll_health 推进）。
+    health_q: Option<health::HealthStage>,
     /// 健康面板滚动偏移（正文首行下标，0 = 顶部）。
     pub health_scroll: usize,
     /// 演化指标快照（0.1.20 W8）：think_d 上报至 monit observe 表，经
@@ -307,8 +307,8 @@ pub struct App {
     pub slot_models: [String; 3],
     /// C-19：槽位降级标记（有槽位空值/悬空）。仅展示，不改写配置。
     pub slots_degraded: bool,
-    /// 槽位快照在途请求（与连接探测并发，静默落地）
-    slots_rx: Option<tokio::sync::oneshot::Receiver<Result<serde_json::Value>>>,
+    /// 槽位快照在途查询（与连接探测并发，静默落地）
+    slots_q: bool,
     /// 思考阶段开始时刻（首个 reasoning 增量到达时记录；chat 流式状态行
     /// 显示耗时，2026-08-19 与 C 版 CLI 的 "N 字 · T.Ts" 进度对齐）。
     pub stream_reasoning_start: Option<Instant>,
@@ -331,8 +331,8 @@ pub struct App {
     pub approvals: Vec<PendingApproval>,
     /// 项目上下文文件内容（AGENTS.md / CLAUDE.md，注入 build_context_prompt）
     pub project_context: String,
-    /// 启动期连接探测在途结果（§6.1 #1：与首帧并发，晚到热修正连接态）
-    boot_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::client::HealthResponse>>>,
+    /// 启动期连接探测在途标记（§6.1 #1：与首帧并发，晚到热修正连接态）
+    boot_q: bool,
     /// 2026-08-17：F8 请求切换到 CLI（airy_cli）——主循环收到标志后
     /// 恢复终端并以 exec 语义替换当前进程（见 main.rs run_tui）。
     pub switch_to_cli: bool,
@@ -455,7 +455,7 @@ impl App {
             err_agg: ErrAgg::new(),
             timeline: Timeline::new(),
             stamp: Stamp::default(),
-            health_rx: None,
+            health_q: None,
             health_scroll: 0,
             evo: None,
             evo_rx: None,
@@ -528,7 +528,7 @@ impl App {
             stream_reasoning_model: String::new(),
             slot_models: Default::default(),
             slots_degraded: false,
-            slots_rx: None,
+            slots_q: false,
             stream_reasoning_start: None,
             last_reasoning: None,
             think_scroll: 0,
@@ -536,7 +536,7 @@ impl App {
             stream_sanitizer: StreamSanitizer::new(),
             approvals: Vec::new(),
             project_context: String::new(),
-            boot_rx: None,
+            boot_q: false,
             switch_to_cli: false,
             hall_board: None,
             hall_events: Vec::new(),

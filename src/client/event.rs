@@ -26,12 +26,12 @@
 // 可以安全持有一份而不延长会话寿命。
 //
 // 运行轮与审批已全部收敛到本模块（`app::lane` 唯一入口），网关只保留观察面
-// 读侧 RPC：health_check 2、rpc_call 6（llm.* 2、tool.* 1、agent.turns 1、
-// telemetry 1、health_check 1）。mem.*、hall.* 与运维命令读侧已迁到 query 帧，
-// 剩余面板级读按域续迁。
+// 读侧 RPC：rpc_call 4（tool.* 1、agent.turns 1、telemetry 1、llm.get_stats 1）。
+// mem.*、hall.*、运维命令、健康探测与槽位快照读侧已迁到 query 帧，剩余
+// 面板级读按域续迁。
 //
-// 门禁口径按客户端入口计（两个方法共 8 处，`{ns}.health_check` 走同一入口），
-// 基线见 scripts/gate/rpc-sites.baseline，只许下调；上限为 0（X1-29a）。
+// 门禁口径按客户端入口计（当前共 4 处），基线见
+// scripts/gate/rpc-sites.baseline，只许下调；上限为 0（X1-29a）。
 
 #![cfg_attr(not(test), allow(dead_code))]
 

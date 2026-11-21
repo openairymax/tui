@@ -9,11 +9,9 @@
 // 全部在 engine::health（L1 纯数据）。时刻一律由主循环注入，避免应用层
 // 自读时钟导致单测无法确定性重放。
 //
-// 数据真实性：探测只有两个真实来源——gateway GET /health 与
-// {ns}.health_check RPC（经 gateway FWD，代表端到端可达）。探测失败按原样
-// 入日志与错误聚合，不合成事件、不猜测成因。
-
-use std::time::Duration;
+// 数据真实性：探测只有两个真实来源——gateway ping 帧与 {ns}.health_check
+// 查询帧（经事件管道下发，代表端到端可达）。探测失败按原样入日志与错误
+// 聚合，不合成事件、不猜测成因。
 
 use crate::engine::health::{diag_report, BannerAct, Change, UNREACH};
 use crate::engine::sched::Lane;
@@ -28,8 +26,16 @@ pub(crate) struct Probe {
     pub(crate) err: String,
 }
 
-/// 单依赖探测超时：与 gateway health_check 的 2s 口径一致。
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// 健康探测在途阶段：网关存活确认 → 各域并发探测。
+pub(crate) enum HealthStage {
+    /// 网关存活确认中；`full` 决定随后探测范围
+    Ping { full: bool },
+    /// 各域 health_check 待应答 + 已到结果
+    Deps {
+        pending: Vec<(String, String)>,
+        probes: Vec<Probe>,
+    },
+}
 
 /// 健康面板翻页步长（行）。
 const HEALTH_PAGE: usize = 10;
@@ -55,84 +61,107 @@ impl App {
     /// gateway 自身不可达时短路：后续 daemon 探测必然全部失败，逐项上报只会
     /// 制造一屏「不可达」噪声，真实根因只有一个——网关。
     pub fn start_health(&mut self, full: bool) {
-        if self.health_rx.is_some() {
+        if self.health_q.is_some() {
             return;
         }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            if let Err(e) = gw.health_check().await {
-                let _ = tx.send(vec![Probe {
-                    name: "gateway".to_string(),
-                    ok: false,
-                    err: e.to_string(),
-                }]);
-                return;
+        // 网关存活先确认（ping 帧）：不可达时短路，逐项上报只制造噪声。
+        match self.send_query("health.ping", "ping", &serde_json::json!({})) {
+            Ok(()) => self.health_q = Some(HealthStage::Ping { full }),
+            Err(e) => {
+                self.note_dep("gateway", false, self.clock_ms, Some(&e));
+                self.sync_banner(self.clock_ms);
             }
-            let names: Vec<&str> = if full {
-                OPS_DAEMON_NS.to_vec()
-            } else {
-                vec!["llm"]
-            };
-            // 并发探测：总耗时约一个超时周期，不随依赖数线性放大。
-            let mut tasks = Vec::with_capacity(names.len());
-            for ns in names {
-                let gw = gw.clone();
-                tasks.push(tokio::spawn(async move {
-                    let r = tokio::time::timeout(
-                        PROBE_TIMEOUT,
-                        gw.rpc_call(&format!("{ns}.health_check"), serde_json::json!({})),
-                    )
-                    .await;
-                    let (ok, err) = match r {
-                        Ok(Ok(_)) => (true, String::new()),
-                        Ok(Err(e)) => (false, e.to_string()),
-                        Err(_) => (false, format!("探测超时（{}s）", PROBE_TIMEOUT.as_secs())),
-                    };
-                    Probe {
-                        name: ns.to_string(),
-                        ok,
-                        err,
-                    }
-                }));
-            }
-            let mut out = Vec::with_capacity(tasks.len() + 1);
-            out.push(Probe {
-                name: "gateway".to_string(),
-                ok: true,
-                err: String::new(),
-            });
-            for t in tasks {
-                // JoinError 说明任务被取消：其结果未知，保持健康表原状，
-                // 不用「失败」冒充未知。
-                if let Ok(p) = t.await {
-                    out.push(p);
-                }
-            }
-            let _ = tx.send(out);
-        });
-        self.health_rx = Some(rx);
+        }
     }
 
-    /// 消费探测结果：逐项落健康表与错误聚合，最后统一同步一次横幅
+    /// 推进探测：网关确认 → 各域应答收齐后统一落表与同步一次横幅
     /// （批量探测只触发一次横幅裁决，避免同批内多次抖动计数）。
     pub fn poll_health(&mut self, now_ms: u64) {
-        let Some(mut rx) = self.health_rx.take() else {
+        match self.health_q.take() {
+            None => {}
+            Some(HealthStage::Ping { full }) => match self.take_query("health.ping") {
+                Some(Ok(_)) => self.start_health_deps(full),
+                Some(Err(e)) => {
+                    self.note_dep("gateway", false, now_ms, Some(&e));
+                    self.sync_banner(now_ms);
+                    self.mark_landed(Lane::Poll);
+                }
+                None if !self.pipe_alive() => {
+                    self.note_dep("gateway", false, now_ms, Some("事件管道不可用"));
+                    self.sync_banner(now_ms);
+                    self.mark_landed(Lane::Poll);
+                }
+                None => self.health_q = Some(HealthStage::Ping { full }),
+            },
+            Some(st @ HealthStage::Deps { .. }) => self.poll_health_deps(st, now_ms),
+        }
+    }
+
+    /// 各域并发探测：每域一条 `health.daemon.{i}`，应答由 poll_health 汇总。
+    fn start_health_deps(&mut self, full: bool) {
+        let names: Vec<&str> = if full {
+            OPS_DAEMON_NS.to_vec()
+        } else {
+            vec!["llm"]
+        };
+        let mut pending = Vec::with_capacity(names.len());
+        let mut probes = vec![Probe {
+            name: "gateway".to_string(),
+            ok: true,
+            err: String::new(),
+        }];
+        for (i, ns) in names.iter().enumerate() {
+            let id = format!("health.daemon.{i}");
+            let method = format!("{ns}.health_check");
+            match self.send_query(&id, &method, &serde_json::json!({})) {
+                Ok(()) => pending.push((ns.to_string(), id)),
+                Err(e) => probes.push(Probe {
+                    name: ns.to_string(),
+                    ok: false,
+                    err: e,
+                }),
+            }
+        }
+        self.health_q = Some(HealthStage::Deps { pending, probes });
+    }
+
+    /// 收集各域应答：缺应答保留在途；管道退出则已到结果照常落表。
+    fn poll_health_deps(&mut self, st: HealthStage, now_ms: u64) {
+        let HealthStage::Deps {
+            mut pending,
+            mut probes,
+        } = st
+        else {
             return;
         };
-        match rx.try_recv() {
-            Ok(probes) => {
-                for p in probes {
-                    self.note_dep(&p.name, p.ok, now_ms, Some(&p.err));
-                }
-                self.sync_banner(now_ms);
-                self.mark_landed(Lane::Poll);
+        let mut i = 0;
+        while i < pending.len() {
+            if let Some(r) = self.take_query(&pending[i].1) {
+                let (ns, _) = pending.remove(i);
+                let (ok, err) = match r {
+                    Ok(_) => (true, String::new()),
+                    Err(e) => (false, e),
+                };
+                probes.push(Probe { name: ns, ok, err });
+            } else {
+                i += 1;
             }
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                self.health_rx = Some(rx);
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
         }
+        if pending.is_empty() || !self.pipe_alive() {
+            // 管道退出时未应答的域保持健康表原状——不用「失败」冒充未知。
+            self.land_health(probes, now_ms);
+            return;
+        }
+        self.health_q = Some(HealthStage::Deps { pending, probes });
+    }
+
+    /// 探测结果落地：逐项落健康表与错误聚合。
+    fn land_health(&mut self, probes: Vec<Probe>, now_ms: u64) {
+        for p in probes {
+            self.note_dep(&p.name, p.ok, now_ms, Some(&p.err));
+        }
+        self.sync_banner(now_ms);
+        self.mark_landed(Lane::Poll);
     }
 
     /// 吸收一次真实探测：状态迁移与错误聚合的唯一落点。
