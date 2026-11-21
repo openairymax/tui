@@ -43,7 +43,11 @@ impl App {
             }
         }
         self.approvals.remove(0);
-        let label = if allow { "允许本次执行" } else { "拒绝" };
+        let label = if allow {
+            "允许本次执行"
+        } else {
+            "拒绝"
+        };
         let tail = if allow {
             if decision == "always" {
                 "（会话级总是允许待 CLI 支持，本次仅放行一次）"
@@ -202,30 +206,38 @@ impl App {
         self.notice.take()
     }
 
-    /// 启动期连接探测（§6.1 #1）：与首帧并发，结果异步落地，不阻塞首绘。
+    /// 启动期连接探测（§6.1 #1）：与首帧并发，ping 帧应答落地，不阻塞首绘。
     pub fn probe_connection(&mut self) {
-        if self.boot_rx.is_some() {
+        if self.boot_q {
             return;
         }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let _ = tx.send(gw.health_check().await);
-        });
-        self.boot_rx = Some(rx);
+        match self.send_query("boot.ping", "ping", &serde_json::json!({})) {
+            Ok(()) => self.boot_q = true,
+            Err(e) => self.apply_probe(Err(anyhow!(e))),
+        }
     }
 
-    /// 消费启动期连接探测结果：未返回则保留接收端，结果到达即热修正连接态。
+    /// 消费启动期连接探测结果：应答到达即热修正连接态。
     pub fn poll_boot(&mut self) {
-        let Some(mut rx) = self.boot_rx.take() else {
+        if !self.boot_q {
             return;
-        };
-        match rx.try_recv() {
-            Ok(result) => self.apply_probe(result),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => self.boot_rx = Some(rx),
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                self.apply_probe(Err(anyhow!("启动期连接探测任务异常终止")));
+        }
+        match self.take_query("boot.ping") {
+            Some(Ok(v)) => {
+                self.boot_q = false;
+                let parsed = serde_json::from_value::<crate::client::HealthResponse>(v)
+                    .map_err(|e| anyhow!("健康应答无法解析：{e}"));
+                self.apply_probe(parsed);
             }
+            Some(Err(e)) => {
+                self.boot_q = false;
+                self.apply_probe(Err(anyhow!(e)));
+            }
+            None if !self.pipe_alive() => {
+                self.boot_q = false;
+                self.apply_probe(Err(anyhow!("事件管道不可用")));
+            }
+            None => {}
         }
     }
 
@@ -235,27 +247,31 @@ impl App {
     /// （model.yaml + env 归并后的结果）；TUI 自己读 model.yaml 会漏掉
     /// env 覆盖与空槽位回落，故统一走 `llm.slots_get`。
     pub fn probe_slots(&mut self) {
-        if self.slots_rx.is_some() {
+        if self.slots_q {
             return;
         }
-        let gw = self.gateway.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let _ = tx.send(gw.rpc_call("llm.slots_get", serde_json::json!({})).await);
-        });
-        self.slots_rx = Some(rx);
+        match self.send_query("slots.get", "llm.slots_get", &serde_json::json!({})) {
+            Ok(()) => self.slots_q = true,
+            Err(e) => log::debug!("slots_get 下发失败，徽标退回通用标签: {e}"),
+        }
     }
 
     /// 消费槽位快照；失败静默丢弃（daemon 未起时徽标退回通用标签）。
     pub fn poll_slots(&mut self) {
-        let Some(mut rx) = self.slots_rx.take() else {
+        if !self.slots_q {
             return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(v)) => self.absorb_slots(&v),
-            Ok(Err(e)) => log::debug!("slots_get 失败，徽标退回通用标签: {e}"),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => self.slots_rx = Some(rx),
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        }
+        match self.take_query("slots.get") {
+            Some(Ok(v)) => {
+                self.slots_q = false;
+                self.absorb_slots(&v);
+            }
+            Some(Err(e)) => {
+                self.slots_q = false;
+                log::debug!("slots_get 失败，徽标退回通用标签: {e}");
+            }
+            None if !self.pipe_alive() => self.slots_q = false,
+            None => {}
         }
     }
 
@@ -273,10 +289,7 @@ impl App {
                 self.slot_models[i] = m.to_string();
             }
         }
-        self.slots_degraded = v
-            .get("degraded")
-            .and_then(|d| d.as_bool())
-            .unwrap_or(false);
+        self.slots_degraded = v.get("degraded").and_then(|d| d.as_bool()).unwrap_or(false);
     }
 
     /// 应用探测结果：连接态/版本/状态条/日志的唯一改写落点。
@@ -358,7 +371,9 @@ impl App {
         let reflow = width != self.last_width;
         self.last_width = width;
         if self.scroll_offset > 0 && !reflow {
-            self.follow_new = self.follow_new.saturating_add(total.saturating_sub(self.last_total));
+            self.follow_new = self
+                .follow_new
+                .saturating_add(total.saturating_sub(self.last_total));
         }
         self.last_total = total;
         if self.scroll_offset == 0 {
