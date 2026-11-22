@@ -11,6 +11,7 @@
 mod app;
 mod budget;
 mod client;
+mod endpoints;
 mod engine;
 mod feature;
 mod gccp;

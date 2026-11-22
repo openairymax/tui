@@ -83,10 +83,10 @@ pub(crate) const PRESETS: &[Preset] = &[
     },
     Preset {
         id: "local",
-        label: "本地模型 (Ollama/vLLM)",
+        label: "本地模型 (Ollama)",
         mode: "local",
         api_format: "openai",
-        base_url: "http://localhost:11434/v1",
+        base_url: crate::endpoints::OLLAMA_URL,
         models: &["llama3.1:8b", "qwen2.5:7b", "deepseek-r1:7b"],
     },
 ];
@@ -172,7 +172,7 @@ mod tests {
     fn preset_index_drives_tab_cycle() {
         let last = PRESETS.len() - 1;
         assert_eq!(preset_index("deepseek"), Some(0));
-        assert_eq!(preset_index("本地模型 (Ollama/vLLM)"), Some(last));
+        assert_eq!(preset_index("本地模型 (Ollama)"), Some(last));
         assert_eq!(preset_index("未收录的提供商"), None);
         let next = preset_index("qwen").map(|i| PRESETS[(i + 1) % PRESETS.len()].id);
         assert_eq!(next, Some("kimi"));
