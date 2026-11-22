@@ -230,10 +230,10 @@ fn b1_memory_hit_carries_turn_annotation() {
     // 包含词对会双命中，无法验证"仅一条命中"。
     mem.seed("assistant", "the sky is blue", "chat,turn:3", None);
     mem.seed("assistant", "grass is green", "task", None);
-    let hits = mem.recall("sky blue", 5);
+    let hits = mem.recall("sky blue", 5, None);
     assert_eq!(hits.len(), 1, "仅命中带关键词记录: {:?}", hits);
     assert_eq!(hits[0].turn, Some(3), "turn:N 应被解析");
-    let hits2 = mem.recall("grass", 5);
+    let hits2 = mem.recall("grass", 5, None);
     assert_eq!(hits2.len(), 1);
     assert_eq!(hits2[0].turn, None, "旧格式无 turn 标注应为 None");
 }

@@ -42,7 +42,7 @@ fn recall_finds_related_by_keyword() {
     let mut m = MirrorMemory::volatile();
     m.seed("user", "我在做性能监控优化", "chat", None);
     m.seed("user", "今天天气不错", "chat", None);
-    let hits = m.recall("性能监控", 3);
+    let hits = m.recall("性能监控", 3, None);
     assert!(!hits.is_empty());
     assert!(hits[0].content.contains("性能监控"));
 }
@@ -52,7 +52,7 @@ fn recall_ignores_system_role() {
     let mut m = MirrorMemory::volatile();
     m.seed("system", "请判断模式", "meta", None);
     m.seed("user", "帮我写代码", "chat", None);
-    let hits = m.recall("判断模式", 3);
+    let hits = m.recall("判断模式", 3, None);
     assert!(hits.iter().all(|h| h.role != "system"));
 }
 
@@ -63,7 +63,7 @@ fn recall_excludes_self_feed() {
     let mut m = MirrorMemory::volatile();
     m.seed("user", "性能监控优化方案", "chat", None); // 旧记录
     m.seed("user", "性能监控", "chat", None); // 当前输入（应被排除）
-    let hits = m.recall("性能监控", 5);
+    let hits = m.recall("性能监控", 5, None);
     assert!(
         !hits.iter().any(|h| h.content == "性能监控"),
         "self-feed echo must be excluded"
@@ -107,6 +107,7 @@ fn split_cli_turn_restores_user_and_assistant() {
         1_700_000_000,
         "用户: 帮我看下内存\nAgentRT: 建议先看 mem_d 指标",
         "chat",
+        None,
     );
     assert_eq!(recs.len(), 2);
     assert_eq!(recs[0].role, "user");
@@ -117,8 +118,56 @@ fn split_cli_turn_restores_user_and_assistant() {
     assert_eq!(recs[0].tags, "chat");
     // 两条共享同一时间戳（同轮），时序由稳定排序保持 user→assistant
     assert_eq!(recs[0].timestamp, recs[1].timestamp);
-    // CLI 记录无会话归属，不参与 TUI 会话还原
+    // 未提供 metadata.conv 的旧记录保持无归属，不参与按会话还原
     assert!(recs.iter().all(|r| r.conv.is_none()));
+}
+
+/// S-P1-16：写入侧 metadata.conv 透传到还原记录，--resume 后同一 CLI
+/// 会话的多轮才能归入同一 tab（旧实现硬编码 None 导致全部串台）。
+#[test]
+fn split_cli_turn_carries_conv() {
+    let recs = split_cli_turn(
+        1_700_000_000,
+        "用户: 继续上次\nAgentRT: 好的",
+        "chat,turn:7",
+        Some("sess_abc123"),
+    );
+    assert_eq!(recs.len(), 2);
+    assert!(recs.iter().all(|r| r.conv.as_deref() == Some("sess_abc123")));
+}
+
+/// S-P1-16：给定 conv 时召回只返回该会话的记录；None 保持全局口径。
+#[test]
+fn recall_filters_by_conv() {
+    let mut m = MirrorMemory::volatile();
+    m.seed("user", "甲会话的性能监控结论", "chat", Some("sess_a"));
+    m.seed("user", "乙会话的性能监控结论", "chat", Some("sess_b"));
+    let scoped = m.recall("性能监控", 5, Some("sess_a"));
+    assert_eq!(scoped.len(), 1);
+    assert!(scoped[0].content.contains('甲'));
+    let all = m.recall("性能监控", 5, None);
+    assert_eq!(all.len(), 2);
+}
+
+/// S-P1-16：中文按二元组切分——查询"监控性能"在"性能监控优化"中没有
+/// 整串子串，旧分词（整句单 token）零命中；二元组可跨词序命中。
+#[test]
+fn recall_cjk_bigram_crosses_order() {
+    let mut m = MirrorMemory::volatile();
+    m.seed("user", "性能监控优化的三条建议", "chat", None);
+    let hits = m.recall("监控性能", 3, None);
+    assert!(!hits.is_empty(), "二元组应命中: {:?}", hits);
+}
+
+/// S-P1-16：中英混合查询同时保留 ASCII 词与 CJK 二元组。
+#[test]
+fn query_tokens_mixes_ascii_and_cjk() {
+    let t = super::query_tokens("看 mem_d 的延迟");
+    assert!(t.iter().any(|s| s == "mem_d"));
+    assert!(t.iter().any(|s| s == "延迟"));
+    assert!(t.iter().any(|s| s == "的延"));
+    // 单字段保留原字
+    assert!(super::query_tokens("锁").iter().any(|s| s == "锁"));
 }
 
 #[test]
@@ -127,6 +176,7 @@ fn split_cli_turn_extracts_reasoning() {
         1_700_000_000,
         "用户: 为什么慢\nAgentRT: 因为锁竞争\n[reasoning] 先看火焰图",
         "chat",
+        None,
     );
     assert_eq!(recs.len(), 2);
     assert_eq!(recs[1].content, "因为锁竞争");
@@ -151,7 +201,7 @@ fn legacy_reasoning_never_reaches_recall() {
             conv: None,
         });
     }
-    let hits = m.recall("火焰图", 5);
+    let hits = m.recall("火焰图", 5, None);
     assert!(!hits.is_empty(), "应命中该旧记录: {:?}", hits);
     for h in &hits {
         assert!(
@@ -164,12 +214,12 @@ fn legacy_reasoning_never_reaches_recall() {
 #[test]
 fn split_cli_turn_passes_through_other_formats() {
     // TUI 自身记录格式（无 "用户: " 前缀）→ 单条，内容原样
-    let recs = split_cli_turn(1_700_000_000, "直接的一段话", "task");
+    let recs = split_cli_turn(1_700_000_000, "直接的一段话", "task", None);
     assert_eq!(recs.len(), 1);
     assert_eq!(recs[0].role, "user");
     assert_eq!(recs[0].content, "直接的一段话");
     // 有 "用户: " 前缀但无回复 → 单条 user
-    let recs = split_cli_turn(1_700_000_000, "用户: 只有提问", "chat");
+    let recs = split_cli_turn(1_700_000_000, "用户: 只有提问", "chat", None);
     assert_eq!(recs.len(), 1);
     assert_eq!(recs[0].role, "user");
     assert_eq!(recs[0].content, "只有提问");

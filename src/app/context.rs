@@ -104,7 +104,10 @@ impl App {
         // 历史记忆参考（0.1.18 B1 降权）：召回命中不再与当前输入同权并列，
         // 显式声明"过往碎片、可能无关"，并标注归属角色与轮次——模型不得把
         // 记忆当作本轮问题作答（串轮根因之二）。
-        let hits = self.memory.recall(input, 5);
+        // D-14 会话隔离：已分配会话身份时只在当前会话内召回，避免历史
+        // 会话的记忆被当作本轮背景；全新 tab 无身份时保持全局口径。
+        let conv = self.active_conv();
+        let hits = self.memory.recall(input, 5, conv.as_deref());
         // 防自我回灌：统一过滤与当前输入相同的命中，避免"模型读到自己
         // 刚收到的输入的记忆"的回声污染（与 ConversationMemory::recall 的
         // 排除语义对齐的双保险）。

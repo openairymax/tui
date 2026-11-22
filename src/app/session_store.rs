@@ -120,6 +120,16 @@ impl App {
         conv
     }
 
+    /// 只读会话标识：已分配（sess_ 前缀）才返回，绝不在读路径上铸造新标识。
+    /// 全新 tab 首轮尚无正文可隔离，返回 None 交由调用方按全局口径召回；
+    /// 一旦 start_turn 分配了身份，后续轮次即按该 conv 过滤。
+    pub(super) fn active_conv(&self) -> Option<String> {
+        self.session_tabs
+            .get(self.current_tab_index())
+            .map(|t| t.conv.clone())
+            .filter(|c| c.starts_with("sess_"))
+    }
+
     /// 会话布局落盘：只写 conv + 标题，不写消息正文。无标识的 tab 在此
     /// 分配标识——只要入布局就必须有稳定身份，重启后正文才找得回来。
     pub fn persist_tabs(&mut self) {

@@ -67,8 +67,11 @@ pub struct MemoryHit {
 /// 只读契约（0.1.21 X1-28a）：TUI 不写记忆，trait 不设任何写方法；记忆
 /// 由运行侧机制（CLI / daemon）写入 mem_d，TUI 只做水合、召回与渲染。
 pub trait ConversationMemory: Send + Sync {
-    /// 召回与 query 相关的记忆（按相关度截断）
-    fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit>;
+    /// 召回与 query 相关的记忆（按相关度截断）。
+    ///
+    /// `conv` 非空时只在同一会话内召回（D-14 会话隔离）；为空表示跨会话
+    /// 召回（调用方无稳定会话身份时的兼容路径）。
+    fn recall(&self, query: &str, limit: usize, conv: Option<&str>) -> Vec<MemoryHit>;
     /// 最近 N 条对话（按时间倒序）
     fn recent(&self, n: usize) -> Vec<MemoryRecord>;
     /// 记忆条数
@@ -129,12 +132,60 @@ impl MirrorMemory {
     }
 }
 
+/// 是否为 CJK 表意/假名区段（中文整句按二元组切分的判据）。
+fn is_han(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x3040..=0x30FF
+    )
+}
+
+/// 查询分词：ASCII 词按分隔符切（≥2 字符），CJK 连续段取相邻二元组
+/// （单字段保留单字）。与 mem_d `engine/vector.c` 的 `vec_han_step` 同口径；
+/// 旧实现把中文整句当一个 token，跨记录的局部词永远无法命中。
+fn query_tokens(query: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut han: Vec<char> = Vec::new();
+
+    fn flush_word(word: &mut String, out: &mut Vec<String>) {
+        if word.chars().count() >= 2 {
+            out.push(word.to_lowercase());
+        }
+        word.clear();
+    }
+
+    fn flush_han(han: &mut Vec<char>, out: &mut Vec<String>) {
+        if han.len() == 1 {
+            out.push(han[0].to_string());
+        } else {
+            for w in han.windows(2) {
+                out.push(w.iter().collect());
+            }
+        }
+        han.clear();
+    }
+
+    for c in query.chars() {
+        if is_han(c) {
+            flush_word(&mut word, &mut out);
+            han.push(c);
+        } else if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
+            flush_han(&mut han, &mut out);
+            word.push(c);
+        } else {
+            flush_word(&mut word, &mut out);
+            flush_han(&mut han, &mut out);
+        }
+    }
+    flush_word(&mut word, &mut out);
+    flush_han(&mut han, &mut out);
+    out
+}
+
 impl ConversationMemory for MirrorMemory {
-    fn recall(&self, query: &str, limit: usize) -> Vec<MemoryHit> {
-        let tokens: Vec<&str> = query
-            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
-            .filter(|t| t.len() >= 2)
-            .collect();
+    fn recall(&self, query: &str, limit: usize, conv: Option<&str>) -> Vec<MemoryHit> {
+        let tokens = query_tokens(query);
         // 防自我回灌（2026-08-26，与 CLI cli_chat_memory.c 同语义）：运行侧
         // 把当前输入记为 user 记录，query 又是这条输入本身，命中率最高。把该
         // 记录注入上下文会形成"模型读到自己刚收到的输入的记忆"的回声，污染
@@ -145,6 +196,12 @@ impl ConversationMemory for MirrorMemory {
         let mut hits: Vec<MemoryHit> = guard
             .iter()
             .filter(|r| r.role != "system") // 系统提示不召回
+            // D-14 会话隔离：给定 conv 时只召回同一会话的记录，避免历史
+            // 会话的记忆被当作本轮背景注入（跨会话串台）。
+            .filter(|r| match conv {
+                Some(c) => r.conv.as_deref() == Some(c),
+                None => true,
+            })
             .filter(|r| {
                 let c = r.content.trim();
                 if c.eq_ignore_ascii_case(q) {
@@ -159,22 +216,23 @@ impl ConversationMemory for MirrorMemory {
                 true
             })
             .filter_map(|r| {
+                // 逐记录只做一次归一化，避免每个 token 重复分配小写副本。
+                let content = r.content.to_lowercase();
+                let tags = r.tags.to_lowercase();
+                let reasoning = r.reasoning.as_ref().map(|s| s.to_lowercase());
                 let mut score = 0.0f32;
                 for t in &tokens {
-                    let lt = t.to_lowercase();
-                    if r.content.to_lowercase().contains(&lt) {
+                    if content.contains(t.as_str()) {
                         score += 1.0;
                     }
-                    if r.tags.to_lowercase().contains(&lt) {
+                    if tags.contains(t.as_str()) {
                         score += 0.5;
                     }
                     /* 缺口 #8 修复：思考链（reasoning）参与召回打分——此前
                      * 只匹配 content/tags，思考链"只存档不可用"。权重低于
                      * content（思考链是内部推导，非直接事实表述）。 */
-                    if let Some(rz) = r.reasoning.as_ref() {
-                        if rz.to_lowercase().contains(&lt) {
-                            score += 0.3;
-                        }
+                    if reasoning.as_ref().is_some_and(|rz| rz.contains(t.as_str())) {
+                        score += 0.3;
                     }
                 }
                 if score <= 0.0 {
@@ -285,7 +343,8 @@ fn apply_recent(mirror: &Mutex<Vec<MemoryRecord>>, ready: &AtomicBool, result: &
                 },
             )),
             None => {
-                for r in split_cli_turn(created, data, &tags) {
+                let conv = md_str(&md, "conv");
+                for r in split_cli_turn(created, data, &tags, conv.as_deref()) {
                     recs.push((created, r));
                 }
             }
@@ -310,7 +369,7 @@ fn apply_recent(mirror: &Mutex<Vec<MemoryRecord>>, ready: &AtomicBool, result: &
 /// 且 metadata 无 `role`。TUI 是共享记忆（同一 mem_d）的渲染层，若整轮按单条
 /// `user` 呈现则角色错乱——故按该格式拆分还原；非该格式（旧 TUI 记录、
 /// 或其它写入方）原样保留为单条。
-fn split_cli_turn(created: i64, data: &str, tags: &str) -> Vec<MemoryRecord> {
+fn split_cli_turn(created: i64, data: &str, tags: &str, conv: Option<&str>) -> Vec<MemoryRecord> {
     const USER_PREFIX: &str = "用户: ";
     const ASSISTANT_SEP: &str = "\nAgentRT: ";
     const REASONING_SEP: &str = "\n[reasoning] ";
@@ -321,8 +380,9 @@ fn split_cli_turn(created: i64, data: &str, tags: &str) -> Vec<MemoryRecord> {
         timestamp: ts.clone(),
         tags: tags.to_string(),
         reasoning,
-        // CLI 记录无会话归属，不参与 TUI 会话历史还原（D-14）。
-        conv: None,
+        // 会话归属由写入侧 metadata.conv 提供（0.1.21 S-P1-16）；旧 CLI
+        // 记录无此字段，保持 None 不参与按会话还原。
+        conv: conv.map(str::to_string),
     };
     let Some(rest) = data.strip_prefix(USER_PREFIX) else {
         return vec![single("user", data, None)];
