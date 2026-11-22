@@ -26,6 +26,27 @@ pub(super) const TABS_MAX: usize = 9;
 /// conv 序号（同毫秒内多次新建会话的唯一性来源）。
 static CONV_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 原子落盘：同目录临时文件写完并 fsync 后再 rename 覆盖。断电或崩溃
+/// 只会留下完整的旧布局或完整的临时文件，不会出现半截 JSON；rename
+/// 成功后同步父目录，使目录项本身也落到稳定存储上（Unix 语义）。
+fn write_atomic(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = p.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, p)?;
+    #[cfg(unix)]
+    if let Some(dir) = p.parent() {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SessionsFile {
     /// 当前会话在 tabs 数组中的下标，恢复时以其为活动 tab
@@ -173,7 +194,7 @@ impl App {
         }
         match serde_json::to_string(&SessionsFile { current, tabs }) {
             Ok(s) => {
-                if let Err(e) = std::fs::write(&p, s) {
+                if let Err(e) = write_atomic(&p, s.as_bytes()) {
                     log::warn!("persist_tabs: write {} failed: {}", p.display(), e);
                 }
             }
@@ -191,7 +212,19 @@ impl App {
         let doc: SessionsFile = match serde_json::from_str(&raw) {
             Ok(t) => t,
             Err(e) => {
-                log::warn!("restore_tabs: parse {} failed: {}", p.display(), e);
+                /* 损坏文件改名为 .corrupt 备份后再交回初始布局：既保留现场
+                 * 供排查/手工恢复，也避免下一次 persist 直接覆盖掉唯一副本。 */
+                let bak = p.with_extension("json.corrupt");
+                let _ = std::fs::remove_file(&bak);
+                match std::fs::rename(&p, &bak) {
+                    Ok(()) => log::warn!(
+                        "restore_tabs: parse {} failed: {}; 备份到 {}",
+                        p.display(),
+                        e,
+                        bak.display()
+                    ),
+                    Err(_) => log::warn!("restore_tabs: parse {} failed: {}", p.display(), e),
+                }
                 return;
             }
         };
@@ -318,6 +351,26 @@ mod tests {
         let b = new_conv();
         assert_ne!(a, b);
         assert!(a.starts_with("sess_"), "会话标识即请求 session_id");
+    }
+
+    #[test]
+    fn write_atomic_replaces_the_layout() {
+        let dir = std::env::temp_dir().join(format!(
+            "airy_tui_store_{}_{}",
+            std::process::id(),
+            CONV_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("sessions.json");
+        write_atomic(&p, br#"{"current":0,"tabs":[{"conv":"sess_a"}]}"#).unwrap();
+        write_atomic(&p, br#"{"current":0,"tabs":[{"conv":"sess_b"}]}"#).unwrap();
+        let got = std::fs::read_to_string(&p).unwrap();
+        assert!(got.contains("sess_b"), "后写覆盖先写");
+        assert!(
+            !dir.join("sessions.json.tmp").exists(),
+            "临时文件在 rename 后不应残留"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
