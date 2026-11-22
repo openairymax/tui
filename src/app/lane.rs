@@ -124,7 +124,7 @@ impl App {
     /// 统一运行入口：把本轮参数装成事件帧 opts 后经管道下发。管道不可用
     /// 即本轮不可运行——TUI 不自持协议客户端，也不静默改走别的通道。
     pub(super) fn start_turn(&mut self, kind: PendingKind, prompt: &str, args: TurnArgs) -> bool {
-        let sid = self.new_session_id();
+        let sid = self.current_conv();
         let mut opts = serde_json::Map::new();
         if !self.agent_file.is_empty() {
             opts.insert("agent_file".into(), json!(&self.agent_file));

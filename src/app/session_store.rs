@@ -46,13 +46,15 @@ struct TabDto {
 }
 
 /// 生成会话标识：毫秒时间 + 进程内序号。非密码学用途，只求跨进程唯一。
+/// sess_ 前缀同时是 agent_d 对客户端会话 ID 的契约，布局与记忆归属共用
+/// 该值（metadata.conv），因此同一标识在 tab、请求与检查点三处一致。
 pub(super) fn new_conv() -> String {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let n = CONV_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("conv_{:012x}{:04x}", now_ms & 0xFFFF_FFFF_FFFF, n & 0xFFFF)
+    format!("sess_{:012x}{:04x}", now_ms & 0xFFFF_FFFF_FFFF, n & 0xFFFF)
 }
 
 /// 按 tab 顺序重建消息队列（id 由 msg_seq 单调重分配，落盘不存 id）。
@@ -95,6 +97,29 @@ fn group_by_conv(recent: Vec<MemoryRecord>) -> Vec<(String, Vec<MemoryRecord>)> 
 }
 
 impl App {
+    /// 当前会话标识：首轮分配后跨轮稳定，同时作为请求 session_id 与
+    /// 记忆归属 conv。同一 tab 的多轮由此落到同一会话，检查点不因换轮
+    /// 而分裂；跨 tab / 跨进程由 new_conv 的时间与序号保证不复用。
+    pub(super) fn current_conv(&mut self) -> String {
+        let i = self.current_tab_index();
+        let mut fresh = false;
+        let conv = match self.session_tabs.get_mut(i) {
+            Some(t) if t.conv.starts_with("sess_") => t.conv.clone(),
+            Some(t) => {
+                // 空标识或旧布局的 conv_ 前缀在此一次性迁移：agent_d 只
+                // 接受 sess_ 前缀，沿用旧值会让本轮落库归属到另一个标识。
+                t.conv = new_conv();
+                fresh = true;
+                t.conv.clone()
+            }
+            None => new_conv(),
+        };
+        if fresh {
+            self.persist_tabs();
+        }
+        conv
+    }
+
     /// 会话布局落盘：只写 conv + 标题，不写消息正文。无标识的 tab 在此
     /// 分配标识——只要入布局就必须有稳定身份，重启后正文才找得回来。
     pub fn persist_tabs(&mut self) {
@@ -282,7 +307,7 @@ mod tests {
         let a = new_conv();
         let b = new_conv();
         assert_ne!(a, b);
-        assert!(a.starts_with("conv_"));
+        assert!(a.starts_with("sess_"), "会话标识即请求 session_id");
     }
 
     #[test]

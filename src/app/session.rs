@@ -288,22 +288,6 @@ impl App {
         self.persist_tabs();
     }
 
-    /// 生成客户端预分配会话 ID（sess_ 前缀，gateway 校验后采用）。
-    pub(super) fn new_session_id(&self) -> String {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        // 时间 + 会话序号 + 伪随机位（非密码学用途，仅保证唯一性）
-        let seq = self.turn as u128;
-        let mix = (now_ms ^ (seq << 32)) * 6364136223846793005;
-        format!(
-            "sess_{:016x}_{:04x}",
-            mix & 0xFFFFFFFFFFFFFFFF,
-            (seq & 0xFFFF) as u16
-        )
-    }
-
     /// /close：关闭当前会话 tab。
     ///
     /// 只剩主会话时清空对话即关闭语义（主会话槽 0 不可删——删光所有槽

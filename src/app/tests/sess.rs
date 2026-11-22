@@ -90,6 +90,18 @@ fn sess_history_restored_from_memory_by_conv() {
 }
 
 #[test]
+fn sess_conv_stable_across_turns() {
+    let _home = crate::test_env::Home::new("sess-conv-stable");
+    let mut a = app();
+    let first = a.current_conv();
+    assert!(first.starts_with("sess_"), "会话标识即请求 session_id");
+    assert_eq!(first, a.current_conv(), "同一会话多轮不换标识");
+    a.new_session_tab();
+    let other = a.current_conv();
+    assert_ne!(first, other, "新会话不复用标识");
+}
+
+#[test]
 fn sess_history_recovered_after_file_deleted() {
     let _home = crate::test_env::Home::new("sess-deleted");
     let mut a = app_mem();
