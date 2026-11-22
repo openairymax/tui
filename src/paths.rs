@@ -17,14 +17,22 @@ use std::path::PathBuf;
 pub const DEFAULT_DIR_NAME: &str = ".airymaxrt";
 
 /// 解析 AIRY_HOME 根目录（三级回退）：
-/// `$AIRY_HOME` → `$HOME/.airymaxrt` → 相对 `.airymaxrt`。
+/// `$AIRY_HOME` → `$HOME/.airymaxrt` → 临时目录下 uid 隔离根。
 ///
 /// 空字符串视同未设置（与 agentrt-env.sh 条件赋值语义一致），避免
-/// `AIRY_HOME=""` 使读写落到 CWD 造成数据分散。
+/// `AIRY_HOME=""` 使读写落到 CWD 造成数据分散。第三级（S-P1-02）必须是
+/// 绝对路径：daemon 与 TUI 的 cwd 不同，相对 `.airymaxrt` 会把同一份
+/// 数据分裂成两个根；规则与机制侧 platform_paths.c 的 paths_tmp_home 一致。
 pub fn airy_home() -> PathBuf {
     if let Ok(h) = std::env::var("AIRY_HOME") {
         if !h.is_empty() {
             return PathBuf::from(h);
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(h) = std::env::var("USERPROFILE") {
+        if !h.is_empty() {
+            return PathBuf::from(h).join(DEFAULT_DIR_NAME);
         }
     }
     if let Ok(h) = std::env::var("HOME") {
@@ -32,7 +40,17 @@ pub fn airy_home() -> PathBuf {
             return PathBuf::from(h).join(DEFAULT_DIR_NAME);
         }
     }
-    PathBuf::from(DEFAULT_DIR_NAME)
+    tmp_home()
+}
+
+/// 末级兜底：`<tmp>/.airymaxrt-<uid>`（Windows 无 uid，退化为
+/// `<tmp>/.airymaxrt`）。与 platform_paths.c 的 paths_tmp_home 同规则。
+fn tmp_home() -> PathBuf {
+    #[cfg(unix)]
+    let leaf = format!("{}-{}", DEFAULT_DIR_NAME, unsafe { libc::getuid() });
+    #[cfg(not(unix))]
+    let leaf = DEFAULT_DIR_NAME.to_string();
+    std::env::temp_dir().join(leaf)
 }
 
 /// `airy_home()` 下的子路径（如 `&["config", "secrets.env"]`）。
@@ -89,18 +107,18 @@ mod tests {
     }
 
     #[test]
-    fn airy_home_falls_back_to_relative_when_no_env() {
+    fn airy_home_falls_back_to_absolute_tmp_when_no_env() {
         let _g = lock_env();
         let saved_home = std::env::var("AIRY_HOME").ok();
         let saved_user_home = std::env::var("HOME").ok();
         std::env::remove_var("AIRY_HOME");
         std::env::remove_var("HOME");
-        assert_eq!(airy_home(), PathBuf::from(DEFAULT_DIR_NAME));
+        let root = tmp_home();
+        assert!(root.is_absolute(), "兜底根必须是绝对路径: {}", root.display());
+        assert_eq!(airy_home(), root);
         assert_eq!(
             airy_home_path(&["bin", "gateway_d"]),
-            PathBuf::from(DEFAULT_DIR_NAME)
-                .join("bin")
-                .join("gateway_d")
+            root.join("bin").join("gateway_d")
         );
         match saved_home {
             Some(v) => std::env::set_var("AIRY_HOME", v),
@@ -134,13 +152,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_home_falls_through_to_relative() {
+    fn empty_home_falls_through_to_tmp_root() {
         let _g = lock_env();
         let saved_home = std::env::var("AIRY_HOME").ok();
         let saved_user_home = std::env::var("HOME").ok();
         std::env::remove_var("AIRY_HOME");
         std::env::set_var("HOME", "");
-        assert_eq!(airy_home(), PathBuf::from(DEFAULT_DIR_NAME));
+        assert_eq!(airy_home(), tmp_home());
         match saved_home {
             Some(v) => std::env::set_var("AIRY_HOME", v),
             None => std::env::remove_var("AIRY_HOME"),
