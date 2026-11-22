@@ -16,8 +16,15 @@ use std::path::PathBuf;
 /// agentrt 安装目录名：`AIRY_HOME` 未设置时 `$HOME` 下的默认目录。
 pub const DEFAULT_DIR_NAME: &str = ".airymaxrt";
 
+/// Windows 默认目录名：`%LOCALAPPDATA%\airymaxrt`（S-P1-04）。
+/// Windows 不以点前缀隐藏目录，且用户级数据应随 LOCALAPPDATA 的清理策略走；
+/// 与机制侧 `AIRY_WIN_HOME_DIR`、install.ps1 同一规则。
+#[cfg(windows)]
+pub const WIN_DIR_NAME: &str = "airymaxrt";
+
 /// 解析 AIRY_HOME 根目录（三级回退）：
-/// `$AIRY_HOME` → `$HOME/.airymaxrt` → 临时目录下 uid 隔离根。
+/// `$AIRY_HOME` → Windows `%LOCALAPPDATA%\airymaxrt` → `$HOME/.airymaxrt`
+/// → 临时目录下 uid 隔离根。
 ///
 /// 空字符串视同未设置（与 agentrt-env.sh 条件赋值语义一致），避免
 /// `AIRY_HOME=""` 使读写落到 CWD 造成数据分散。第三级（S-P1-02）必须是
@@ -27,6 +34,12 @@ pub fn airy_home() -> PathBuf {
     if let Ok(h) = std::env::var("AIRY_HOME") {
         if !h.is_empty() {
             return PathBuf::from(h);
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(h) = std::env::var("LOCALAPPDATA") {
+        if !h.is_empty() {
+            return PathBuf::from(h).join(WIN_DIR_NAME);
         }
     }
     #[cfg(windows)]
