@@ -24,10 +24,7 @@ pub fn log_dir() -> PathBuf {
             return PathBuf::from(d);
         }
     }
-    crate::paths::airy_home()
-        .join("data")
-        .join("agentrt")
-        .join("logs")
+    crate::paths::log_dir()
 }
 
 /// 单文件尾读：从文件末尾向前取一个字节窗，返回窗口内至多 TAIL 行。

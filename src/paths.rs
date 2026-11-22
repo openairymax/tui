@@ -53,6 +53,16 @@ fn tmp_home() -> PathBuf {
     std::env::temp_dir().join(leaf)
 }
 
+/// 运行日志子目录（S-P1-05）：与机制侧 AIRY_HOME_SUBDIR_LOG 同一值。
+/// 此前 TUI 自己写 `<home>/logs`，daemon/doctor 读 `data/agentrt/logs`，
+/// 报错提示与诊断面板互相看不到对方的日志。
+pub const LOG_SUBDIR: &str = "data/agentrt/logs";
+
+/// 运行日志目录（单一入口，禁止各模块自行拼 `logs`）。
+pub fn log_dir() -> PathBuf {
+    airy_home().join(LOG_SUBDIR)
+}
+
 /// `airy_home()` 下的子路径（如 `&["config", "secrets.env"]`）。
 pub fn airy_home_path(sub: &[&str]) -> PathBuf {
     let mut p = airy_home();
@@ -98,6 +108,25 @@ mod tests {
         match saved_user_home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn log_dir_matches_mechanism_subdir() {
+        // S-P1-05：TUI 与机制侧必须写同一目录。此值与
+        // agentrt/commons/platform 的 AIRY_HOME_SUBDIR_LOG 一致，
+        // CI 有一致性检查兜底漂移。
+        assert_eq!(LOG_SUBDIR, "data/agentrt/logs");
+        let _g = lock_env();
+        let saved = std::env::var("AIRY_HOME").ok();
+        std::env::set_var("AIRY_HOME", "/tmp/airy-log-test");
+        assert_eq!(
+            log_dir(),
+            PathBuf::from("/tmp/airy-log-test/data/agentrt/logs")
+        );
+        match saved {
+            Some(v) => std::env::set_var("AIRY_HOME", v),
+            None => std::env::remove_var("AIRY_HOME"),
         }
     }
 

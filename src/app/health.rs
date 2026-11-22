@@ -15,7 +15,6 @@
 
 use crate::engine::health::{diag_report, BannerAct, Change, UNREACH};
 use crate::engine::sched::Lane;
-use crate::paths::airy_home_path;
 
 use super::*;
 
@@ -256,7 +255,7 @@ impl App {
             &wall_text(),
             self.clock_ms,
         );
-        let dir = airy_home_path(&["logs"]);
+        let dir = crate::paths::log_dir();
         let name = format!("diag-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M%S"));
         let path = dir.join(name);
         let res = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text));

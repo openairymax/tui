@@ -33,13 +33,7 @@ impl FrameLog {
         if !flag::on("AIRY_TUI_FRAME_LOG") {
             return None;
         }
-        // 与文件日志同一条底线：HOME/AIRY_HOME 都缺失时不落到相对路径，
-        // 否则样本会写进当前工作目录。
-        if std::env::var_os("AIRY_HOME").is_none() && std::env::var_os("HOME").is_none() {
-            log::warn!("帧日志未开启：AIRY_HOME/HOME 均为空");
-            return None;
-        }
-        let path = crate::paths::airy_home_path(&["logs", FILE_NAME]);
+        let path = crate::paths::log_dir().join(FILE_NAME);
         match LineLog::open(&path, MAX_LINES) {
             Ok(sink) => Some(Self { sink }),
             Err(e) => {
@@ -150,7 +144,7 @@ mod tests {
         }
         std::env::remove_var("AIRY_TUI_FRAME_LOG");
 
-        let path = home.path().join("logs").join(FILE_NAME);
+        let path = home.path().join(crate::paths::LOG_SUBDIR).join(FILE_NAME);
         let body = std::fs::read_to_string(&path).expect("日志文件已落盘");
         let mut parsed: Vec<Costs> = Vec::new();
         for (i, text) in body.lines().enumerate() {

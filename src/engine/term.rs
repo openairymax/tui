@@ -51,14 +51,9 @@ pub(crate) fn init_file_logger() -> Result<(), Box<dyn std::error::Error>> {
     let path = if let Ok(p) = std::env::var("AGENTRT_TUI_LOG") {
         p
     } else {
-        // 原语义：AIRY_HOME/HOME 均缺失（极端环境）→ Err → 调用方回退
-        // stderr。不能落到 paths::airy_home() 的相对回退，否则日志会写进
-        // 当前工作目录。
-        if std::env::var_os("AIRY_HOME").is_none() && std::env::var_os("HOME").is_none() {
-            return Err("AIRY_HOME/HOME unset".into());
-        }
-        crate::paths::airy_home()
-            .join("logs")
+        // paths::airy_home() 的末级兜底已是绝对路径（S-P1-02），
+        // 不再需要「HOME 缺失就放弃文件日志」的旧保护。
+        crate::paths::log_dir()
             .join("agentrt-tui.log")
             .to_string_lossy()
             .into_owned()
