@@ -53,9 +53,10 @@ struct Cli {
     #[arg(long, env = "AGENTRT_GATEWAY_URL")]
     gateway_url: Option<String>,
 
-    /// Agent definition file
-    #[arg(short, long, default_value = "agents/main.agent.yaml")]
-    agent_file: String,
+    /// Agent 定义文件路径或裸 agent id（缺省：$AIRY_HOME/agents/main.agent.yaml，
+    /// 两者都不存在时交由 gateway 用内置默认 spec）
+    #[arg(short, long, env = "AIRY_AGENT_FILE")]
+    agent_file: Option<String>,
 
     /// 会话恢复：加载上次会话历史（对标 Codex sessions / Claude /resume）
     #[arg(long, default_value_t = false)]
@@ -109,39 +110,61 @@ fn bind_parent_death() {
 #[cfg(not(target_os = "linux"))]
 fn bind_parent_death() {}
 
-/// D-11（0.1.21）：agent_file 一律以绝对路径下发，或把裸 agent id 交给
-/// gateway 解析。守护进程的 cwd 与客户端不同，相对路径跨进程会静默落到
-/// 另一份文件（甚至不存在）；显式给了路径却解析不到时必须失败——静默
-/// 降级会让调用方以为自己指定了角色，实际跑的是默认角色。
-fn resolve_agent_file(arg: &str) -> String {
-    let p = std::path::Path::new(arg);
-    if let Ok(abs) = p.canonicalize() {
-        return abs.to_string_lossy().to_string();
-    }
+/// D-11（0.1.21）：显式给出的 agent_file 解析不到时必须失败——静默降级会让
+/// 调用方以为自己指定了角色，实际跑的是默认角色。缺省（未给 flag/env）时
+/// 依次尝试安装态 `$AIRY_HOME/agents/main.agent.yaml`、裸 id `main`，都不
+/// 存在则不下发 agent_file，由 gateway 用内置默认 spec（S-P0-01：发布包
+/// 不再依赖 cwd 相对的 `agents/main.agent.yaml` 幽灵路径）。
+fn resolve_agent_file(arg: Option<&str>) -> Option<String> {
     let home = crate::paths::airy_home();
-    if arg.contains('/') {
-        let alt = home.join(arg);
+    if let Some(arg) = arg.map(str::trim).filter(|s| !s.is_empty()) {
+        let p = std::path::Path::new(arg);
+        if let Ok(abs) = p.canonicalize() {
+            return Some(abs.to_string_lossy().to_string());
+        }
+        let alt = if arg.contains('/') {
+            home.join(arg)
+        } else {
+            home.join("agents").join(format!("{arg}.json"))
+        };
         if let Ok(abs) = alt.canonicalize() {
-            return abs.to_string_lossy().to_string();
+            return Some(abs.to_string_lossy().to_string());
         }
         let code = engine::exit::Code::Usage;
         error!("agent_file 无法解析：{}（AIRY_HOME={}）", arg, home.display());
         eprintln!("❌ 找不到 agent 文件：{}", arg);
-        eprintln!("   已尝试：当前目录、{}", alt.display());
-        eprintln!("   请传入存在的绝对路径，或改用 agent id。");
+        eprintln!("   已尝试：{}", p.display());
+        eprintln!("   已尝试：{}", alt.display());
+        eprintln!("   请传入存在的绝对路径，或改用 bare agent id。");
         eprintln!("❌ {}（退出码 {}）", code.human(), code.code());
         std::process::exit(code.code());
     }
-    // 裸 id：优先用 $AIRY_HOME/agents/<id>.json；不存在则交给 gateway
-    // 按 agent id 解析（D-11 允许的第二种形式）。
-    let alt = home.join("agents").join(format!("{arg}.json"));
-    match alt.canonicalize() {
-        Ok(abs) => abs.to_string_lossy().to_string(),
-        Err(_) => {
-            info!("agent_file '{}' 未在本地命中，按 agent id 交由 gateway 解析", arg);
-            arg.to_string()
+    let dflt = home.join("agents").join("main.agent.yaml");
+    if let Ok(abs) = dflt.canonicalize() {
+        return Some(abs.to_string_lossy().to_string());
+    }
+    let dflt_json = home.join("agents").join("main.json");
+    if let Ok(abs) = dflt_json.canonicalize() {
+        return Some(abs.to_string_lossy().to_string());
+    }
+    info!("未找到 agent 定义（{}），交由 gateway 按默认 spec 运行", dflt.display());
+    None
+}
+
+/// 网关地址解析（S-P1-01）：`--gateway-url` > `AGENTRT_GATEWAY_URL` >
+/// `AIRY_GATEWAY_URL`（启动器/CLI 的既有变量名）> run/gateway.port 兜底。
+fn pick_gateway_url(cli_val: Option<&str>) -> String {
+    if let Some(v) = cli_val.map(str::trim).filter(|s| !s.is_empty()) {
+        return v.to_string();
+    }
+    for key in ["AGENTRT_GATEWAY_URL", "AIRY_GATEWAY_URL"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.trim().is_empty() {
+                return v.trim().to_string();
+            }
         }
     }
+    default_gateway_url()
 }
 
 #[tokio::main]
@@ -155,7 +178,7 @@ pub async fn run() {
     // 之后则永远走不到（0.1.20 P2-8）。
     let mut cli = Cli::parse();
     if cli.probe {
-        let url = cli.gateway_url.clone().unwrap_or_else(default_gateway_url);
+        let url = pick_gateway_url(cli.gateway_url.as_deref());
         std::process::exit(crate::probe::run(&url));
     }
 
@@ -166,7 +189,8 @@ pub async fn run() {
         let code = engine::exit::Code::Usage;
         eprintln!("❌ AirymaxRT TUI 需要交互式终端（stdin/stdout 均为 TTY）。");
         eprintln!("   当前为标准输入/输出被重定向或接入管道。");
-        eprintln!("   改用行式对话：airy chat");
+        eprintln!("   改用行式对话：airy_cli（-p \"问题\"）");
+        eprintln!("   或经启动器进入：airymaxrt");
         eprintln!("❌ {}（退出码 {}）", code.human(), code.code());
         std::process::exit(code.code());
     }
@@ -191,19 +215,19 @@ pub async fn run() {
     // 0.1.6h 修复：gateway 实际端口从 run/gateway.port 读取（完整启动器在
     // 端口漂移后固化；缺省 8080），并固定 127.0.0.1（localhost 可能解析
     // 到 ::1，而 gateway 只绑 IPv4 → 新安装"网关拉取不到"根因之一）。
-    let gateway_url = cli.gateway_url.clone().unwrap_or_else(default_gateway_url);
+    let gateway_url = pick_gateway_url(cli.gateway_url.as_deref());
     info!("CLI args parsed:");
     info!("  gateway_url = {}", gateway_url);
-    info!("  agent_file  = {}", cli.agent_file);
+    info!("  agent_file  = {:?}", cli.agent_file);
     info!("  resume      = {}", cli.resume);
     info!("  project     = {:?}", cli.project);
 
     // ── Phase 1: Pre-flight checks ──
     let start_time = Instant::now();
 
-    // Check if agent file exists（D-11：解析为绝对路径，解析不到即失败）
-    cli.agent_file = resolve_agent_file(&cli.agent_file);
-    info!("  agent_file resolved = {}", cli.agent_file);
+    // Check if agent file exists（D-11：显式值解析不到即失败；缺省可缺省）
+    cli.agent_file = resolve_agent_file(cli.agent_file.as_deref());
+    info!("  agent_file resolved = {:?}", cli.agent_file);
 
     // ── Phase 2: Gateway 连接 ──
     // 传输全部由事件管道承载（D-15）：启动期探测在 run_tui 内经 ping 查询帧
@@ -277,7 +301,7 @@ async fn run_tui(cli: &Cli, boot: &Boot) -> Result<engine::exit::Code> {
     info!("Terminal initialized. Starting event loop.");
 
     // Create app state
-    let mut app = App::new(&cli.agent_file);
+    let mut app = App::new(cli.agent_file.as_deref().unwrap_or(""));
     // 事件管道（X1-26c）：运行轮与观察面读均经 airy_cli 事件流下发。挂接
     // 失败不拦启动，记录原因（诊断面板可读）；此后交互按管道不可用降级。
     if !app.attach_lane() {

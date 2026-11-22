@@ -126,7 +126,9 @@ impl App {
     pub(super) fn start_turn(&mut self, kind: PendingKind, prompt: &str, args: TurnArgs) -> bool {
         let sid = self.new_session_id();
         let mut opts = serde_json::Map::new();
-        opts.insert("agent_file".into(), json!(&self.agent_file));
+        if !self.agent_file.is_empty() {
+            opts.insert("agent_file".into(), json!(&self.agent_file));
+        }
         opts.insert("interactive".into(), json!(true));
         opts.insert("session_id".into(), json!(&sid));
         if !self.model.is_empty() {
