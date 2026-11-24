@@ -108,7 +108,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let hero_area = main_layout[plan.slots.status];
     let hero_split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(budget::SHELL_STATUS_TEXT_ROWS),
+            Constraint::Length(budget::SHELL_STATUS_RULE_ROWS),
+        ])
         .split(hero_area);
     render_hero(f, hero_split[0], app);
     // 状态条下方主色细分隔线：1 行内容与主内容区视觉分层（Claude Code
