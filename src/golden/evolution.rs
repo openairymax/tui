@@ -27,7 +27,7 @@ fn evolution_panel_renders_live_metrics() {
                 "preemptions_total": 1.0,
                 "effectiveness": 0.85,
                 "records": 6.0,
-                "evolve_noop_total": 2.0
+                "evolve_forwarded_total": 2.0
             }
         }
     })));

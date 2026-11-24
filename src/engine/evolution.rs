@@ -35,7 +35,7 @@ const KNOWN: [(&str, &str, &str); 6] = [
     ("preemptions_total", "抢占次数", "次"),
     ("effectiveness", "有效性", "比例"),
     ("records", "演化记录", "条"),
-    ("evolve_noop_total", "空转次数", "次"),
+    ("evolve_forwarded_total", "转发次数", "次"),
 ];
 
 /// 指标类型中文名：计数器按总量累加，瞬时值按当前快照。未知键返回空串。
@@ -125,7 +125,7 @@ mod tests {
                 "available": true,
                 "source": "monit",
                 "metrics": {
-                    "evolve_noop_total": 4.0,
+                    "evolve_forwarded_total": 4.0,
                     "patterns": 12.0,
                     "effectiveness": 0.85
                 }
@@ -135,7 +135,7 @@ mod tests {
         assert!(s.available);
         assert_eq!(s.reason, "");
         let keys: Vec<&str> = s.items.iter().map(|m| m.key.as_str()).collect();
-        assert_eq!(keys, ["patterns", "effectiveness", "evolve_noop_total"]);
+        assert_eq!(keys, ["patterns", "effectiveness", "evolve_forwarded_total"]);
         assert_eq!(s.items[0].label, "演化模式");
         assert_eq!(s.items[0].value, 12.0);
         assert_eq!(s.items[1].unit, "比例");
