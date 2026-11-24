@@ -45,10 +45,12 @@ use serde_json::{json, Value};
 
 use crate::engine::event::envelope::Envelope;
 use crate::engine::event::frame::Frames;
+use crate::engine::event::gap::{self, Gaps};
 use crate::engine::event::map;
 use crate::engine::event::model::{Body, Control, Event};
 use crate::engine::event::pipe::{Feed, Spec, STOP_GRACE};
 use crate::engine::event::seq::Watch;
+use crate::engine::logfile::LineLog;
 use crate::engine::project::{Gate, Projection};
 
 /// 折叠游标与丢弃计数：读线程写，渲染侧读。
@@ -79,10 +81,12 @@ struct Inner {
     reader: Mutex<Option<JoinHandle<()>>>,
 }
 
-/// 折叠状态：投影、序号断言器、查询应答与丢弃计数。
+/// 折叠状态：投影、序号断言器、断点台账、查询应答与丢弃计数。
 struct State {
     proj: Projection,
     watch: Watch,
+    gaps: Gaps,
+    gap_audit: Option<LineLog>,
     queries: HashMap<String, Value>,
     last_seq: u64,
     last_ts: u64,
@@ -118,6 +122,8 @@ impl EventClient {
         let state = Arc::new(Mutex::new(State {
             proj: Projection::new(),
             watch: Watch::resume(last_seq),
+            gaps: Gaps::new(),
+            gap_audit: gap::open_audit(),
             queries: HashMap::new(),
             last_seq,
             last_ts: 0,
@@ -300,7 +306,11 @@ fn pump(out: ChildStdout, state: Arc<Mutex<State>>) {
         };
         let mut s = lock(&state);
         s.bad = frames.bad();
-        let _ = s.watch.feed(env.seq);
+        // 断点明细入台账（X1-09a）：计数在 Watch，区间与时刻在本层留存，
+        // 有界队列满后丢最旧，不会随断网时长膨胀。
+        if let Some(v) = s.watch.feed(env.seq) {
+            s.gaps.note(v, env.ts.saturating_mul(1_000));
+        }
         s.last_seq = s.last_seq.max(env.seq);
         s.last_ts = s.last_ts.max(env.ts);
         if env.kind == "query_result" {
@@ -320,6 +330,14 @@ fn pump(out: ChildStdout, state: Arc<Mutex<State>>) {
     }
     let mut s = lock(&state);
     s.bad = frames.bad();
+    // 流结束即把台账落盘：审计通道未开启时 `flush_to` 不执行，内存台账
+    // 随 State 一起释放，不留下半截文件。
+    let State {
+        gaps, gap_audit, ..
+    } = &mut *s;
+    if let Some(log) = gap_audit.as_mut() {
+        gaps.flush_to(log);
+    }
     s.ended = true;
 }
 

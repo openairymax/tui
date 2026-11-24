@@ -17,13 +17,37 @@
 // `{"gap":{"from":N,"to":N,"at":ms,"missed":N}}`，与事件录制共用
 // `LineLog` 的截断/刷盘/熔断纪律，但落在独立的文件名下——录制文件是
 // 可回放的帧流，混入审计行会让回放把它当成坏帧。
+//
+// `AIRY_TUI_GAP_AUDIT=1` 时启用落盘；未开启不影响内存台账，状态栏的
+// 断点计数仍照常上报。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::VecDeque;
 
 use super::seq::Verdict;
-use crate::engine::logfile::LineLog;
+use crate::engine::logfile::{LineLog, MAX_LINES};
+
+/// 断点审计开关。
+pub(crate) const SWITCH: &str = "AIRY_TUI_GAP_AUDIT";
+
+/// 断点审计文件名（置于 AIRY_HOME/logs）。
+pub(crate) const FILE_NAME: &str = "agentrt-tui-gaps.jsonl";
+
+/// 按环境开关打开审计通道；未开启或路径不可用时返回 `None`（fail-closed）。
+pub(crate) fn open_audit() -> Option<LineLog> {
+    if !crate::engine::flag::on(SWITCH) {
+        return None;
+    }
+    let path = crate::paths::log_dir().join(FILE_NAME);
+    match LineLog::open(&path, MAX_LINES) {
+        Ok(sink) => Some(sink),
+        Err(e) => {
+            log::warn!("断点审计未开启：{}（{e}）", path.display());
+            None
+        }
+    }
+}
 
 /// 台账容量：足以覆盖一次长时间断网，又不会随会话时长增长。
 pub(crate) const MAX_GAPS: usize = 256;
@@ -149,9 +173,30 @@ impl Default for Gaps {
 
 #[cfg(test)]
 mod tests {
-    use super::{Gaps, MAX_GAPS};
+    use super::{open_audit, Gaps, FILE_NAME, MAX_GAPS, SWITCH};
     use crate::engine::event::seq::{Tracker, Verdict};
     use crate::engine::logfile::LineLog;
+    use crate::test_env::Home;
+
+    /// 审计通道由开关控制：默认不建文件，开启后落到 AIRY_HOME/logs。
+    #[test]
+    fn audit_channel_follows_switch() {
+        let home = Home::new("gap-audit");
+        std::env::remove_var(SWITCH);
+        assert!(open_audit().is_none(), "未开启时不建通道");
+
+        std::env::set_var(SWITCH, "1");
+        let mut log = open_audit().expect("开启且路径可建");
+        let mut g = Gaps::new();
+        g.note(gap(1, 2), 5);
+        assert_eq!(g.flush_to(&mut log), 1);
+        drop(log);
+        std::env::remove_var(SWITCH);
+
+        let path = home.path().join(crate::paths::LOG_SUBDIR).join(FILE_NAME);
+        let body = std::fs::read_to_string(&path).expect("审计已落盘");
+        assert!(body.contains("\"from\":1"), "区间须逐条落盘");
+    }
 
     fn gap(from: u64, to: u64) -> Verdict {
         Verdict::Gap { from, to }
