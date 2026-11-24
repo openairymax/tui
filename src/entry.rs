@@ -279,7 +279,8 @@ async fn run_tui(cli: &Cli, boot: &Boot) -> Result<engine::exit::Code> {
     // 声明在 guard 之后，Drop 逆序保证探测线程先于终端还原退出。
     let mut probe = engine::term::Probe::spawn();
 
-    let backend = CrosstermBackend::new(io::stdout());
+    // 出帧写入统一经有界包装：单次写不超过 `MAX_RENDER_WRITE_CHARS`。
+    let backend = CrosstermBackend::new(engine::term::Bounded::new(io::stdout()));
     let mut terminal = Terminal::with_options(
         backend,
         TerminalOptions {

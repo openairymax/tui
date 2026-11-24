@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use super::probe::{self, Caps, Src};
 use super::screen::Mode;
-use crate::budget::CAP_PROBE_TIMEOUT_MS;
+use crate::budget::{CAP_PROBE_TIMEOUT_MS, MAX_RENDER_WRITE_CHARS};
 
 thread_local! {
     /// 渲染故障隔离窗口（§5A.3 W10）：L5 合成层在 `catch_unwind` 区间置位。
@@ -506,9 +506,61 @@ pub(crate) fn copy_text(text: &str) -> bool {
     platform_copy(text)
 }
 
+/// 有界出帧写入：单次 `write` 不超过 `MAX_RENDER_WRITE_CHARS` 字节。
+///
+/// 终端转义序列是字节流，分片写不会破坏序列——终端按到达顺序解析。本层
+/// 只保证任何一次写调用都有上界，超长一帧不会以单个巨大写阻塞终端。
+pub(crate) struct Bounded<W> {
+    inner: W,
+}
+
+impl<W> Bounded<W> {
+    pub(crate) fn new(inner: W) -> Self {
+        Self { inner }
+    }
+}
+
+impl<W: Write> Write for Bounded<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = buf.len().min(MAX_RENDER_WRITE_CHARS);
+        self.inner.write(&buf[..n])
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 单次写调用被钳到上限：超长一帧分多次写出，不产生巨大单写。
+    #[test]
+    fn bounded_write_caps_each_call() {
+        #[derive(Default)]
+        struct Sink {
+            bytes: usize,
+            calls: usize,
+        }
+        impl Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.bytes += buf.len();
+                self.calls += 1;
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut out = Bounded::new(Sink::default());
+        let frame = vec![b'x'; MAX_RENDER_WRITE_CHARS + 8];
+        assert_eq!(out.write(&frame).unwrap(), MAX_RENDER_WRITE_CHARS);
+        assert_eq!(out.write(&frame).unwrap(), MAX_RENDER_WRITE_CHARS);
+        assert_eq!(out.write(&frame).unwrap(), 8);
+        assert_eq!(out.inner.calls, 3);
+        assert_eq!(out.inner.bytes, frame.len() * 2 + 8);
+    }
 
     #[test]
     fn b64_matches_rfc4648_vectors() {
