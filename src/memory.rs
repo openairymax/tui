@@ -29,7 +29,11 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 镜像保留上限（渲染/召回窗口；网关侧容量由 mem_d 自行管理）。
-const MAX_RECORDS: usize = 2000;
+///
+/// 0.1.21 P1-3：水合改为按会话分段后，窗口不再是「全局 1000 条」，最坏
+/// 情形是 TABS_MAX(9) × HYDRATE_LIMIT(1000) + 全局窗口。上限按此留余量，
+/// 否则旧会话刚水合就被新会话挤出，等于没修。
+const MAX_RECORDS: usize = 10_000;
 
 /// 启动/面板打开时的水合条数（mem.recent 上限：mem_handlers clamp 0..1000）。
 /// 会话历史还原（D-14）按同一窗口读取。
@@ -80,6 +84,11 @@ pub trait ConversationMemory: Send + Sync {
     /// 下发 query 帧后调用）。解析失败或离线时保持现状并置就绪——历史
     /// 还原闸门不因后端不可用而永挂。
     fn ingest_recent(&self, _result: &serde_json::Value) {}
+    /// 按会话范围水合（P1-3）：`conv` 为 Some 时只替换该会话的记忆段，
+    /// None 表示全局窗口（补齐无会话归属的记录）。默认实现退化为整表水合。
+    fn ingest_recent_scope(&self, _conv: Option<&str>, result: &serde_json::Value) {
+        self.ingest_recent(result);
+    }
     /// 水合就绪闸门（D-14）：镜像已从权威后端加载完成。纯内存后端恒就绪。
     fn is_ready(&self) -> bool {
         true
@@ -280,6 +289,16 @@ impl ConversationMemory for MirrorMemory {
         apply_recent(&self.mirror, &self.ready, result);
     }
 
+    /// P1-3：按会话段水合。刻意不置就绪闸门——一轮水合由多条 query 串成，
+    /// App 在队列排空后再以 `ingest_recent(Null)` 收口置就绪，避免历史还原
+    /// 在只水合了部分会话时提前触发、把其余 tab 判成「无历史」。
+    fn ingest_recent_scope(&self, conv: Option<&str>, result: &serde_json::Value) {
+        if self.backend == "volatile" {
+            return;
+        }
+        apply_recent_scope(&self.mirror, conv, result);
+    }
+
     fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Relaxed)
     }
@@ -314,9 +333,54 @@ impl ConversationMemory for MirrorMemory {
 /// 不能因网关不可用而永挂。
 fn apply_recent(mirror: &Mutex<Vec<MemoryRecord>>, ready: &AtomicBool, result: &serde_json::Value) {
     ready.store(true, Ordering::Relaxed);
-    let Some(items) = result.get("records").and_then(|v| v.as_array()) else {
+    let Some(list) = parse_recent(result) else {
         return;
     };
+    let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
+    let n = list.len();
+    *guard = list;
+    log::info!("memory: 自网关水合 {} 条记忆（mem.recent）", n);
+}
+
+/// P1-3：分会话水合——`conv` 为 Some 时只替换该会话的记忆段，其余会话
+/// 保持原样；`conv` 为 None 是全局窗口，只按记录身份去重追加（补齐无会话
+/// 归属的记录），不冲掉已按会话水合的段。
+fn apply_recent_scope(
+    mirror: &Mutex<Vec<MemoryRecord>>,
+    conv: Option<&str>,
+    result: &serde_json::Value,
+) {
+    let Some(list) = parse_recent(result) else {
+        return;
+    };
+    let n = list.len();
+    let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = conv {
+        guard.retain(|r| r.conv.as_deref() != Some(c));
+    }
+    for r in list {
+        if guard.iter().any(|e| same_record(e, &r)) {
+            continue;
+        }
+        guard.push(r);
+    }
+    guard.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    if guard.len() > MAX_RECORDS {
+        let drain = guard.len() - MAX_RECORDS;
+        guard.drain(..drain);
+    }
+    log::info!("memory: 按会话水合 {} 条记忆（conv={:?}）", n, conv);
+}
+
+/// 记录身份：同一后端记录会出现在多条水合窗口里，据此去重。
+fn same_record(a: &MemoryRecord, b: &MemoryRecord) -> bool {
+    a.timestamp == b.timestamp && a.role == b.role && a.content == b.content && a.conv == b.conv
+}
+
+/// 解析 `mem.recent` 结果（按 created 升序，超窗截断）。无 records 字段
+/// 返回 None（保持镜像现状）。
+fn parse_recent(result: &serde_json::Value) -> Option<Vec<MemoryRecord>> {
+    let items = result.get("records").and_then(|v| v.as_array())?;
     let mut recs: Vec<(i64, MemoryRecord)> = Vec::with_capacity(items.len());
     for it in items {
         let data = it.get("data").and_then(|v| v.as_str()).unwrap_or("");
@@ -356,10 +420,7 @@ fn apply_recent(mirror: &Mutex<Vec<MemoryRecord>>, ready: &AtomicBool, result: &
         let drain = list.len() - MAX_RECORDS;
         list.drain(..drain);
     }
-    let n = list.len();
-    let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = list;
-    log::info!("memory: 自网关水合 {} 条记忆（mem.recent）", n);
+    Some(list)
 }
 
 /// 还原 CLI 写入的组合轮记录为 user/assistant 两条。

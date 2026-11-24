@@ -274,7 +274,9 @@ impl App {
         if !self.replay.is_empty() {
             return false;
         }
-        let recent = self.memory.recent(crate::memory::HYDRATE_LIMIT);
+        // P1-3：镜像已按会话分段水合（每段 1000 条），还原必须读全量窗口，
+        // 否则又按 1000 条截断，早期 tab 依旧缺段。
+        let recent = self.memory.recent(usize::MAX);
         if recent.is_empty() {
             return false;
         }

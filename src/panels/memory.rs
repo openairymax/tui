@@ -189,15 +189,24 @@ fn hidden_hint(skip: usize) -> Line<'static> {
     ))
 }
 
-/// 按来源（tags 首标签）分组：每组为一段记忆链，组内保持后端时序。
+/// 按「来源（tags 首标签）+ 会话」分组：每组为一段记忆链，组内保持后端
+/// 时序。P1-3：镜像同时持有多个会话的记忆，只按来源分组会把不同会话的
+/// 链条混显成一条；带会话归属的记录按会话再分一层，会话标识取尾 8 位。
 fn build_groups(recs: &[MemoryEntry]) -> Vec<(String, Vec<&MemoryEntry>)> {
     let mut groups: Vec<(String, Vec<&MemoryEntry>)> = Vec::new();
     for rec in recs {
         let src = source_of(rec);
-        if let Some(g) = groups.iter_mut().find(|(k, _)| k == &src) {
+        let key = if rec.conv().is_empty() {
+            src
+        } else {
+            let c = rec.conv();
+            let tail: String = c.chars().skip(c.chars().count().saturating_sub(8)).collect();
+            format!("{src} › {tail}")
+        };
+        if let Some(g) = groups.iter_mut().find(|(k, _)| k == &key) {
             g.1.push(rec);
         } else {
-            groups.push((src, vec![rec]));
+            groups.push((key, vec![rec]));
         }
     }
     groups
@@ -306,12 +315,17 @@ mod tests {
     use super::*;
 
     fn rec(role: &str, content: &str, tags: &str, ts: &str) -> MemoryEntry {
+        rec_conv(role, content, tags, ts, "")
+    }
+
+    fn rec_conv(role: &str, content: &str, tags: &str, ts: &str, conv: &str) -> MemoryEntry {
         MemoryEntry::new(
             role.to_string(),
             content.to_string(),
             ts.to_string(),
             tags.to_string(),
             false,
+            conv.to_string(),
         )
     }
 
@@ -349,6 +363,19 @@ mod tests {
         // 组内保持后端传入的时序（最新优先）
         assert_eq!(groups[0].1[0].content(), "c");
         assert_eq!(groups[0].1[1].content(), "a");
+    }
+
+    #[test]
+    fn build_groups_splits_same_source_by_conversation() {
+        let a = rec_conv("user", "a", "chat", "2026-01-01T00:00:00", "conv-aaaa1111");
+        let b = rec_conv("assistant", "b", "chat", "2026-01-01T00:00:01", "conv-bbbb2222");
+        let c = rec("user", "c", "chat", "2026-01-01T00:00:02");
+        let groups = build_groups(&[a, b, c]);
+        // 同来源不同会话各自成组；无会话归属的仍归到裸来源组。
+        assert_eq!(groups.len(), 3);
+        assert!(groups[0].0.starts_with("chat › "));
+        assert!(groups[1].0.starts_with("chat › "));
+        assert_eq!(groups[2].0, "chat");
     }
 
     #[test]

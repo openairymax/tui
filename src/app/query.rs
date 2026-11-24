@@ -37,19 +37,54 @@ impl App {
         self.ev.as_ref().is_some_and(|ev| ev.alive())
     }
 
-    /// 记忆/技能镜像水合：一条 mem.recent 同时喂两个镜像（同一后端分区）。
+    /// 记忆/技能镜像水合：按 tab 的会话标识逐段拉 `mem.recent`，末位补一条
+    /// 全局窗口（技能镜像与无会话归属的记录只在这条里出现）。
     ///
     /// 启动（attach_lane 之后）与面板打开时调用；在途时跳过。管道不可用
     /// 不阻塞历史还原闸门——镜像保持现状并置就绪（离线可用）。
+    ///
+    /// P1-3：单次 mem.recent 上限 1000 条且此前不带 conv，多 tab 累计超窗
+    /// 后早期会话静默缺段；改为按 conv 分段水合，每段各自一个窗口。
     pub(super) fn refresh_mem_mirrors(&mut self) {
         if self.mem_hydrate_q {
             return;
         }
-        let params = serde_json::json!({ "limit": crate::memory::HYDRATE_LIMIT });
+        let mut queue: Vec<String> = Vec::new();
+        for t in self.session_tabs.iter() {
+            if !t.conv.is_empty() && !queue.iter().any(|c| c == &t.conv) {
+                queue.push(t.conv.clone());
+            }
+        }
+        queue.push(String::new());
+        self.mem_hydrate_queue = queue;
+        self.send_next_mem_hydrate();
+    }
+
+    /// 派发队列中的下一段水合；队列排空即收口（置就绪闸门）。
+    fn send_next_mem_hydrate(&mut self) {
+        if self.mem_hydrate_queue.is_empty() {
+            self.mem_hydrate_q = false;
+            self.mem_hydrate_cur.clear();
+            // 收口：多次分段水合到此结束，历史还原闸门此刻才放行。
+            self.memory.ingest_recent(&serde_json::Value::Null);
+            self.skills.ingest_recent(&serde_json::Value::Null);
+            return;
+        }
+        let conv = self.mem_hydrate_queue.remove(0);
+        let mut params = serde_json::json!({ "limit": crate::memory::HYDRATE_LIMIT });
+        if !conv.is_empty() {
+            params["conv"] = serde_json::Value::String(conv.clone());
+        }
         match self.send_query("mem.hydrate", "mem.recent", &params) {
-            Ok(()) => self.mem_hydrate_q = true,
+            Ok(()) => {
+                self.mem_hydrate_q = true;
+                self.mem_hydrate_cur = conv;
+            }
             Err(e) => {
                 log::warn!("mem.recent 水合下发失败：{e}");
+                self.mem_hydrate_queue.clear();
+                self.mem_hydrate_q = false;
+                self.mem_hydrate_cur.clear();
                 self.memory.ingest_recent(&serde_json::Value::Null);
                 self.skills.ingest_recent(&serde_json::Value::Null);
             }
@@ -61,15 +96,20 @@ impl App {
         if !self.mem_hydrate_q {
             return;
         }
+        let conv = self.mem_hydrate_cur.clone();
         let reply = self.take_query("mem.hydrate");
         let landed = match reply {
             Some(Ok(v)) => {
-                self.memory.ingest_recent(&v);
-                self.skills.ingest_recent(&v);
+                if conv.is_empty() {
+                    self.memory.ingest_recent_scope(None, &v);
+                    self.skills.ingest_recent(&v);
+                } else {
+                    self.memory.ingest_recent_scope(Some(&conv), &v);
+                }
                 true
             }
             Some(Err(e)) => {
-                log::warn!("mem.recent 水合失败：{e}");
+                log::warn!("mem.recent 水合失败（conv={conv:?}）：{e}");
                 false
             }
             None if !self.pipe_alive() => {
@@ -79,10 +119,11 @@ impl App {
             None => return,
         };
         if !landed {
-            self.memory.ingest_recent(&serde_json::Value::Null);
-            self.skills.ingest_recent(&serde_json::Value::Null);
+            // 后端拒绝/管道退出：放弃剩余分段，直接收口（离线可用）。
+            self.mem_hydrate_queue.clear();
         }
         self.mem_hydrate_q = false;
+        self.send_next_mem_hydrate();
     }
 
     /// 工具目录加载（D-11）：tool.list 查询帧，管道就绪后一次。

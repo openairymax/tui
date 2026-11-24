@@ -16,6 +16,8 @@ pub(crate) struct MemoryEntry {
     timestamp: String,
     tags: String,
     has_reasoning: bool,
+    /// 所属会话标识（P1-3：面板按「来源 + 会话」分组，避免跨会话混显）。
+    conv: String,
 }
 
 impl MemoryEntry {
@@ -25,6 +27,7 @@ impl MemoryEntry {
         timestamp: String,
         tags: String,
         has_reasoning: bool,
+        conv: String,
     ) -> Self {
         Self {
             role,
@@ -32,6 +35,7 @@ impl MemoryEntry {
             timestamp,
             tags,
             has_reasoning,
+            conv,
         }
     }
 
@@ -54,6 +58,11 @@ impl MemoryEntry {
     /// 是否带思考链（面板只做「含思考链」标记，不读正文）。
     pub(crate) fn has_reasoning(&self) -> bool {
         self.has_reasoning
+    }
+
+    /// 所属会话标识（空串 = 无会话归属，例如技能/全局记忆）。
+    pub(crate) fn conv(&self) -> &str {
+        &self.conv
     }
 }
 

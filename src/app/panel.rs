@@ -246,7 +246,14 @@ impl App {
                     .as_deref()
                     .map(|x| !x.trim().is_empty())
                     .unwrap_or(false);
-                MemoryEntry::new(r.role, r.content, r.timestamp, r.tags, has_reasoning)
+                MemoryEntry::new(
+                    r.role,
+                    r.content,
+                    r.timestamp,
+                    r.tags,
+                    has_reasoning,
+                    r.conv.unwrap_or_default(),
+                )
             })
             .collect()
     }

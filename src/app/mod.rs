@@ -195,6 +195,12 @@ pub struct App {
     mem_q: Option<command::MemStage>,
     /// 记忆/技能镜像水合在途（一条 mem.recent 同时喂两个镜像）。
     mem_hydrate_q: bool,
+    /// P1-3：本轮水合待发的会话标识队列（空串 = 全局窗口，排在末位）。
+    /// mem.recent 单次上限 1000 条，按 tab 的 conv 分段拉取，早期会话不会
+    /// 被后续会话挤出窗口而静默缺段。
+    mem_hydrate_queue: Vec<String>,
+    /// P1-3：在途水合请求对应的会话（空串 = 全局窗口）。
+    mem_hydrate_cur: String,
     /// 工具目录查询在途（query 帧 id=toolcat.list，管道就绪后一次）。
     toolcat_q: bool,
     /// 主循环注入的单调时刻（毫秒）——应用层不自行读时钟。
@@ -471,6 +477,8 @@ impl App {
             backend_at_ms: 0,
             mem_q: None,
             mem_hydrate_q: false,
+            mem_hydrate_queue: Vec::new(),
+            mem_hydrate_cur: String::new(),
             toolcat_q: false,
             clock_ms: 0,
             fallback: false,
