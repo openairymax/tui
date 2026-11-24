@@ -100,12 +100,6 @@ pub(crate) const MAX_DEDUPE_KEYS: usize = 256;
 
 /// 视口外保留回合摘要数（§6.10 #3）。
 pub(crate) const RETAINED_TURNS_LIMIT: usize = 8;
-/// 已关闭问询单 id 记忆上限（防重复弹窗内存增长）。
-pub(crate) const MAX_CLOSED_QUESTIONNAIRE_IDS: usize = 128;
-/// 多 agent 嵌套深度钳位（§5.2 机制 #9）：防渲染环。
-pub(crate) const MAX_PARENT_DEPTH: usize = 32;
-/// 子代理历史注入条数上限（§6.4 #4 历史 recall 供数）。
-pub(crate) const CHILD_HISTORY_LIMIT: usize = 200;
 /// 同屏活跃 toast 上限（§6.3 #4）。
 pub(crate) const MAX_ACTIVE_TOASTS: usize = 3;
 /// toast 存活时长（ms，§6.3 #4）：到点自动消失。
@@ -196,9 +190,6 @@ const _: () = {
     assert!(MAX_OSC52_ENCODED_LENGTH > 0);
     assert!(MAX_DEDUPE_KEYS > 0);
     assert!(RETAINED_TURNS_LIMIT > 0);
-    assert!(MAX_CLOSED_QUESTIONNAIRE_IDS > 0);
-    assert!(MAX_PARENT_DEPTH > 0);
-    assert!(CHILD_HISTORY_LIMIT > 0);
     assert!(MAX_ACTIVE_TOASTS > 0);
     assert!(TOAST_TTL_MS > 0);
     assert!(MAX_OUTPUT_CHARACTERS > 0);
@@ -248,10 +239,9 @@ const _: () = {
     assert!(MAX_PROJECTED_TURNS >= MAX_INITIAL_TURNS);
     assert!(MAX_PROJECTED_TURNS > RETAINED_TURNS_LIMIT);
 
-    // 输入输出界：粘贴折叠 ≤ 工具文本 ≤ 输出，会话保留须容纳历史注入窗口。
+    // 输入输出界：粘贴折叠 ≤ 工具文本 ≤ 输出。
     assert!(MAX_PASTE_FOLD_BYTES <= MAX_TOOL_TEXT_BYTES);
     assert!(MAX_TOOL_TEXT_BYTES <= MAX_OUTPUT_CHARACTERS);
-    assert!(MAX_CHAT_MESSAGES >= CHILD_HISTORY_LIMIT);
 
     // 缓存与队列界：去重键表不得大于解析缓存条目上限，行数层级须单调。
     assert!(MAX_DEDUPE_KEYS <= COMPOSE_CACHE_ENTRIES);
