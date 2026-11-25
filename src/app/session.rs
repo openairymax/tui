@@ -195,6 +195,20 @@ impl App {
         SessionView::new(rows, cur, self.replay.len())
     }
 
+    /// 记忆水合所需：各 tab 的会话标识，按首次出现去重并保持 tab 顺序。
+    ///
+    /// 这是会话归属层对水合路径的窄口径导出——`session_view()` 只承载渲染
+    /// 字段（X1-26a），把 conv 塞进每帧快照会让呈现侧多一次无谓分配。
+    pub(super) fn conv_ids(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for t in &self.session_tabs {
+            if !t.conv.is_empty() && !out.iter().any(|c| c == &t.conv) {
+                out.push(t.conv.clone());
+            }
+        }
+        out
+    }
+
     /// 首条用户消息派生会话标题（tab 栏展示）；已有标题不覆盖。
     pub(super) fn seed_tab_title(&mut self, text: &str) {
         let i = self.current_tab_index();

@@ -49,12 +49,7 @@ impl App {
         if self.mem_hydrate_q {
             return;
         }
-        let mut queue: Vec<String> = Vec::new();
-        for t in self.session_tabs.iter() {
-            if !t.conv.is_empty() && !queue.iter().any(|c| c == &t.conv) {
-                queue.push(t.conv.clone());
-            }
-        }
+        let mut queue = self.conv_ids();
         queue.push(String::new());
         self.mem_hydrate_queue = queue;
         self.send_next_mem_hydrate();
