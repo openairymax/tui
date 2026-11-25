@@ -71,6 +71,17 @@ fn dep_line(dep: &Dep, now_ms: u64) -> Line<'static> {
             Style::default().fg(style::faint()),
         ));
     }
+    // 熔断读数（§33.2 #5）：只在有读数且出现未闭合或跳闸时占用一行宽度，
+    // 稳态（全 closed 且零跳闸）不改变既有行文。
+    if dep.brk_total > 0 && (dep.brk_open > 0 || dep.breaks > 0) {
+        spans.push(Span::styled(
+            format!(
+                " · 熔断 {}/{} 未闭合 / 跳闸 {} 次",
+                dep.brk_open, dep.brk_total, dep.breaks
+            ),
+            Style::default().fg(style::warning()),
+        ));
+    }
     Line::from(spans)
 }
 
@@ -227,6 +238,9 @@ mod tests {
             last_fail_ms: (!up).then_some(0),
             fails,
             flaps,
+            brk_open: 0,
+            brk_total: 0,
+            breaks: 0,
         }
     }
 
@@ -250,6 +264,21 @@ mod tests {
         assert!(text.contains("网关"), "应显示中文依赖名: {text}");
         assert!(text.contains("不可达 · 1m5s 前起"), "缺少持续时长: {text}");
         assert!(text.contains("失败 3 次 / 抖动 1 次"), "缺少计数: {text}");
+    }
+
+    /// §33.2 #5：熔断读数随依赖行呈现，稳态（全 closed 零跳闸）不占宽度。
+    #[test]
+    fn dep_line_shows_breakers_when_open() {
+        let mut d = dep("llm", true, 0, 0);
+        d.brk_open = 1;
+        d.brk_total = 3;
+        d.breaks = 2;
+        let text = dep_line(&d, 1_000).to_string();
+        assert!(text.contains("熔断 1/3 未闭合"), "缺少未闭合数: {text}");
+        assert!(text.contains("跳闸 2 次"), "缺少跳闸计数: {text}");
+
+        let quiet = dep_line(&dep("llm", true, 0, 0), 1_000).to_string();
+        assert!(!quiet.contains("熔断"), "稳态不应出现熔断段: {quiet}");
     }
 
     /// 错误聚合行：×N 计数与最近发生时长，且不出现原始错误正文。

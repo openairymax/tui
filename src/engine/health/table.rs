@@ -29,6 +29,11 @@ pub(crate) struct Dep {
     pub(crate) last_fail_ms: Option<u64>,
     pub(crate) fails: u32,
     pub(crate) flaps: u32,
+    /// 该依赖自报的熔断读数（§33.2 #5）：未闭合 breaker 数、breaker 总数、
+    /// 累计跳闸次数。语义唯一在 daemon 的 health_check 发布面，TUI 只读。
+    pub(crate) brk_open: u16,
+    pub(crate) brk_total: u16,
+    pub(crate) breaks: u64,
 }
 
 impl Dep {
@@ -40,6 +45,9 @@ impl Dep {
             last_fail_ms: (!ok).then_some(now_ms),
             fails: u32::from(!ok),
             flaps: 0,
+            brk_open: 0,
+            brk_total: 0,
+            breaks: 0,
         }
     }
 
@@ -119,6 +127,16 @@ impl HealthTable {
 
     pub(crate) fn deps(&self) -> &[Dep] {
         &self.deps
+    }
+
+    /// 吸收一次熔断读数：与可达性同表存放，避免面板再开一路状态源。
+    /// 依赖尚未登记时忽略（可达性探测总是先于读数落地）。
+    pub(crate) fn observe_brk(&mut self, name: &str, open: u16, total: u16, breaks: u64) {
+        if let Some(dep) = self.deps.iter_mut().find(|d| d.name == name) {
+            dep.brk_open = open;
+            dep.brk_total = total;
+            dep.breaks = breaks;
+        }
     }
 
     /// 该依赖是否已知且不可达。未探测过的依赖不冒充降级。

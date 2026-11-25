@@ -18,11 +18,21 @@ use crate::engine::sched::Lane;
 
 use super::*;
 
+/// 单依赖自报的熔断读数（§33.2 #5）：语义在 daemon 的 health_check 发布面，
+/// 本层只搬运数值，不做阈值判断。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Brk {
+    pub(crate) open: u16,
+    pub(crate) total: u16,
+    pub(crate) breaks: u64,
+}
+
 /// 单依赖探测结果。`err` 为原始错误串，只进日志，不上屏。
 pub(crate) struct Probe {
     pub(crate) name: String,
     pub(crate) ok: bool,
     pub(crate) err: String,
+    pub(crate) brk: Brk,
 }
 
 /// 健康探测在途阶段：网关存活确认 → 各域并发探测。
@@ -108,6 +118,7 @@ impl App {
             name: "gateway".to_string(),
             ok: true,
             err: String::new(),
+            brk: Brk::default(),
         }];
         for (i, ns) in names.iter().enumerate() {
             let id = format!("health.daemon.{i}");
@@ -118,6 +129,7 @@ impl App {
                     name: ns.to_string(),
                     ok: false,
                     err: e,
+                    brk: Brk::default(),
                 }),
             }
         }
@@ -137,11 +149,11 @@ impl App {
         while i < pending.len() {
             if let Some(r) = self.take_query(&pending[i].1) {
                 let (ns, _) = pending.remove(i);
-                let (ok, err) = match r {
-                    Ok(_) => (true, String::new()),
-                    Err(e) => (false, e),
+                let (ok, err, brk) = match r {
+                    Ok(v) => (true, String::new(), brk_of(&v)),
+                    Err(e) => (false, e, Brk::default()),
                 };
-                probes.push(Probe { name: ns, ok, err });
+                probes.push(Probe { name: ns, ok, err, brk });
             } else {
                 i += 1;
             }
@@ -158,6 +170,8 @@ impl App {
     fn land_health(&mut self, probes: Vec<Probe>, now_ms: u64) {
         for p in probes {
             self.note_dep(&p.name, p.ok, now_ms, Some(&p.err));
+            self.health
+                .observe_brk(&p.name, p.brk.open, p.brk.total, p.brk.breaks);
         }
         self.sync_banner(now_ms);
         self.mark_landed(Lane::Poll);
@@ -310,6 +324,29 @@ pub(crate) fn dep_cn(name: &str) -> &str {
         "maths" => "数学",
         other => other,
     }
+}
+
+fn brk_of(v: &serde_json::Value) -> Brk {
+    let mut brk = Brk::default();
+    if let Some(items) = v.get("breakers").and_then(|b| b.as_array()) {
+        for b in items {
+            brk.total = brk.total.saturating_add(1);
+            if b.get("state").and_then(|s| s.as_str()) != Some("closed") {
+                brk.open = brk.open.saturating_add(1);
+            }
+            let n = b
+                .get("breaks")
+                .and_then(|x| x.as_u64().or_else(|| x.as_f64().map(|f| f as u64)))
+                .unwrap_or(0);
+            brk.breaks = brk.breaks.saturating_add(n);
+        }
+    } else if let Some(n) = v
+        .get("circuit_breaks")
+        .and_then(|x| x.as_u64().or_else(|| x.as_f64().map(|f| f as u64)))
+    {
+        brk.breaks = n;
+    }
+    brk
 }
 
 fn wall_ms() -> u64 {
