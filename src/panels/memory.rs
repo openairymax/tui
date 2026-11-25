@@ -370,7 +370,8 @@ mod tests {
         let a = rec_conv("user", "a", "chat", "2026-01-01T00:00:00", "conv-aaaa1111");
         let b = rec_conv("assistant", "b", "chat", "2026-01-01T00:00:01", "conv-bbbb2222");
         let c = rec("user", "c", "chat", "2026-01-01T00:00:02");
-        let groups = build_groups(&[a, b, c]);
+        let recs = [a, b, c];
+        let groups = build_groups(&recs);
         // 同来源不同会话各自成组；无会话归属的仍归到裸来源组。
         assert_eq!(groups.len(), 3);
         assert!(groups[0].0.starts_with("chat › "));
