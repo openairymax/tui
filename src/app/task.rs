@@ -127,10 +127,6 @@ impl App {
             return false;
         }
         self.resume_token = r.resume_token.clone();
-        let budget = match (r.rounds_used, r.rounds_limit) {
-            (Some(u), Some(l)) => format!("（工具轮次 {}/{} 已用尽）", u, l),
-            _ => String::new(),
-        };
         let token_hint = if self.resume_token.is_some() {
             "已保存续跑令牌。"
         } else {
@@ -140,8 +136,8 @@ impl App {
         self.add_message(
             MessageRole::System,
             format!(
-                "任务已暂停：工具轮次预算耗尽{}{}输入{}。",
-                budget,
+                "任务已暂停：{}。{}输入{}。",
+                stop_brief(r),
                 token_hint,
                 TaskState::choices()
             ),
@@ -916,6 +912,28 @@ fn paused_token(value: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// N-7：暂停原因的原话。事实源是 run_end.stop_reason（与 rounds_used /
+/// rounds_limit 同源）；旧引擎不带该键时按轮次预算兜底，措辞与 0.1.20 一致。
+fn stop_brief(r: &RunResponse) -> String {
+    use agentrt_rs::run_stream::gen as g;
+    let used = match (r.rounds_used, r.rounds_limit) {
+        (Some(u), Some(l)) if l > 0 => format!("工具轮次 {u}/{l}"),
+        (Some(u), _) => format!("已用工具轮次 {u}"),
+        _ => String::new(),
+    };
+    let head = match r.stop_reason.as_deref() {
+        Some(g::AIRY_RS_STOP_ROUNDS) => "工具轮次到达显式上限",
+        Some(g::AIRY_RS_REASON_BUDGET) => "token 预算已用尽",
+        Some(g::AIRY_RS_STOP_CANCELLED) => "本轮已被取消",
+        _ => "工具轮次预算耗尽",
+    };
+    if used.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head}（{used}）")
+    }
+}
+
 /// C-17：未验证终态的判据摘要（最多 3 条，超出的以「等 N 项」收口）。
 /// 判据证据来自 tool_d verifier，字段 type/expect/actual 由协议固定。
 fn verify_brief(v: Option<&serde_json::Value>) -> String {
@@ -951,8 +969,32 @@ fn verify_brief(v: Option<&serde_json::Value>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{paused_token, verify_brief};
+    use super::{paused_token, stop_brief, verify_brief};
+    use crate::client::RunResponse;
+    use agentrt_rs::run_stream::gen;
     use serde_json::json;
+
+    /// N-7：暂停说明以 stop_reason 为准，轮次只作用量后缀；旧引擎缺键时
+    /// 仍按 0.1.20 的轮次预算措辞兜底。
+    #[test]
+    fn stop_brief_follows_reason() {
+        let mut r = RunResponse {
+            rounds_used: Some(8),
+            rounds_limit: Some(8),
+            ..Default::default()
+        };
+        assert_eq!(stop_brief(&r), "工具轮次预算耗尽（工具轮次 8/8）");
+
+        r.stop_reason = Some(gen::AIRY_RS_STOP_ROUNDS.to_string());
+        assert_eq!(stop_brief(&r), "工具轮次到达显式上限（工具轮次 8/8）");
+
+        r.stop_reason = Some(gen::AIRY_RS_REASON_BUDGET.to_string());
+        assert_eq!(stop_brief(&r), "token 预算已用尽（工具轮次 8/8）");
+
+        r.rounds_limit = Some(0);
+        r.stop_reason = Some(gen::AIRY_RS_STOP_CANCELLED.to_string());
+        assert_eq!(stop_brief(&r), "本轮已被取消（已用工具轮次 8）");
+    }
 
     #[test]
     fn paused_token_picks_first_paused_turn() {

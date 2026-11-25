@@ -48,11 +48,17 @@ pub struct RunResponse {
     /// 继续，无需重放整轮历史。
     #[serde(default)]
     pub resume_token: Option<String>,
-    /// 已消耗工具轮次 / 协商上限（预算耗尽时用于界面说明）。
+    /// 已消耗工具轮次 / 协商上限（预算耗尽时用于界面说明）。上限为 0
+    /// 表示本轮不设轮次上限（引擎策略按需解析）。
     #[serde(default)]
     pub rounds_used: Option<i64>,
     #[serde(default)]
     pub rounds_limit: Option<i64>,
+    /// N-7：本次 run 的停止原因，取值是引擎 AIRY_RS_REASON_* 词表
+    /// （done/cancelled/rounds_limit/budget/tool/denied/…）。这是暂停
+    /// 说明的唯一事实源，界面不得自行推测；旧引擎不带该键。
+    #[serde(default)]
+    pub stop_reason: Option<String>,
     /// C-15：服务端任务身份（task_id 即本次 run_id，CLI/TUI/SDK 与重连
     /// 共享同一条时间线）。
     #[serde(default)]
