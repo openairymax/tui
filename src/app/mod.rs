@@ -201,6 +201,8 @@ pub struct App {
     mem_hydrate_queue: Vec<String>,
     /// P1-3：在途水合请求对应的会话（空串 = 全局窗口）。
     mem_hydrate_cur: String,
+    /// §33.2 #4：本轮水合查询的下发时刻（成功下发才记，落地时算耗时）。
+    mem_hydrate_at: Option<std::time::Instant>,
     /// 工具目录查询在途（query 帧 id=toolcat.list，管道就绪后一次）。
     toolcat_q: bool,
     /// 主循环注入的单调时刻（毫秒）——应用层不自行读时钟。
@@ -479,6 +481,7 @@ impl App {
             mem_hydrate_q: false,
             mem_hydrate_queue: Vec::new(),
             mem_hydrate_cur: String::new(),
+            mem_hydrate_at: None,
             toolcat_q: false,
             clock_ms: 0,
             fallback: false,

@@ -9,6 +9,15 @@
 
 use super::*;
 
+use crate::memory::HydrateLog;
+
+/// 观察面查询通道标签（§33.2 #4）：查询帧只走事件管道（D-15），日志据此
+/// 标注来源。将来若增设备用通道，各通道须填自己的标签，不得沿用本值。
+const MEM_CHANNEL: &str = "event-pipe";
+
+/// 水合查询帧标识（应答按 id 配对）。
+const MEM_HYDRATE_ID: &str = "mem.hydrate";
+
 impl App {
     /// 下发一帧观察面查询（D-15 扩展，kind=query）。
     ///
@@ -55,13 +64,34 @@ impl App {
         self.send_next_mem_hydrate();
     }
 
+    /// 一次水合的传输事实（§33.2 #4）：耗时从成功下发时刻起算，未记时刻
+    /// 记 0（下发即失败、无在途可言）。
+    fn mem_hydrate_log<'a>(&'a self, conv: Option<&'a str>) -> HydrateLog<'a> {
+        HydrateLog {
+            channel: MEM_CHANNEL,
+            id: MEM_HYDRATE_ID,
+            conv,
+            elapsed_ms: self.mem_elapsed_ms(),
+        }
+    }
+
+    /// 在途水合已等待的毫秒数。
+    fn mem_elapsed_ms(&self) -> u128 {
+        self.mem_hydrate_at
+            .map(|t| t.elapsed().as_millis())
+            .unwrap_or(0)
+    }
+
     /// 派发队列中的下一段水合；队列排空即收口（置就绪闸门）。
     fn send_next_mem_hydrate(&mut self) {
         if self.mem_hydrate_queue.is_empty() {
             self.mem_hydrate_q = false;
             self.mem_hydrate_cur.clear();
-            // 收口：多次分段水合到此结束，历史还原闸门此刻才放行。
-            self.memory.ingest_recent(&serde_json::Value::Null);
+            self.mem_hydrate_at = None;
+            // 收口：多次分段水合到此结束，历史还原闸门此刻才放行。空结果
+            // 只置就绪、不记水合日志——各分段的落地日志已分别记录。
+            self.memory
+                .ingest_recent(&serde_json::Value::Null, &self.mem_hydrate_log(None));
             self.skills.ingest_recent(&serde_json::Value::Null);
             return;
         }
@@ -70,17 +100,24 @@ impl App {
         if !conv.is_empty() {
             params["conv"] = serde_json::Value::String(conv.clone());
         }
-        match self.send_query("mem.hydrate", "mem.recent", &params) {
+        match self.send_query(MEM_HYDRATE_ID, "mem.recent", &params) {
             Ok(()) => {
                 self.mem_hydrate_q = true;
                 self.mem_hydrate_cur = conv;
+                self.mem_hydrate_at = Some(std::time::Instant::now());
             }
             Err(e) => {
-                log::warn!("mem.recent 水合下发失败：{e}");
+                log::warn!(
+                    "memory: hydrate channel={MEM_CHANNEL} id={MEM_HYDRATE_ID} conv={conv:?} \
+                     elapsed_ms={} result=dispatch-failed err={e}",
+                    self.mem_elapsed_ms()
+                );
                 self.mem_hydrate_queue.clear();
                 self.mem_hydrate_q = false;
                 self.mem_hydrate_cur.clear();
-                self.memory.ingest_recent(&serde_json::Value::Null);
+                self.mem_hydrate_at = None;
+                self.memory
+                    .ingest_recent(&serde_json::Value::Null, &self.mem_hydrate_log(None));
                 self.skills.ingest_recent(&serde_json::Value::Null);
             }
         }
@@ -92,23 +129,35 @@ impl App {
             return;
         }
         let conv = self.mem_hydrate_cur.clone();
-        let reply = self.take_query("mem.hydrate");
+        let reply = self.take_query(MEM_HYDRATE_ID);
+        let scope = if conv.is_empty() {
+            None
+        } else {
+            Some(conv.as_str())
+        };
         let landed = match reply {
             Some(Ok(v)) => {
+                let at = self.mem_hydrate_log(scope);
+                self.memory.ingest_recent_scope(&v, &at);
                 if conv.is_empty() {
-                    self.memory.ingest_recent_scope(None, &v);
                     self.skills.ingest_recent(&v);
-                } else {
-                    self.memory.ingest_recent_scope(Some(&conv), &v);
                 }
                 true
             }
             Some(Err(e)) => {
-                log::warn!("mem.recent 水合失败（conv={conv:?}）：{e}");
+                log::warn!(
+                    "memory: hydrate channel={MEM_CHANNEL} id={MEM_HYDRATE_ID} conv={conv:?} \
+                     elapsed_ms={} result=rejected err={e}",
+                    self.mem_elapsed_ms()
+                );
                 false
             }
             None if !self.pipe_alive() => {
-                log::warn!("mem.recent 水合未应答（事件管道已退出）");
+                log::warn!(
+                    "memory: hydrate channel={MEM_CHANNEL} id={MEM_HYDRATE_ID} conv={conv:?} \
+                     elapsed_ms={} result=offline reason=pipe-closed",
+                    self.mem_elapsed_ms()
+                );
                 false
             }
             None => return,

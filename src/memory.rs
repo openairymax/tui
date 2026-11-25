@@ -66,6 +66,23 @@ pub struct MemoryHit {
     pub turn: Option<u64>,
 }
 
+/// 一次水合查询的传输事实（§33.2 #4）。
+///
+/// 只有查询层同时知道通道、帧标识与发起时刻，故由它填好随结果一起交给
+/// 镜像；镜像侧只把三件事写进同一条日志，不解释通道语义。多通道并存时
+/// 各通道填自己的标签，离线与拒绝由查询层分别记录，日志因此可区分
+/// 「成功落地 / 后端拒绝 / 通道已断」三种结局。
+pub struct HydrateLog<'a> {
+    /// 承载本次查询的通道（当前仅事件管道）。
+    pub channel: &'a str,
+    /// 查询帧标识（应答按此配对）。
+    pub id: &'a str,
+    /// 会话范围；None 为全局窗口。
+    pub conv: Option<&'a str>,
+    /// 从下发到应答落地的毫秒数。
+    pub elapsed_ms: u128,
+}
+
 /// 对话记忆后端 trait（E-4 跨平台一致性：Linux/macOS/Windows 路径统一）。
 ///
 /// 只读契约（0.1.21 X1-28a）：TUI 不写记忆，trait 不设任何写方法；记忆
@@ -82,12 +99,13 @@ pub trait ConversationMemory: Send + Sync {
     fn len(&self) -> usize;
     /// 水合接口：把 `mem.recent` 的查询结果落地到镜像（App 经事件管道
     /// 下发 query 帧后调用）。解析失败或离线时保持现状并置就绪——历史
-    /// 还原闸门不因后端不可用而永挂。
-    fn ingest_recent(&self, _result: &serde_json::Value) {}
-    /// 按会话范围水合（P1-3）：`conv` 为 Some 时只替换该会话的记忆段，
+    /// 还原闸门不因后端不可用而永挂。`at` 为本次查询的传输事实，只用于
+    /// 日志归因（见 [`HydrateLog`]）。
+    fn ingest_recent(&self, _result: &serde_json::Value, _at: &HydrateLog) {}
+    /// 按会话范围水合（P1-3）：`at.conv` 为 Some 时只替换该会话的记忆段，
     /// None 表示全局窗口（补齐无会话归属的记录）。默认实现退化为整表水合。
-    fn ingest_recent_scope(&self, _conv: Option<&str>, result: &serde_json::Value) {
-        self.ingest_recent(result);
+    fn ingest_recent_scope(&self, result: &serde_json::Value, at: &HydrateLog) {
+        self.ingest_recent(result, at);
     }
     /// 水合就绪闸门（D-14）：镜像已从权威后端加载完成。纯内存后端恒就绪。
     fn is_ready(&self) -> bool {
@@ -282,21 +300,21 @@ impl ConversationMemory for MirrorMemory {
         self.mirror.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    fn ingest_recent(&self, result: &serde_json::Value) {
+    fn ingest_recent(&self, result: &serde_json::Value, at: &HydrateLog) {
         if self.backend == "volatile" {
             return;
         }
-        apply_recent(&self.mirror, &self.ready, result);
+        apply_recent(&self.mirror, &self.ready, result, at);
     }
 
     /// P1-3：按会话段水合。刻意不置就绪闸门——一轮水合由多条 query 串成，
     /// App 在队列排空后再以 `ingest_recent(Null)` 收口置就绪，避免历史还原
     /// 在只水合了部分会话时提前触发、把其余 tab 判成「无历史」。
-    fn ingest_recent_scope(&self, conv: Option<&str>, result: &serde_json::Value) {
+    fn ingest_recent_scope(&self, result: &serde_json::Value, at: &HydrateLog) {
         if self.backend == "volatile" {
             return;
         }
-        apply_recent_scope(&self.mirror, conv, result);
+        apply_recent_scope(&self.mirror, result, at);
     }
 
     fn is_ready(&self) -> bool {
@@ -331,15 +349,36 @@ impl ConversationMemory for MirrorMemory {
 /// 同步、无 IO：查询由 App 经事件管道下发，本函数只解析。失败（无
 /// records / 离线空结果）时保持镜像现状，并一律置就绪——历史还原闸门
 /// 不能因网关不可用而永挂。
-fn apply_recent(mirror: &Mutex<Vec<MemoryRecord>>, ready: &AtomicBool, result: &serde_json::Value) {
+/// 水合落地日志的唯一格式点（§33.2 #4）：通道、帧标识、会话、条数、耗时
+/// 同处一行，便于把「慢」与「空」分开归因。空结果（`Value::Null`）不记
+/// 日志——那是 App 排空队列后的收口调用，不对应一次真实查询。
+fn log_hydrate(at: &HydrateLog, n: usize) {
+    log::info!(
+        "memory: hydrate channel={} id={} conv={:?} records={} elapsed_ms={} result=ok",
+        at.channel,
+        at.id,
+        at.conv,
+        n,
+        at.elapsed_ms
+    );
+}
+
+fn apply_recent(
+    mirror: &Mutex<Vec<MemoryRecord>>,
+    ready: &AtomicBool,
+    result: &serde_json::Value,
+    at: &HydrateLog,
+) {
     ready.store(true, Ordering::Relaxed);
-    let Some(list) = parse_recent(result) else {
-        return;
-    };
-    let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
-    let n = list.len();
-    *guard = list;
-    log::info!("memory: 自网关水合 {} 条记忆（mem.recent）", n);
+    let parsed = parse_recent(result);
+    let n = parsed.as_ref().map_or(0, |l| l.len());
+    if let Some(list) = parsed {
+        let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = list;
+    }
+    if !result.is_null() {
+        log_hydrate(at, n);
+    }
 }
 
 /// P1-3：分会话水合——`conv` 为 Some 时只替换该会话的记忆段，其余会话
@@ -347,15 +386,15 @@ fn apply_recent(mirror: &Mutex<Vec<MemoryRecord>>, ready: &AtomicBool, result: &
 /// 归属的记录），不冲掉已按会话水合的段。
 fn apply_recent_scope(
     mirror: &Mutex<Vec<MemoryRecord>>,
-    conv: Option<&str>,
     result: &serde_json::Value,
+    at: &HydrateLog,
 ) {
     let Some(list) = parse_recent(result) else {
         return;
     };
     let n = list.len();
     let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(c) = conv {
+    if let Some(c) = at.conv {
         guard.retain(|r| r.conv.as_deref() != Some(c));
     }
     for r in list {
@@ -369,7 +408,10 @@ fn apply_recent_scope(
         let drain = guard.len() - MAX_RECORDS;
         guard.drain(..drain);
     }
-    log::info!("memory: 按会话水合 {} 条记忆（conv={:?}）", n, conv);
+    drop(guard);
+    if !result.is_null() {
+        log_hydrate(at, n);
+    }
 }
 
 /// 记录身份：同一后端记录会出现在多条水合窗口里，据此去重。
