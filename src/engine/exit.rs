@@ -72,6 +72,35 @@ impl Code {
     }
 }
 
+/// 退出落盘（N-1 取证）：每次进程退出向 `$AIRY_HOME/logs/agentrt-tui.exit`
+/// 追加一行。全屏 TUI 的 stderr 不可见、被重定向或直接崩溃时，这一行是
+/// 「谁在什么时刻以什么码/什么信号退出」的唯一现场；写失败不影响退出路径。
+pub(crate) fn record(scope: &str, code: Code) {
+    emit(&format!("scope={scope} code={} human={}", code.code(), code.human()));
+}
+
+/// 信号退出落盘：与 `record` 同一文件，用 `sig` 字段记录真实死因。
+pub(crate) fn record_sig(sig: i32) {
+    emit(&format!("sig={}({sig})", crate::engine::signal::name(sig)));
+}
+
+fn emit(fields: &str) {
+    let path = crate::paths::airy_home().join("logs").join("agentrt-tui.exit");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut file = match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    use std::io::Write;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(file, "t={secs} pid={} {fields}", std::process::id());
+}
+
 #[cfg(test)]
 mod tests {
     use super::Code;

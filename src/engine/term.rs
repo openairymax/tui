@@ -97,6 +97,8 @@ pub(crate) fn install_panic_hook() {
             return;
         }
         restore_on_panic();
+        // N-1：panic 退出同样落盘——崩溃时 stderr 可能已被备用屏吞掉。
+        crate::engine::exit::record("panic", crate::engine::exit::Code::Internal);
         default_hook(info);
     }));
 }

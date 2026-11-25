@@ -2382,8 +2382,17 @@ launch_frontend() {
     fi
     "$CLI_BIN" "$@" <&0 &
     TUI_PID=$!
-    wait "$TUI_PID" || return $?
-    return 0
+    # 前端死因不能被吞掉：wait 对信号终止的子进程返回 128+signum
+    # （129=HUP、130=INT、143=TERM）。旧实现 `wait || return $?` 让
+    # 「界面一闪即退」在启动器日志里没有任何可判读痕迹。
+    local front_rc=0
+    wait "$TUI_PID" || front_rc=$?
+    if [ "$front_rc" -ge 128 ] && [ "$front_rc" -le 192 ]; then
+        log warn "前端被信号终止（rc=$front_rc，signal=$((front_rc - 128))）"
+    elif [ "$front_rc" -ne 0 ]; then
+        log warn "前端退出（rc=$front_rc）"
+    fi
+    return "$front_rc"
 }
 
 GATEWAY_ALIVE=0

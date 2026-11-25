@@ -131,6 +131,7 @@ fn resolve_agent_file(arg: Option<&str>) -> Option<String> {
             return Some(abs.to_string_lossy().to_string());
         }
         let code = engine::exit::Code::Usage;
+        engine::exit::record("agent", code);
         error!("agent_file 无法解析：{}（AIRY_HOME={}）", arg, home.display());
         eprintln!("❌ 找不到 agent 文件：{}", arg);
         eprintln!("   已尝试：{}", p.display());
@@ -187,6 +188,7 @@ pub async fn run() {
     // 副作用（日志文件、替代屏）之前裁决，并给出可行动的替代路径。
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let code = engine::exit::Code::Usage;
+        engine::exit::record("gate", code);
         eprintln!("❌ AirymaxRT TUI 需要交互式终端（stdin/stdout 均为 TTY）。");
         eprintln!("   当前为标准输入/输出被重定向或接入管道。");
         eprintln!("   改用行式对话：airy_cli（-p \"问题\"）");
@@ -239,6 +241,17 @@ pub async fn run() {
 
     let tui_result = run_tui(&cli, &boot).await;
 
+    // TERM/HUP 收敛（N-1 取证）：run_app 只在标志到达后正常返回，终端已由
+    // RAII 守卫还原；此处落盘死因并按原信号自绝，父进程仍见 WIFSIGNALED。
+    if let Some(sig) = engine::signal::take() {
+        error!(
+            "收到终止信号 SIG{}，终端已还原，按原信号退出",
+            engine::signal::name(sig)
+        );
+        engine::exit::record_sig(sig);
+        engine::signal::reraise(sig);
+    }
+
     // ── Phase 4: Shutdown diagnostics ──
     let total_time = start_time.elapsed();
     match &tui_result {
@@ -253,12 +266,14 @@ pub async fn run() {
 
     match tui_result {
         Ok(code) => {
+            engine::exit::record("run", code);
             if code.code() != 0 {
                 std::process::exit(code.code());
             }
         }
         Err(_e) => {
             let code = engine::exit::Code::Internal;
+            engine::exit::record("run", code);
             eprintln!("❌ {}（退出码 {}）\n", code.human(), code.code());
             std::process::exit(code.code());
         }
@@ -268,6 +283,8 @@ pub async fn run() {
 async fn run_tui(cli: &Cli, boot: &Boot) -> Result<engine::exit::Code> {
     // T-03（P0-8）：崩溃瞬间先还原终端再打印 panic 报文，用户保住 shell。
     engine::term::install_panic_hook();
+    // N-1：TERM/HUP 只置标志，主循环收敛退出后由 run() 还原并按原信号自绝。
+    engine::signal::install();
 
     // Setup terminal —— RAII 守卫：acquire 失败/任何后续路径（run_app Err、
     // panic、exec）退出作用域时 Drop 完整还原，终端状态永不滞留。
@@ -420,6 +437,11 @@ async fn run_app<B: Backend>(
     let mut mouse_on = app.mouse_capture;
 
     loop {
+        // N-1：TERM/HUP 到达即收敛退出；终端还原由 run_tui 返回后的 RAII 守卫
+        // 完成，真实死因由 run() 按原信号重发。
+        if engine::signal::pending().is_some() {
+            return Ok(engine::exit::Code::Ok);
+        }
         let now_ms = base.elapsed().as_millis() as u64;
         // 单调时刻注入（U12）：应用层不自行读时钟，健康时长/时间线/诊断
         // 快照全部以主循环时刻为准。
@@ -559,10 +581,10 @@ async fn run_app<B: Backend>(
                 let ms = boot.elapsed_ms();
                 if engine::boot::over_budget(ms) {
                     warn!(
-                        "engine/boot: 首帧 {ms}ms 超预算 {FIRST_FRAME_BUDGET_MS}ms（告警不阻塞，后续帧照常）"
+                        "engine/boot: FIRST-FRAME {ms}ms 超预算 {FIRST_FRAME_BUDGET_MS}ms（告警不阻塞，后续帧照常）"
                     );
                 } else {
-                    info!("engine/boot: 首帧 {ms}ms（预算 {FIRST_FRAME_BUDGET_MS}ms）");
+                    info!("engine/boot: FIRST-FRAME {ms}ms（预算 {FIRST_FRAME_BUDGET_MS}ms）");
                 }
             }
             timer.lap(engine::frame::Stage::Present);
