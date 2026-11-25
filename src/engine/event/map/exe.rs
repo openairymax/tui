@@ -6,14 +6,21 @@
 // 执行面映射（0.1.21 X1-07a，§23.1.5）：工具目录、调用开始、调用结果。
 //
 // 载荷取自 daemon 事件信封与 airy_run_stream.h 的 AIRY_RS_K_*：
-//   catalog     data.available/tools            可用工具数与目录；
-//   tool_start  data.tool/tool_id/args_preview  调用开始，参数据服务端原样；
-//   tool_end    data.tool_id/status/result_hash 成败与结果摘录。
+//   catalog         data.available/tools            可用工具数与目录；
+//   tool_start      data.tool/tool_id/args_preview  调用开始，参数据服务端原样；
+//   tool_end        data.tool_id/status/result_hash 成败与结果摘录；
+//   subagent_start  data.sub_id/goal/depth/budget   子任务委派开始；
+//   subagent_end    data.sub_id/status/tokens       子任务收尾。
 //
 // tool_end 不带工具名：调用与结果靠 tool_id 对齐（旧渲染层的 tool_names 表
 // 就是做这件事），不在两侧重复维护名字。args_preview 是服务端给的字符串，
 // 原样交给投影呈现，不在这里二次解析——解析失败时界面反而拿不到原文。
 // tool_delta 在 0.1.21 没有生产者（全仓无发帧），不建无源映射。
+//
+// 子任务委派是一次派发动作，故与工具调用同域：开始即一次调用行（目标为参数、
+// 名字取「subagent」），收尾按 sub_id 回到同一行。子代理自身的 tool_* 帧带着
+// 同一通道进来，各自成行；子树的归组交给按 sub_id 分栏的呈现层，不在映射层
+// 展开——映射层只做单帧定型，不持有跨帧状态。
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -24,7 +31,10 @@ use super::{at, field};
 
 /// 类型是否属于执行面。
 pub(crate) fn known(kind: &str) -> bool {
-    matches!(kind, "catalog" | "tool_start" | "tool_end")
+    matches!(
+        kind,
+        "catalog" | "tool_start" | "tool_end" | "subagent_start" | "subagent_end"
+    )
 }
 
 /// 类型 + 载荷 → 执行面子类；catalog 缺字段时计数为 0 而不是丢帧。
@@ -33,6 +43,8 @@ pub(crate) fn read(kind: &str, p: &Value) -> Option<Execution> {
         "catalog" => Some(Execution::Tools { count: count(p) }),
         "tool_start" => call(p),
         "tool_end" => result(p),
+        "subagent_start" => sub_start(p),
+        "subagent_end" => sub_end(p),
         _ => None,
     }
 }
@@ -62,6 +74,26 @@ fn result(p: &Value) -> Option<Execution> {
         id: field(p, "tool_id").unwrap_or_default(),
         ok,
         text: field(p, "result_hash").unwrap_or_default(),
+    })
+}
+
+/// 子任务委派开始：一次委派占一行，目标即参数（原样呈现，不截断改写）。
+fn sub_start(p: &Value) -> Option<Execution> {
+    Some(Execution::Call {
+        id: field(p, "sub_id").unwrap_or_default(),
+        name: "subagent".into(),
+        args: at(p, "goal").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// 子任务收尾：stop 词表里只有 "done" 算成功；其余（cancelled/agent_error/
+/// budget_exhausted/rounds_limit）原样作收尾文本，界面据此区分终局。
+fn sub_end(p: &Value) -> Option<Execution> {
+    let status = field(p, "status").unwrap_or_default();
+    Some(Execution::Result {
+        ok: status == "done",
+        id: field(p, "sub_id").unwrap_or_default(),
+        text: status,
     })
 }
 
@@ -147,6 +179,46 @@ mod tests {
                 id: "t3".into(),
                 ok: false,
                 text: String::new(),
+            })
+        );
+    }
+
+    /// 子任务委派：开始建调用行（目标为参数），收尾只有 done 算成功。
+    #[test]
+    fn subagent_maps_to_action() {
+        assert!(known("subagent_start"));
+        assert!(known("subagent_end"));
+        assert_eq!(
+            read(
+                "subagent_start",
+                &json!({"data": {"sub_id": "sub_1", "goal": "核对依赖", "depth": 1, "budget": 4096}})
+            ),
+            Some(Execution::Call {
+                id: "sub_1".into(),
+                name: "subagent".into(),
+                args: json!("核对依赖"),
+            })
+        );
+        assert_eq!(
+            read(
+                "subagent_end",
+                &json!({"data": {"sub_id": "sub_1", "status": "done", "tokens": 128}})
+            ),
+            Some(Execution::Result {
+                id: "sub_1".into(),
+                ok: true,
+                text: "done".into(),
+            })
+        );
+        assert_eq!(
+            read(
+                "subagent_end",
+                &json!({"data": {"sub_id": "sub_1", "status": "agent_error"}})
+            ),
+            Some(Execution::Result {
+                id: "sub_1".into(),
+                ok: false,
+                text: "agent_error".into(),
             })
         );
     }

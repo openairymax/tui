@@ -5,7 +5,7 @@
 //
 // golden 事件样本校验（0.1.21 X1-31b）。
 //
-// `golden/samples` 下 20 份录制由 `scripts/gen-golden-samples.py` 生成，格式
+// `golden/samples` 下 21 份录制由 `scripts/gen-golden-samples.py` 生成，格式
 // 即 D-15 帧（`schema/seq/ts/type/payload`），与 `AIRY_TUI_EVENT_RECORD` 的
 // 产物同构：样本可由脚本造，也可由现场录制替换，下游无需区分来源。
 //
@@ -13,7 +13,7 @@
 // schema 固定为 1、时间不回退、类型词法合规、以终态帧收尾、透传帧的信封与
 // 帧头一致。投影与快照断言归 X1-32a——若样本先坏，那边失败会归错因。
 //
-// 类型覆盖是样本集的承诺而非偶然：20 份场景必须覆盖 run-stream 的全部对外
+// 类型覆盖是样本集的承诺而非偶然：21 份场景必须覆盖 run-stream 的全部对外
 // 类型，新增类型时这里先失败，提醒补场景而不是让投影悄悄失去样本。
 
 use std::collections::BTreeSet;
@@ -24,14 +24,14 @@ use serde_json::Value;
 use crate::engine::recorder;
 
 /// 样本数：X1-31b 的验收口径。
-const COUNT: usize = 20;
+const COUNT: usize = 21;
 
 /// 终态帧：成功 run 以 run_end 收尾；失败 run 之后还有一帧 error
 /// （服务端可见时序为 message → run_end → error）。
 const TERMINAL: [&str; 2] = ["run_end", "error"];
 
 /// 样本集必须覆盖的帧类型。
-const COVERED: [&str; 17] = [
+const COVERED: [&str; 19] = [
     "run_start",
     "task_state",
     "token_delta",
@@ -49,6 +49,8 @@ const COVERED: [&str; 17] = [
     "notice",
     "snapshot",
     "control_request",
+    "subagent_start",
+    "subagent_end",
 ];
 
 fn dir() -> PathBuf {

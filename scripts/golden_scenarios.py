@@ -9,7 +9,7 @@
 # （loc，payload 由 cli_ev 自行装配）。编码、时间轴与落盘由
 # gen-golden-samples.py 负责，本表不含任何 I/O。
 #
-# 表长固定为 20 项，且必须覆盖 run-stream 的全部对外类型；新增类型时先补
+# 表长固定为 21 项，且必须覆盖 run-stream 的全部对外类型；新增类型时先补
 # 场景，再由 gen-golden-samples.py 重新生成，样本集才不会悄悄失去覆盖。
 #
 # 时间基准：2026-01-01T00:00:00Z，帧间隔 40ms；同一场景重复生成逐字节一致。
@@ -26,6 +26,8 @@ ERR = "error"
 TOOL_S = "tool_start"
 TOOL_D = "tool_delta"
 TOOL_E = "tool_end"
+SUB_S = "subagent_start"
+SUB_E = "subagent_end"
 
 
 def ev(kind, data):
@@ -95,6 +97,19 @@ def tool_start(name, args, tid="call-1"):
 
 def tool_end(tid, status, digest):
     return ev(TOOL_E, {"tool_id": tid, "status": status, "result_hash": digest})
+
+
+def sub_start(sid, goal, depth=1, budget=4096):
+    """子任务委派开始：目标与预算随帧下发（N-8）。"""
+    return ev(
+        SUB_S,
+        {"sub_id": sid, "goal": goal, "depth": depth, "budget": budget},
+    )
+
+
+def sub_end(sid, status="done", tokens=512):
+    """子任务收尾：status 用 run-stream 的 stop 词表，tokens 是子任务实耗。"""
+    return ev(SUB_E, {"sub_id": sid, "status": status, "tokens": tokens})
 
 
 SCENARIOS = [
@@ -454,6 +469,37 @@ SCENARIOS = [
                 },
                 tool_trace=[{"tool": "read_file", "status": "ok"}],
             ),
+        ],
+    ),
+    (
+        "subagent-tree",
+        [
+            start("核对两处依赖的版本约束并给出结论"),
+            ev(TOKEN, {"delta": "分派一个子任务核对依赖。"}),
+            sub_start("sub-1", "核对 commons 与 atoms 的版本约束"),
+            ev(
+                TOOL_S,
+                {
+                    "tool": "read_file",
+                    "tool_id": "call-9",
+                    "args": '{"path":"CMakeLists.txt"}',
+                    "sub_id": "sub-1",
+                    "depth": 1,
+                },
+            ),
+            ev(
+                TOOL_E,
+                {
+                    "tool_id": "call-9",
+                    "status": "ok",
+                    "result_hash": "两处依赖均已钉定",
+                    "sub_id": "sub-1",
+                    "depth": 1,
+                },
+            ),
+            sub_end("sub-1", "done", 512),
+            message("两处依赖均已钉定，结论一致。"),
+            finish(tool_trace=[{"tool": "subagent.spawn", "status": "ok"}]),
         ],
     ),
 ]

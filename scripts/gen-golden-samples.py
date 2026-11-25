@@ -26,7 +26,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import golden_scenarios as sc  # noqa: E402
 
-COUNT = 20
+COUNT = 21
 
 
 def render(index, frames):

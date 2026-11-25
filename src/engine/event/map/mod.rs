@@ -208,6 +208,16 @@ mod tests {
                 Domain::Execution,
             ),
             (
+                "subagent_start",
+                json!({"data": {"sub_id": "sub_1", "goal": "核对依赖", "depth": 1}}),
+                Domain::Execution,
+            ),
+            (
+                "subagent_end",
+                json!({"data": {"sub_id": "sub_1", "status": "done", "tokens": 128}}),
+                Domain::Execution,
+            ),
+            (
                 "run_end",
                 json!({"data": {"status": "completed"}}),
                 Domain::Outcome,
