@@ -183,6 +183,21 @@ pub async fn run() {
         std::process::exit(crate::probe::run(&url));
     }
 
+    // ── 0.1.21 手册 E：同一 AIRY_HOME 单实例 ──
+    // 锁在参数解析/探针之后、任何终端副作用（日志文件、替代屏）之前获取：
+    // 探针必须随时可用，而第二个交互实例要在进入替代屏前得到确定失败，
+    // 而不是注册不上网关后静默悬死。
+    let _single = match engine::single::acquire() {
+        Ok(guard) => guard,
+        Err(e) => {
+            let code = engine::exit::Code::Soft;
+            engine::exit::record("single", code);
+            eprintln!("❌ {e}");
+            eprintln!("❌ {}（退出码 {}）", code.human(), code.code());
+            std::process::exit(code.code());
+        }
+    };
+
     // §6.1 #3：非 TTY 拒进。全屏渲染依赖可读写的交互终端；管道或重定向下
     // 强行进入只会把控制序列写进日志、并在死终端上反复失败。这里在任何
     // 副作用（日志文件、替代屏）之前裁决，并给出可行动的替代路径。

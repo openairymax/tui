@@ -53,6 +53,7 @@ pub(crate) mod screen;
 pub(crate) mod selfhost;
 pub(crate) mod session;
 pub(crate) mod signal;
+pub(crate) mod single;
 pub(crate) mod stats;
 pub(crate) mod term;
 pub(crate) mod timer;
