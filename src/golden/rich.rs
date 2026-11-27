@@ -86,6 +86,40 @@ fn code_token_color_continues_across_wrap() {
     assert!(rows >= 2, "180 列字符串应在屏上折成多行，实际 {rows} 行");
 }
 
+/// X4-08b：P3 文本出口全绿——标题、表格、代码块、行内 emoji 与全角同时
+/// 上屏，80/100 两档宽度下片段齐全且逐行不越界。X3 组件框架（131~166）
+/// 尚未落地，本卡只覆盖文本层组件（block/inline/table/code）的装配路径。
+#[test]
+fn text_layer_exit_is_green() {
+    let doc = format!(
+        "# 富内容出口\n\n矩阵：\n\n| 组件 | 样本 |\n|---|---|\n| table | 全角（测试） |\n| code | rust |\n\n行内：{FAMILY} ＡＢＣ\n\n```python\ndef f():\n    return \"hi\"\n```"
+    );
+    let must = [
+        "富内容出口",
+        "table",
+        "全角（测试）",
+        "code",
+        "def f():",
+        "return \"hi\"",
+        FAMILY,
+        "ＡＢＣ",
+    ];
+    for width in [80u16, W] {
+        let mut fx = Fixture::new("x4-08b-exit");
+        add(&mut fx.app, MessageRole::Agent, &doc);
+        let screen = fx.draw_at(width, H);
+        for needle in must {
+            assert_has(&screen, needle);
+        }
+        for row in screen.rows() {
+            assert!(
+                grid::width(row) <= width as usize,
+                "{width} 列下行宽越界: {row:?}"
+            );
+        }
+    }
+}
+
 /// X4-08a：样本库逐条走真实渲染，簇完整、行宽合规。
 #[test]
 fn rich_samples_render_losslessly() {
