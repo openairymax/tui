@@ -235,7 +235,7 @@ fn no_orphan_combining_marks() {
             let pieces = wrap(s, max);
             for p in &pieces {
                 assert!(
-                    p.chars().next().map_or(true, |c| char_w(c) > 0),
+                    p.chars().next().is_none_or(|c| char_w(c) > 0),
                     "附加符被拆到行首: s={s:?} max={max} piece={p:?}"
                 );
                 assert!(width(p) <= max, "组合折行越界: max={max} p={p:?}");
