@@ -12,22 +12,25 @@
 // 的批次，为后续 `\e[?2026h/l` 同步块（X2-14a）与 >1MiB 分片（X2-11a）提供
 // 唯一落点。
 //
-// 本卡只做「骨架 + 最小编码通路」：
-//   - X2-06a：`BufferedBackend` 被 `CrosstermBackend` 包裹，可实例化；
+// 本文件持有 writer 本体而不是包裹 `CrosstermBackend`：后者不对外暴露
+// writer，无法在 flush 时交出一帧字节；尺寸、窗口与光标查询直接委托
+// crossterm 的终端函数，语义与原后端一致。
+//
+//   - X2-06a：`BufferedBackend` 可实例化；
 //   - X2-06b：`draw` 期把单元格 diff 编码进 `Vec<u8>`，可产出字节用例。
 // 游程合并（X2-07）、样式游程与 SGR 最短化（X2-08）、整帧 diff 编码器
 // （X2-09/X2-10）在后续卡落位；本卡按「位置游标 + 前景/背景色最小 SGR +
 // 符号字节」编码，够用且可被后续卡替换内部策略而不动接口。
 //
 // 接线（entry.rs 把 `Terminal::new(CrosstermBackend::new(stdout))` 换成
-// `Terminal::new(BufferedBackend::new(CrosstermBackend::new(stdout)))`）属
-// X2-09，本卡不动运行期路径，故模块暂以 `allow(dead_code)` 挂起。
+// `Terminal::new(BufferedBackend::new(stdout))`）属 X2-09，本卡不动运行期
+// 路径，故模块暂以 `allow(dead_code)` 挂起。
 
 #![allow(dead_code)] // X2-06 骨架，运行期接线在 X2-09
 
 use std::io::{self, Write};
 
-use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
+use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::Color;
@@ -39,10 +42,10 @@ use unicode_width::UnicodeWidthStr;
 /// 用前移能省下行列两个数字，更长的间距用绝对定位一次到位更稳。
 const CUF_MAX: u16 = 3;
 
-/// 帧字节缓冲后端：包裹 `CrosstermBackend<W>`，把一帧的 diff 编码进
-/// `out`，`flush()` 时一次 `write_all` 写出。
+/// 帧字节缓冲后端：持有 writer 本体，把一帧的 diff 编码进 `out`，
+/// `flush()` 时一次 `write_all` 写出。
 pub(crate) struct BufferedBackend<W: Write> {
-    inner: CrosstermBackend<W>,
+    writer: W,
     /// 当前帧待写出的字节（已编码的 SGR/移动/符号序列）。
     out: Vec<u8>,
     /// 上一次显式定位后的光标位置；用于省略连续的重复定位。
@@ -57,9 +60,9 @@ pub(crate) struct BufferedBackend<W: Write> {
 }
 
 impl<W: Write> BufferedBackend<W> {
-    pub(crate) const fn new(inner: CrosstermBackend<W>) -> Self {
+    pub(crate) const fn new(writer: W) -> Self {
         Self {
-            inner,
+            writer,
             out: Vec::new(),
             cursor: None,
             fg: None,
@@ -89,9 +92,9 @@ impl<W: Write> BufferedBackend<W> {
         self.moves
     }
 
-    /// 归还内层后端（测试与 X2-09 接线用）。
-    pub(crate) fn into_inner(self) -> CrosstermBackend<W> {
-        self.inner
+    /// 归还 writer（测试与 X2-09 接线用）。
+    pub(crate) fn into_inner(self) -> W {
+        self.writer
     }
 
     /// 绝对定位（CUP）：跨行或远距跳转的唯一落点。
@@ -187,7 +190,8 @@ impl<W: Write> Backend for BufferedBackend<W> {
     }
 
     fn get_cursor_position(&mut self) -> io::Result<Position> {
-        self.inner.get_cursor_position()
+        let (x, y) = crossterm::cursor::position()?;
+        Ok(Position { x, y })
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
@@ -214,11 +218,22 @@ impl<W: Write> Backend for BufferedBackend<W> {
     }
 
     fn size(&self) -> io::Result<Size> {
-        self.inner.size()
+        let (width, height) = crossterm::terminal::size()?;
+        Ok(Size { width, height })
     }
 
     fn window_size(&mut self) -> io::Result<WindowSize> {
-        self.inner.window_size()
+        let ws = crossterm::terminal::window_size()?;
+        Ok(WindowSize {
+            columns_rows: Size {
+                width: ws.columns,
+                height: ws.rows,
+            },
+            pixels: Size {
+                width: ws.width,
+                height: ws.height,
+            },
+        })
     }
 
     /// X2-13a：一帧 = 一次 `write_all`（`out` 非空时）。空帧零写。
@@ -226,9 +241,8 @@ impl<W: Write> Backend for BufferedBackend<W> {
         if self.out.is_empty() {
             return Ok(());
         }
-        let writer = self.inner.writer_mut();
-        writer.write_all(&self.out)?;
-        writer.flush()?;
+        self.writer.write_all(&self.out)?;
+        self.writer.flush()?;
         self.writes += 1;
         self.out.clear();
         Ok(())
@@ -293,7 +307,7 @@ mod tests {
 
     fn backend() -> (BufferedBackend<Sink>, Sink) {
         let sink = Sink::default();
-        (BufferedBackend::new(CrosstermBackend::new(sink.clone())), sink)
+        (BufferedBackend::new(sink.clone()), sink)
     }
 
     fn cell(symbol: &str) -> Cell {
