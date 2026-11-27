@@ -413,6 +413,11 @@ impl App {
             self.cmd_diag_export();
             return Ok(());
         }
+        if lower == "/export" {
+            // 会话线性文本导出（X7-01a）：读屏与管道消费的纯文本快照
+            self.cmd_export();
+            return Ok(());
+        }
         if lower == "/daemons" {
             self.cmd_daemons();
             return Ok(());

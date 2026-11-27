@@ -34,6 +34,7 @@ mod control;
 mod daemonlog;
 mod dispatch;
 mod evolution;
+mod export;
 mod focus;
 mod gccp_flow;
 mod health;
