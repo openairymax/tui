@@ -468,6 +468,36 @@ mod tests {
         }
     }
 
+    /// X4-02b（IS-01 显示侧）：全角字符按 2 列参与折行与裁剪，不切半字。
+    #[test]
+    fn fullwidth_wrap_and_clip_is01() {
+        // 宽度 3 的奇数预算：汉字占 2 列，余 1 列只够一个半角字
+        assert_eq!(wrap("中文ab", 3), vec!["中", "文a", "b"]);
+        // 全角字母同样是 2 列，宽度 2 时每行恰一个
+        assert_eq!(wrap("ＡＢＣ", 2), vec!["Ａ", "Ｂ", "Ｃ"]);
+
+        let s = "全角标点：（测试）、「引用」——破折号";
+        let kept = |t: &str| -> String {
+            t.chars().filter(|c| !c.is_whitespace()).collect()
+        };
+        for max in 2..=16usize {
+            let pieces = wrap(s, max);
+            assert!(
+                pieces.iter().all(|p| width(p) <= max),
+                "全角折行越界: max={max} pieces={pieces:?}"
+            );
+            assert_eq!(kept(&pieces.concat()), kept(s), "全角折行丢失非空白字符");
+        }
+
+        // 裁剪预算减 1 留给省略号：4 列只容得下「全」+「…」
+        assert_eq!(clip("全角，", 4), "全…");
+        assert_eq!(clip("中a文", 3), "中…");
+        for max in 0..=12usize {
+            let c = clip(s, max);
+            assert!(width(&c) <= max, "全角裁剪越界: max={max} out={c:?}");
+        }
+    }
+
     #[test]
     fn alloc_cols_never_exceeds_available() {
         let wants: &[Vec<usize>] = &[
