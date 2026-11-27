@@ -122,10 +122,11 @@ jobs:
         working-directory: sdk/tui
         run: cargo test --workspace
 
-      # 相位剖析（X2-28a）：仅手动触发时取样，数值入方案 §16 留痕，
-      # 供优化前后对比；不参与常规门禁，避免共享 runner 负载抖动误判。
+      # 相位剖析（X2-28a）：手动触发与主线推送时取样，数值入方案 §16
+      # 留痕，供优化前后对比；不参与常规门禁，避免共享 runner 负载抖动
+      # 误判。手动 dispatch 需要 actions:write，主线推送保证常态可达。
       - name: Frame profile
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         working-directory: sdk/tui
         run: cargo test --lib -p agentrt-tui golden::bench::profile_frame_phases -- --ignored --nocapture
 
