@@ -40,6 +40,7 @@ pub(crate) mod framelog;
 pub(crate) mod grid;
 pub(crate) mod guard;
 pub(crate) mod health;
+pub(crate) mod ladder;
 pub(crate) mod layout;
 pub(crate) mod leader;
 pub(crate) mod link;

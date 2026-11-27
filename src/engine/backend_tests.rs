@@ -9,6 +9,7 @@
 // 实现同文件将很快越过单文件行数上限；此处按 `#[path]` 挂回同一模块，
 // 仍可直接访问 crate 内可见的编码接口。
 
+use crate::engine::ladder::Ladder;
 use super::*;
 use std::sync::{Arc, Mutex};
 
@@ -304,19 +305,19 @@ fn plain_row_stays_within_byte_budget() {
 
 /// 前 N 次写注入失败，之后正常接收字节（X2-15a 判据）。
 #[derive(Clone, Default)]
-struct FailSink {
+pub(super) struct FailSink {
     fails: Arc<Mutex<usize>>,
     bytes: Arc<Mutex<Vec<u8>>>,
 }
 
 impl FailSink {
-    fn new(fails: usize) -> Self {
+    pub(super) fn new(fails: usize) -> Self {
         let sink = Self::default();
         *sink.fails.lock().unwrap() = fails;
         sink
     }
 
-    fn bytes(&self) -> Vec<u8> {
+    pub(super) fn bytes(&self) -> Vec<u8> {
         self.bytes.lock().unwrap().clone()
     }
 }
@@ -393,9 +394,9 @@ fn broken_pipe_closes_sync_block() {
     assert!(!b.degraded());
 }
 
-/// 连续失败达阈值即切逐格回退，内容仍然送达（X2-15a/b）。
+/// 连续失败达阈值即降一档，内容仍然送达（X2-15a/b、X2-30a）。
 #[test]
-fn repeated_failures_degrade_to_cell_writes() {
+fn repeated_failures_step_down_one_level() {
     let sink = FailSink::new(3);
     let mut b = BufferedBackend::new(sink.clone());
     let a = cell("A");
@@ -407,9 +408,10 @@ fn repeated_failures_degrade_to_cell_writes() {
     assert!(!b.degraded(), "单次失败不降级");
     assert!(b.flush().is_err());
     assert_eq!(b.fail_count(), 2);
-    // 第三次失败达阈值：立即以逐格路径重投，本次 flush 即成功。
+    // 第三次失败达阈值：降一档后立即重投，本次 flush 即成功。
     assert!(b.flush().is_ok());
     assert!(b.degraded());
+    assert_eq!(b.level(), Ladder::Batch, "三次失败只降一档");
     let bytes = sink.bytes();
     let text = String::from_utf8_lossy(&bytes).to_string();
     assert!(text.contains('A') && text.contains('B'), "bytes = {text:?}");

@@ -41,12 +41,13 @@ use unicode_width::UnicodeWidthStr;
 
 use super::backend_sgr::{color_param, mod_params};
 use super::frame_io::SYNC_OFF;
+use super::ladder::Ladder;
 
 /// 写出策略子模块：与编码器共用私有字段，单独成文以控制单体行数。
 #[path = "backend_write.rs"]
 mod write;
 
-/// 连续写失败达此数即回退逐格写（X2-15a）。
+/// 同一档位连续写失败达此数即降一档（X2-15a、X2-30a）。
 const FAIL_LIMIT: u8 = 3;
 
 /// 同一行内改用前移（CUF）的最大间距：超过即绝对定位。
@@ -78,8 +79,8 @@ pub(crate) struct BufferedBackend<W: Write> {
     sync: bool,
     /// 连续写失败次数（X2-15a）。
     fails: u8,
-    /// 逐格回退模式（X2-15b）：连续失败达阈值后置位。
-    degraded: bool,
+    /// 写出降级档位（X2-30a）：只降不升，重建后端即回默认档。
+    level: Ladder,
     /// 每个单元格编码起点在 `out` 中的偏移，是逐格回退的分片边界。
     marks: Vec<usize>,
 }
@@ -97,7 +98,7 @@ impl<W: Write> BufferedBackend<W> {
             moves: 0,
             sync: false,
             fails: 0,
-            degraded: false,
+            level: Ladder::Fused,
             marks: Vec::new(),
         }
     }
@@ -117,9 +118,14 @@ impl<W: Write> BufferedBackend<W> {
         self.fails
     }
 
-    /// 是否已回退逐格写。
+    /// 当前写出档位（X2-30a）。
+    pub(crate) fn level(&self) -> Ladder {
+        self.level
+    }
+
+    /// 是否已离开默认档（X2-15b 判据）。
     pub(crate) fn degraded(&self) -> bool {
-        self.degraded
+        !self.level.is_fused()
     }
 
     /// 当前帧已编码但未写出的字节（只读）。
@@ -214,6 +220,13 @@ impl<W: Write> BufferedBackend<W> {
             return;
         }
         let _ = write!(self.out, "\x1b[{}m", parts.join(";"));
+    }
+
+    /// 本帧已交出：清空帧缓冲与失败计数，下一帧重新起算。
+    fn settle(&mut self) {
+        self.out.clear();
+        self.marks.clear();
+        self.fails = 0;
     }
 }
 
@@ -324,25 +337,19 @@ impl<W: Write> Backend for BufferedBackend<W> {
         })
     }
 
-    /// 一帧 = 一次 `write_all`（X2-12a/b）：全部分片按序拼进同一批次，
-    /// 同步开启时每片自包一对 `h/l`（X2-14a）。空帧零写。
+    /// 一帧一次写出（X2-12a/b）：默认档把分片按序拼进同一批次，同步开启
+    /// 时每片自包一对 `h/l`（X2-14a）。空帧零写。
     ///
-    /// 失败计数达阈值即切逐格回退（X2-15a/b），并立即用逐格路径重投本次
-    /// 内容；同步块已开而写途中失败时，先补发关闭序列，避免残留在同步态。
+    /// 失败即计数，同一档连续失败达阈值降一档（X2-15a、X2-30a），并立即
+    /// 用新档重投本次内容；档位只降不升，最弱档封顶。同步块已开而写途中
+    /// 失败时，先补发关闭序列，避免残留在同步态。
     fn flush(&mut self) -> io::Result<()> {
         if self.out.is_empty() {
             return Ok(());
         }
-        let first = if self.degraded {
-            self.write_cells()
-        } else {
-            self.write_batch()
-        };
-        match first {
+        match self.write_frame() {
             Ok(()) => {
-                self.out.clear();
-                self.marks.clear();
-                self.fails = 0;
+                self.settle();
                 Ok(())
             }
             Err(e) => {
@@ -351,16 +358,25 @@ impl<W: Write> Backend for BufferedBackend<W> {
                     let _ = self.writer.write_all(SYNC_OFF);
                     let _ = self.writer.flush();
                 }
-                if self.fails >= FAIL_LIMIT && !self.degraded {
-                    self.degraded = true;
-                    if self.write_cells().is_ok() {
-                        self.out.clear();
-                        self.marks.clear();
-                        self.fails = 0;
-                        return Ok(());
+                if self.fails < FAIL_LIMIT {
+                    return Err(e);
+                }
+                let next = self.level.next();
+                if next == self.level {
+                    return Err(e);
+                }
+                self.level = next;
+                self.fails = 0;
+                match self.write_frame() {
+                    Ok(()) => {
+                        self.settle();
+                        Ok(())
+                    }
+                    Err(e) => {
+                        self.fails = 1;
+                        Err(e)
                     }
                 }
-                Err(e)
             }
         }
     }
@@ -377,6 +393,20 @@ pub(crate) trait SyncCaps {
 impl<W: Write> SyncCaps for BufferedBackend<W> {
     fn apply_sync(&mut self, on: bool) {
         self.set_sync(on);
+    }
+}
+
+/// 写出档位的只读出口（X2-30b）：帧指标按帧记录当前档位。
+///
+/// 与 `SyncCaps` 分开：能力施加是初始化动作，档位读取是每帧动作；测试
+/// 后端无需实现它，也就不会为一个只读查询被迫接受同步包裹。
+pub(crate) trait WriteLevel {
+    fn write_level(&self) -> Ladder;
+}
+
+impl<W: Write> WriteLevel for BufferedBackend<W> {
+    fn write_level(&self) -> Ladder {
+        self.level
     }
 }
 
@@ -402,3 +432,7 @@ mod pos_tests;
 #[cfg(test)]
 #[path = "backend_io_tests.rs"]
 mod io_tests;
+
+#[cfg(test)]
+#[path = "backend_ladder_tests.rs"]
+mod ladder_tests;

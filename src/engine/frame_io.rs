@@ -107,6 +107,41 @@ pub(crate) fn wrap(buf: &[u8], parts: &[(usize, usize)], sync: bool) -> Vec<u8> 
     out
 }
 
+/// 剥掉样式 SGR（`ESC [ 参数 m`），保留定位、清屏等其余序列与字符。
+///
+/// 只在纯文本档使用（X2-30a L4）：样式是增强项，字符与位置是底线。按完整
+/// 序列过滤而不是找 `m` 字节，避免把参数里的字符误判；未闭合序列连同其后
+/// 内容原样保留——异常输入不在此处吞掉，交给终端去处理。
+pub(crate) fn strip_style(buf: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(buf.len());
+    let mut i = 0;
+    while i < buf.len() {
+        if buf[i] != 0x1b {
+            out.push(buf[i]);
+            i += 1;
+            continue;
+        }
+        match seq_len(&buf[i..]) {
+            Some(len) => {
+                if !is_sgr(&buf[i..i + len]) {
+                    out.extend_from_slice(&buf[i..i + len]);
+                }
+                i += len;
+            }
+            None => {
+                out.extend_from_slice(&buf[i..]);
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 是否样式 SGR：CSI 序列且终止字节为 `m`。
+fn is_sgr(seq: &[u8]) -> bool {
+    seq.len() >= 3 && seq[1] == b'[' && seq[seq.len() - 1] == b'm'
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +246,27 @@ mod tests {
 
     fn on_count(buf: &[u8]) -> usize {
         buf.windows(SYNC_ON.len()).filter(|w| *w == SYNC_ON).count()
+    }
+
+    /// 纯文本档剥样式留定位：字符与位置不动，颜色与修饰全部消失。
+    #[test]
+    fn strip_style_keeps_moves_and_text() {
+        let buf = b"\x1b[2;3H\x1b[31;49;1mAB\x1b[0mC";
+        assert_eq!(strip_style(buf), b"\x1b[2;3HABC");
+    }
+
+    /// 非样式序列不受影响：OSC 标题等原样保留。
+    #[test]
+    fn strip_style_keeps_non_sgr_sequences() {
+        let buf = b"\x1b]0;title\x07ok";
+        assert_eq!(strip_style(buf), buf);
+    }
+
+    /// 未闭合序列原样保留，不吞掉其后的字节。
+    #[test]
+    fn strip_style_keeps_unclosed_tail() {
+        let buf = b"A\x1b[31";
+        assert_eq!(strip_style(buf), buf);
     }
 
     fn off_count(buf: &[u8]) -> usize {
