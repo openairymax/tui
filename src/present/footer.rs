@@ -84,6 +84,15 @@ pub(super) fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(style::faint()),
         ));
     }
+    // 焦点指示（X5-01）：获焦控件恒可见——焦点被吞或不可见即视为缺陷。
+    if area.width >= 88 {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled("┃", Style::default().fg(style::primary())));
+        spans.push(Span::styled(
+            format!("  焦点 {} · Tab 切换", app.focus_name()),
+            Style::default().fg(style::faint()),
+        ));
+    }
 
     f.render_widget(
         Paragraph::new(Line::from(spans))

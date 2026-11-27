@@ -42,6 +42,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> Result<Flow> {
     if app.transcript_open && !is_ctrl_c(&key) {
         return Ok(transcript_key(app, key));
     }
+    app.sync_focus();
     if !app.wizard.active {
         if let Some(flow) = leader_key(app, key) {
             return Ok(flow);

@@ -225,11 +225,16 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         }
         // ── 输入编辑：光标感知（readline 风格）──
         KeyCode::Tab => {
-            // Tab 补全：/ 命令 + 技能名（仅对话面板）
-            if app.active_panel == ActivePanel::Chat {
+            // Tab 双义（X5-01）：输入栏有内容时补全 / 命令与技能名；
+            // 其余情况（空输入、或焦点在正文/列表）在焦点环上前移。
+            if app.active_panel == ActivePanel::Chat && app.focus_is_input() && !app.input.is_empty()
+            {
                 app.tab_complete();
+            } else {
+                app.focus_step(false);
             }
         }
+        KeyCode::BackTab => app.focus_step(true),
         KeyCode::Backspace => {
             // 删除光标前一个字符（IME 拼音态：删拼音缓冲）
             if !app.ime_backspace() {
@@ -377,9 +382,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         }
         KeyCode::Char(c) if app.active_panel == ActivePanel::Chat => {
             // 普通字符插入到光标位置（IME 拼音态：先经拼音输入法）。
-            // 仅对话面板可写入共享输入；只读面板（Help/Config/Logs/
-            // Memory/Plugins）不汇入输入框，Board/Events 由上方数字
-            // 过滤分支消费、不落入此处。
+            // 焦点在正文时先收回输入栏（X5-01）：可见字符永不落空。
+            app.focus_input();
             if !app.ime_input_char(c) {
                 app.input_insert_char(c);
             }

@@ -34,6 +34,7 @@ mod control;
 mod daemonlog;
 mod dispatch;
 mod evolution;
+mod focus;
 mod gccp_flow;
 mod health;
 mod input;
@@ -111,6 +112,8 @@ pub struct App {
     /// 选择）；Ctrl+M 会话级切换。开启后滚轮滚动对话（Shift 加速 /
     /// Ctrl 细粒度），关闭即还原捕获（V11.1）。
     pub mouse_capture: bool,
+    /// 焦点环（0.1.21 X5-01/02）：Tab/Shift-Tab 遍历，逐面板记忆回位。
+    pub(crate) focus_ring: crate::engine::focus::Focus,
     /// 焦点视图消息快照（0.1.18 B11/W14）：Alt+F 打开时取最近一条回复
     /// 克隆，渲染与滚动均基于快照，不受后续消息影响；Esc 退出即弃。
     pub focus_msg: Option<ChatMessage>,
@@ -453,6 +456,7 @@ impl App {
             last_total: 0,
             last_width: 0,
             mouse_capture: false,
+            focus_ring: crate::engine::focus::Focus::new(),
             focus_msg: None,
             focus_scroll: 0,
             focus_scroll_max: 0,

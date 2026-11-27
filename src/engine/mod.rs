@@ -34,6 +34,7 @@ pub(crate) mod event;
 pub(crate) mod exit;
 pub(crate) mod flag;
 pub(crate) mod fold;
+pub(crate) mod focus;
 pub(crate) mod frame;
 pub(crate) mod frame_io;
 pub(crate) mod framelog;
