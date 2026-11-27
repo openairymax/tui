@@ -152,7 +152,9 @@ impl<W: Write> BufferedBackend<W> {
     ///
     /// 同游程内的相邻格由 `draw` 的 `next` 预测直接跳过，根本不进此函数；
     /// 这里只处理真正的空隙：同一行且间距不超过 `CUF_MAX` 列用前移，其余
-    /// 用绝对定位。光标已在目标位置时不产生任何字节。
+    /// 用绝对定位。间距从**写入后的真实光标**起算（见 `draw` 的游程推进），
+    /// 否则宽字符之后的空隙会多算一列，后续字符整体右移。光标已在目标
+    /// 位置时不产生任何字节。
     fn seek(&mut self, pos: Position) {
         match self.cursor {
             Some(cur) if cur == pos => {}
@@ -235,6 +237,10 @@ impl<W: Write> Backend for BufferedBackend<W> {
                         x: x.saturating_add(1),
                         y,
                     });
+                } else {
+                    // 续格不在本帧游程里：光标位置无从推断，下一个实格改
+                    // 绝对定位，避免按陈旧位置前移而错位。
+                    self.cursor = None;
                 }
                 continue;
             }
@@ -245,12 +251,14 @@ impl<W: Write> Backend for BufferedBackend<W> {
             }
             self.emit_style(cell);
             self.out.extend_from_slice(cell.symbol().as_bytes());
-            // 按符号真实显示宽度推进（宽字符 2 列，零宽按 1 列兜底）。
+            // 按符号真实显示宽度推进（宽字符 2 列，零宽按 1 列兜底），并把
+            // 该位置登记为光标缓存：下一处空隙的前移距离由此起算。
             let width = UnicodeWidthStr::width(cell.symbol()).max(1) as u16;
             next = Some(Position {
                 x: x.saturating_add(width),
                 y,
             });
+            self.cursor = next;
         }
         Ok(())
     }
@@ -430,3 +438,7 @@ impl<W: Write> Drop for BufferedBackend<W> {
 #[cfg(test)]
 #[path = "backend_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "backend_pos_tests.rs"]
+mod pos_tests;
