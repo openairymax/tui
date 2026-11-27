@@ -91,8 +91,15 @@ fn copy_toast_is_transient() {
     fx.app.toast("已复制代码块");
     let s = fx.draw();
     assert_has(&s, "✓ 已复制代码块");
-    assert!(!fx.app.toast_expire(t0 + Duration::from_millis(TOAST_TTL_MS)));
-    assert!(fx.app.toast_expire(t0 + Duration::from_millis(TOAST_TTL_MS + 1)));
+    // 入队时刻由 `toast()` 内部再取一次时钟，与 `t0` 存在同刻竞态；
+    // 边界两侧各留 100ms 余量，断言「TTL 前不清退、TTL 后清退」的语义，
+    // 不把判定押在两次时钟读取的先后上（虚拟化 runner 的时钟粒度不可控）。
+    assert!(!fx
+        .app
+        .toast_expire(t0 + Duration::from_millis(TOAST_TTL_MS - 100)));
+    assert!(fx
+        .app
+        .toast_expire(t0 + Duration::from_millis(TOAST_TTL_MS + 100)));
     let s = fx.draw();
     assert_lacks(&s, "已复制代码块");
 }
