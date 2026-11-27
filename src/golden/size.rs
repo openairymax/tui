@@ -9,6 +9,7 @@
 use super::*;
 use crate::app::{ActivePanel, MessageRole};
 use crate::budget::{MAX_CHAT_MESSAGES, MIN_TERM_COLS, WIDTH_CACHE_SIZE};
+use unicode_width::UnicodeWidthStr;
 
 /// §6.9 #1：46 列是窄布局断点，45 列整屏守卫、46 列恢复正常。
 #[test]
@@ -27,6 +28,26 @@ fn narrow_guard_keeps_exit_path() {
     let mut fx = Fixture::new("size-guard");
     let s = fx.draw_at(30, 10);
     assert_has(&s, "Ctrl+C 退出");
+}
+
+/// X2-21b（IS-34）：40 列不横向溢出，最小尺寸提示按纵向堆叠后完整可读。
+///
+/// 低于阈值不再勉强分区：整屏让位给三行提示（标题 / 尺寸 / 恢复动作），
+/// 逐行按显示宽度断言，CJK 双宽按 2 计，任何一行都不得写出视口。
+#[test]
+fn forty_columns_stacks_without_overflow() {
+    let mut fx = Fixture::new("size-40");
+    add(&mut fx.app, MessageRole::Agent, "窄终端关键信息");
+    let s = fx.draw_at(40, 10);
+    assert_has(&s, "终端尺寸不足");
+    assert_has(&s, "至少 46 列");
+    assert_has(&s, "Ctrl+C 退出");
+    for row in s.rows() {
+        assert!(
+            UnicodeWidthStr::width(row.as_str()) <= 40,
+            "40 列不得横向溢出: {row:?}"
+        );
+    }
 }
 
 /// §6.9 #2：行高缓存容量有界，resize 多次不破坏渲染。
