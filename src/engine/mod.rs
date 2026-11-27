@@ -47,6 +47,7 @@ pub(crate) mod link;
 pub(crate) mod logfile;
 pub(crate) mod memory;
 pub(crate) mod notify;
+pub(crate) mod overlay;
 pub(crate) mod probe;
 pub(crate) mod project;
 pub(crate) mod recorder;

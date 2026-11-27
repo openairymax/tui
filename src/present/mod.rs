@@ -37,7 +37,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Paragraph},
+    widgets::{Block, Paragraph, Widget},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -217,21 +217,13 @@ fn render_too_small(f: &mut Frame, area: Rect) {
 
 /// 回放进度行（TUI 方案 §6.1 #2）：主区右下角常显剩余条数。
 fn render_replay(f: &mut Frame, area: Rect, left: usize) {
-    if area.height == 0 {
-        return;
-    }
     let text = format!(" 回放中 · {} 条 ", left);
     let w = (UnicodeWidthStr::width(text.as_str()) as u16).min(area.width);
-    let row = Rect {
-        x: area.right().saturating_sub(w),
-        y: area.bottom().saturating_sub(1),
-        width: w,
-        height: 1,
-    };
-    f.render_widget(
+    // 浮层合成（X2-18a）：贴右下角并由视口裁剪兜底，窄屏不写越界列。
+    overlay::compose_bottom_right(f.buffer_mut(), area, w, 1, |buf, rect| {
         Paragraph::new(text)
             .alignment(Alignment::Right)
-            .style(Style::default().fg(style::faint()).bg(style::surface())),
-        row,
-    );
+            .style(Style::default().fg(style::faint()).bg(style::surface()))
+            .render(rect, buf);
+    });
 }

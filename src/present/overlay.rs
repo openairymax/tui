@@ -8,14 +8,46 @@
 use crate::app::App;
 use crate::engine::grid;
 use crate::engine::health::dur_cn;
+use crate::engine::overlay;
 use crate::style;
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::Paragraph,
     Frame,
 };
+
+/// 浮层合成入口（X2-18a）：把 `w × h` 浮层贴到视口右下角，先裁剪再写入。
+///
+/// 裁剪发生在写入之前，内容渲染器只拿到完整矩形，因此一次合成内不会出现
+/// 「部分行列已写、部分被后端截断」的半截浮层。空视口或空请求不成画，
+/// 返回 `false` 且不调用渲染器。
+pub(super) fn compose_bottom_right<D>(
+    buf: &mut Buffer,
+    view: Rect,
+    w: u16,
+    h: u16,
+    draw: D,
+) -> bool
+where
+    D: FnOnce(&mut Buffer, Rect),
+{
+    let Some(area) = overlay::at_bottom_right(eng_rect(view), w, h) else {
+        return false;
+    };
+    draw(buf, term_rect(area));
+    true
+}
+
+const fn eng_rect(r: Rect) -> overlay::Rect {
+    overlay::Rect::new(r.x, r.y, r.width, r.height)
+}
+
+const fn term_rect(r: overlay::Rect) -> Rect {
+    Rect::new(r.x, r.y, r.w, r.h)
+}
 
 /// 依赖降级横幅（0.1.19 U12，TUI 方案 §6.12 #1/#6）：单行常显最重依赖，
 /// 附真实存在的修复命令；恢复后由状态机撤销并进入冷却期，抖动计数进 /health。
