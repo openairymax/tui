@@ -68,9 +68,13 @@ fn batch_path_bypasses_rejected_sync() {
 }
 
 /// 逐格档救回「单次写超长即失败」的通道：整帧过不了、单格能过。
+///
+/// 单格下限是「定位 + 样式 + 首个字符」共 11 字节（`\x1b[1;1H` 6 字节、
+/// `\x1b[0m` 4 字节、字符 1 字节）：逐格档按格边界切段，首段必然包含
+/// 这一整格，故通道上限须能容纳它，否则只能继续降到纯文本档。
 #[test]
 fn cell_path_recovers_capped_writes() {
-    let sink = Capped::new(10);
+    let sink = Capped::new(11);
     let mut b = BufferedBackend::new(sink.clone());
     let a = cell("A");
     let d = cell("B");
@@ -80,7 +84,7 @@ fn cell_path_recovers_capped_writes() {
     )
     .unwrap();
     let whole = b.frame_bytes().len();
-    assert!(whole > 10, "整帧须超过通道上限，{whole} 字节");
+    assert!(whole > 11, "整帧须超过通道上限，{whole} 字节");
     // Fused 三次失败 → 降 Batch 并立即重投（仍超限，记 Batch 首次失败）；
     // Batch 再三次失败 → 降 Cell 并重投成功，故前四次 flush 均失败。
     for _ in 0..4 {
@@ -90,7 +94,7 @@ fn cell_path_recovers_capped_writes() {
     assert_eq!(b.level(), Ladder::Cell);
     let (bytes, max) = sink.snapshot();
     assert_eq!(bytes.len(), whole, "逐格不得丢字节");
-    assert!(max <= 10, "任何一次写都不得超上限，实际 {max}");
+    assert!(max <= 11, "任何一次写都不得超上限，实际 {max}");
 }
 
 /// 纯文本档封顶：继续失败不再下沉，且档位对指标出口一致（X2-30b）。
