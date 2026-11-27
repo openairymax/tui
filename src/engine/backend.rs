@@ -442,3 +442,7 @@ mod tests;
 #[cfg(test)]
 #[path = "backend_pos_tests.rs"]
 mod pos_tests;
+
+#[cfg(test)]
+#[path = "backend_io_tests.rs"]
+mod io_tests;
