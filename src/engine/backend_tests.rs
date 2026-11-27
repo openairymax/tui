@@ -57,7 +57,7 @@ fn draw_encodes_symbol_and_color() {
     b.draw(vec![(0u16, 0u16, &c)].into_iter()).unwrap();
     let bytes = String::from_utf8_lossy(b.frame_bytes()).to_string();
     assert!(bytes.contains('A'), "frame = {bytes:?}");
-    assert!(bytes.contains("\x1b[31m"), "frame = {bytes:?}");
+    assert!(bytes.contains("\x1b[31;49m"), "frame = {bytes:?}");
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn clear_encoding_and_reset_style_cache() {
     let before = b.frame_bytes().len();
     b.draw(vec![(0u16, 0u16, &c)].into_iter()).unwrap();
     let after = String::from_utf8_lossy(&b.frame_bytes()[before..]).to_string();
-    assert!(after.contains("\x1b[34m"), "frame tail = {after:?}");
+    assert!(after.contains("\x1b[34;49m"), "frame tail = {after:?}");
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn identical_style_run_emits_one_sgr() {
     b.draw(iter).unwrap();
     let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
     assert_eq!(s.matches('m').count(), 1, "frame = {s:?}");
-    assert!(s.contains("\x1b[31m"), "frame = {s:?}");
+    assert!(s.contains("\x1b[31;49m"), "frame = {s:?}");
 }
 
 /// 修饰位跨游程只发差量（X2-08b）。
@@ -226,7 +226,7 @@ fn modifier_transition_encodes_diff() {
     )
     .unwrap();
     let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
-    assert!(s.contains("\x1b[31;1m"), "frame = {s:?}");
+    assert!(s.contains("\x1b[31;49;1m"), "frame = {s:?}");
     assert!(s.contains("\x1b[22;3m"), "frame = {s:?}");
 }
 
@@ -237,7 +237,7 @@ fn color_and_bold_merge_into_one_sgr() {
     let c = styled(1, Color::LightBlue, Modifier::BOLD | Modifier::UNDERLINED);
     b.draw(vec![(0u16, 0u16, &c[0])].into_iter()).unwrap();
     let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
-    assert!(s.contains("\x1b[94;1;4m"), "frame = {s:?}");
+    assert!(s.contains("\x1b[94;49;1;4m"), "frame = {s:?}");
 }
 
 /// 逐格定位的旧行为对 N 格需 N 次定位；游程合并后为 1 次（X2-07b）。

@@ -76,7 +76,10 @@ pub(crate) fn mod_params(from: Modifier, to: Modifier, out: &mut Vec<String>) {
     }
 }
 
-/// 粗体/半亮同簇：复位参数 22 会同时清掉两位，需按目标重新点亮保留位。
+/// 粗体/半亮同簇：复位参数 22 会同时清掉两位。
+///
+/// 只有在确实要关掉其中一位时才需要先发 22，再把目标保留位重新点亮；
+/// 目标只是在空簇上新开位时直接发 1/2，多发 22 反而多占字节。
 fn bold_dim(from: Modifier, to: Modifier, out: &mut Vec<String>) {
     let (fb, fd) = (
         from.contains(Modifier::BOLD),
@@ -86,12 +89,16 @@ fn bold_dim(from: Modifier, to: Modifier, out: &mut Vec<String>) {
     if (fb, fd) == (tb, td) {
         return;
     }
-    if !tb && !td {
+    if (fb && !tb) || (fd && !td) {
         push_once(out, "22");
+        if tb {
+            out.push("1".to_string());
+        }
+        if td {
+            out.push("2".to_string());
+        }
         return;
     }
-    // 目标仍有位：先复位居中，再按目标重发（同簇内换位必走此路）。
-    push_once(out, "22");
     if tb {
         out.push("1".to_string());
     }

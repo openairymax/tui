@@ -150,7 +150,9 @@ mod tests {
             assert!(closed(&buf[s..e]), "chunk {:?}", &buf[s..e]);
         }
         assert_eq!(parts[0], (0, 4), "第一片应在序列前收口");
-        assert!(parts.iter().any(|&(s, e)| &buf[s..e] == b"\x1b[31m"));
+        // 贪心装箱：序列与其后的普通字节同片，边界只落在完整序列之后。
+        assert_eq!(parts[1], (4, 10), "序列之后才收口");
+        assert!(closed(&buf[4..10]));
     }
 
     #[test]
