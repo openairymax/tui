@@ -3,15 +3,15 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// markdown 代码块层（0.1.18 W6）：语言徽章 + 作用域着色 + 超长行横向省略。
+// markdown 代码块层（0.1.18 W6）：语言徽章 + 作用域着色 + 着色后折行。
 //
 // 词法与样式分两层：词法（lex.rs，X4-05a）只产出文本与作用域栈，本层只消费
 // syntect 的 scope 分类（keyword/string/comment/number/function/type...）并映射
 // 到本仓 style::* 设计令牌，不消费其调色板——Cargo.toml 关掉 default-themes，
 // 着色随深浅主题与色深切换，无第二套颜色来源；同一段词法结果可按主题复染。
 //
-// 宽度纪律：超长行经 L2 唯一裁决点 `crate::engine::grid::clip_spans` 横向省略，
-// 本模块不自行测量后截断。
+// 宽度纪律：正文经 L2 唯一裁决点 `crate::engine::grid::wrap_spans` 折行，样式
+// 随片段跨行延续；本模块不自行测量后截断。
 //
 // 缓存纪律（X4-06）：正文按（文本 / 宽度 / 语言）三元组 + 样式维度 memo，命中
 // 即克隆；徽章只含语言名，不单独缓存。流式尾段旁路消息级缓存，但稳定围栏块
@@ -70,7 +70,7 @@ thread_local! {
     static CACHE: RefCell<CodeCache> = RefCell::new(CodeCache::default());
 }
 
-/// 渲染代码块：语言徽章 + 高亮正文（超长行横向省略）。
+/// 渲染代码块：语言徽章 + 高亮正文（超宽行折行，样式跨行延续）。
 pub(super) fn render_code(
     lang: &str,
     body: &str,
@@ -141,7 +141,10 @@ fn body_lines(
     })
 }
 
-/// 未命中路径：词法（lex）→ 样式（token_spans）→ 折行/裁剪（grid）。
+/// 未命中路径：词法（lex）→ 样式（token_spans）→ 折行（grid::wrap_spans）。
+///
+/// 折行在着色之后进行：片段样式已定型，wrap_spans 只负责按显示宽度搬移，
+/// 跨行片段沿用同一 Style，避免折行把 token 颜色截断成两半。
 fn build_body(
     token: &str,
     body: &str,
@@ -150,14 +153,15 @@ fn build_body(
     base: Style,
 ) -> Vec<Line<'static>> {
     let budget = width.saturating_sub(indent + 1);
-    highlight(token, body, base)
-        .into_iter()
-        .map(|line| {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for line in highlight(token, body, base) {
+        for piece in grid::wrap_spans(&line, budget) {
             let mut spans = vec![Span::styled(" ".repeat(indent + 1), base)];
-            spans.extend(grid::clip_spans(&line, budget));
-            Line::from(spans)
-        })
-        .collect()
+            spans.extend(piece);
+            out.push(Line::from(spans));
+        }
+    }
+    out
 }
 
 /// 逐行分词着色：词法由 lex 层产出（X4-05a），本函数只做作用域 → 设计令牌

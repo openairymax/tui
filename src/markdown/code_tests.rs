@@ -55,14 +55,27 @@ fn keyword_is_highlighted() {
     assert!(colored, "关键字应取主色: {:?}", lines[1]);
 }
 
+/// X4-07a：着色后折行——样式跨行延续，行宽不越界，字符不丢。
 #[test]
-fn long_line_is_clipped_with_ellipsis() {
-    let long = "x".repeat(200);
-    let lines = render_code("", &long, 0, 40, Style::default());
-    assert!(joined(&lines).contains('…'), "超长行应横向省略");
-    for line in &lines {
-        assert!(grid::line_w(&line.spans) <= 40, "行宽越界: {line:?}");
+fn highlighted_lines_wrap_without_breaking_sgr() {
+    let literal = format!("let s = \"{}\";", "x".repeat(120));
+    let lines = render_code("rust", &literal, 0, 30, Style::default());
+    assert!(lines.len() > 3, "超长行应折行: {}", lines.len());
+    let mut seen = 0usize;
+    for line in lines.iter().skip(1) {
+        assert!(grid::line_w(&line.spans) <= 30, "折行越界: {line:?}");
+        for span in &line.spans {
+            if span.content.contains('x') {
+                seen += span.content.matches('x').count();
+                assert_eq!(
+                    span.style.fg,
+                    Some(style::success()),
+                    "字符串 token 跨折行续色失败: {span:?}"
+                );
+            }
+        }
     }
+    assert_eq!(seen, 120, "折行不得丢字符");
 }
 
 #[test]
