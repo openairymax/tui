@@ -427,9 +427,14 @@ impl App {
         let reflow = width != self.last_width;
         self.last_width = width;
         if self.scroll_offset > 0 && !reflow {
-            self.follow_new = self
-                .follow_new
-                .saturating_add(total.saturating_sub(self.last_total));
+            let grow = total.saturating_sub(self.last_total);
+            self.follow_new = self.follow_new.saturating_add(grow);
+            // 锚点联动（X5-09b）：上滚阅读时新增行只落在底部，距底偏移
+            // 同步增长才能让视口里的文字原地不动；重排（宽度变化）不算
+            // 增长，否则一次 resize 会把读者甩到别处。
+            self.scroll_offset = self
+                .scroll_offset
+                .saturating_add(grow.min(u16::MAX as usize) as u16);
         }
         self.last_total = total;
         if self.scroll_offset == 0 {

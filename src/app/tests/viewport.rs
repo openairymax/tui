@@ -80,6 +80,30 @@ fn b11_wheel_lines_follows_modifiers() {
     assert_eq!(app.wheel_lines(true, true), 1, "Ctrl 优先细粒度");
 }
 
+/// X5-09b 锚点联动：上滚阅读时新增行只落在底部，视口内文字不漂移；
+/// 宽度变化属重排，不得计入新增行。
+#[test]
+fn x5_anchor_holds_viewport_on_new_lines() {
+    let _h = crate::test_env::Home::new("x5-anchor");
+    let mut app = App::new("agents/main.agent.yaml");
+    app.follow_observe(10, 80);
+
+    app.scroll_offset = 4;
+    app.follow_observe(13, 80);
+    assert_eq!(app.scroll_offset, 7, "新增 3 行 → 距底偏移同步 +3");
+
+    let before = app.scroll_offset;
+    app.follow_observe(13, 60);
+    assert_eq!(app.scroll_offset, before, "重排不改变锚点");
+
+    app.follow_observe(20, 60);
+    assert_eq!(app.scroll_offset, 14, "宽度稳定后继续按新增行增长");
+
+    app.scroll_offset = 0;
+    app.follow_observe(24, 60);
+    assert_eq!(app.scroll_offset, 0, "钉底时保持跟随最新");
+}
+
 /// B11（0.1.18）V11.1：鼠标捕获默认关（保终端原生文本选择）；Ctrl+M
 /// 翻转状态，run_app 循环头据差分发送终端序列。
 #[test]
