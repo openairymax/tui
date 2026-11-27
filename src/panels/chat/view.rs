@@ -93,6 +93,12 @@ pub struct ChatView {
     measured: u64,
     #[cfg(test)]
     rendered: u64,
+    /// 本帧复用的已物化行数（X2-17b）。
+    #[cfg(test)]
+    reused: u64,
+    /// 本帧重新投影的行数（X2-17b）。
+    #[cfg(test)]
+    fresh: u64,
 }
 
 impl ChatView {
@@ -109,6 +115,11 @@ impl ChatView {
         all: bool,
     ) -> ChatFrame {
         self.sync(width, app.browse_expanded);
+        #[cfg(test)]
+        {
+            self.reused = 0;
+            self.fresh = 0;
+        }
 
         let mut head: Vec<Line<'static>> = Vec::new();
         flow::render_header(&mut head, app, width);
@@ -247,6 +258,10 @@ impl ChatView {
         if let Some(pos) = hit {
             if let Some(cell) = self.cells.remove(pos) {
                 out.extend(cell.lines.iter().cloned());
+                #[cfg(test)]
+                {
+                    self.reused += cell.lines.len() as u64;
+                }
                 self.cells.push_back(cell);
             }
             return;
@@ -254,6 +269,10 @@ impl ChatView {
         let mut seg: Vec<Line<'static>> = Vec::new();
         self.body(app, idx, width, compact, &mut seg);
         out.extend(seg.iter().cloned());
+        #[cfg(test)]
+        {
+            self.fresh += seg.len() as u64;
+        }
         self.cells.push_back(Cell {
             id,
             compact,
@@ -343,6 +362,17 @@ impl ChatView {
             }
             None => self.heights.clear(),
         }
+    }
+
+    /// 本帧行复用率（X2-17b）：复用行 ÷ 投影行总数；无投影行时视为全复用。
+    /// 只读本帧计数，供用例量化「未变行跳过」的实效。
+    #[cfg(test)]
+    fn reuse_rate(&self) -> f64 {
+        let total = self.reused + self.fresh;
+        if total == 0 {
+            return 1.0;
+        }
+        self.reused as f64 / total as f64
     }
 }
 
@@ -749,4 +779,25 @@ mod tests {
         );
     }
 
+    /// X2-17b：同视口第二帧不产生新行（复用率 1.0）；改末条内容后
+    /// 该块重新投影，复用率下降但仍小于 1。
+    #[test]
+    fn reuse_rate_tracks_row_reuse() {
+        let (mut app, _h) = make_app();
+        fill(&mut app, 1200);
+        let mut view = ChatView::new();
+        view.layout(&app, 80, 30, false);
+        assert!(view.fresh > 0, "首帧应投影可见行");
+        view.layout(&app, 80, 30, false);
+        assert_eq!(view.fresh, 0, "同视口第二帧不得重新投影任何行");
+        assert!(view.reused > 0, "第二帧应全部命中已物化块");
+        assert_eq!(view.reuse_rate(), 1.0);
+
+        let at = app.messages.len() - 1;
+        app.messages[at].content.push_str("\n\n追加一段以改变块高");
+        view.layout(&app, 80, 30, false);
+        assert!(view.fresh > 0, "内容变化应重新投影该块");
+        let rate = view.reuse_rate();
+        assert!(rate > 0.5 && rate < 1.0, "复用率应下降但不塌陷: {rate}");
+    }
 }
