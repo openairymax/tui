@@ -16,15 +16,19 @@
 //
 // 0.1.19 U10（§6.10 #3）：视口外旧回合只保留行高摘要，已物化的完整块
 // 最多保留 RETAINED_TURNS_LIMIT 条；上滚重新进入视口时按需重新投影。
+//
+// X2-17a：复用判定同时看稳定 id 与内容签名——同 id 内容变化（会话恢复的
+// upsert、就地补写）不得命中旧行。
 
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 
 use ratatui::{
     style::Style,
     text::{Line, Span},
 };
 
-use crate::app::{App, MessageRole};
+use crate::app::{App, ChatMessage, MessageRole};
 use crate::budget::{MAX_CELLS_PER_TURN, RETAINED_TURNS_LIMIT};
 use crate::engine::block::{slice_out, Index};
 use crate::engine::window::{self, Span as Win};
@@ -48,11 +52,28 @@ pub(crate) struct ChatFrame {
     pub(crate) from_top: usize,
 }
 
-/// 已物化回合块：`compact` 参与键，块高缓存与物化缓存同一失效口径。
+/// 已物化回合块：`compact` 与内容签名共同参与复用判定，任一不符即重投影。
 struct Cell {
     id: u64,
     compact: bool,
+    sig: u64,
     lines: Vec<Line<'static>>,
+}
+
+/// 块内容签名（X2-17a）：身份只能证明「是同一条消息」，不能证明「内容没变」。
+/// 渲染相关字段（角色/时间戳/原始字节数/长度）加内容首尾各 32 字节采样，
+/// 保持每帧 O(1)——对整段内容做全量哈希会把逐帧成本拉回与历史字节数成正比，
+/// 反而抵消虚拟化收益。
+fn sig(msg: &ChatMessage) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(&msg.role).hash(&mut h);
+    msg.timestamp.hash(&mut h);
+    msg.original_bytes.hash(&mut h);
+    msg.content.len().hash(&mut h);
+    let bytes = msg.content.as_bytes();
+    bytes[..bytes.len().min(32)].hash(&mut h);
+    bytes[bytes.len().saturating_sub(32)..].hash(&mut h);
+    h.finish()
 }
 
 /// 对话虚拟视图：按消息稳定 id 缓存（compact, 折叠后行数）。
@@ -63,7 +84,7 @@ struct Cell {
 pub struct ChatView {
     width: usize,
     expanded: bool,
-    heights: HashMap<u64, (bool, u32)>,
+    heights: HashMap<u64, (bool, u64, u32)>,
     /// 已物化旧回合（LRU 序）：视口外最多保留 RETAINED_TURNS_LIMIT 条。
     cells: VecDeque<Cell>,
     /// 行高缓存是否已完整走完一帧；冷启动首帧据此启用 30 条初帧预算。
@@ -164,19 +185,20 @@ impl ChatView {
         };
         let compact =
             idx > 0 && block::is_tool(app.messages[idx - 1].role) && block::is_tool(msg.role);
+        let sig = sig(msg);
         let body = match self.heights.get(&msg.id) {
-            Some((c, h)) if *c == compact => *h,
-            _ => self.measure(app, idx, width, compact),
+            Some((c, s, h)) if *c == compact && *s == sig => *h,
+            _ => self.measure(app, idx, width, compact, sig),
         };
         sep + body
     }
 
     /// 物化一次测量块高并写入缓存（与窗口物化走同一渲染路径，保证一致）。
-    fn measure(&mut self, app: &App, idx: usize, width: usize, compact: bool) -> u32 {
+    fn measure(&mut self, app: &App, idx: usize, width: usize, compact: bool, sig: u64) -> u32 {
         let mut seg: Vec<Line<'static>> = Vec::new();
         self.body(app, idx, width, compact, &mut seg);
         let h = seg.len() as u32;
-        self.heights.insert(app.messages[idx].id, (compact, h));
+        self.heights.insert(app.messages[idx].id, (compact, sig, h));
         #[cfg(test)]
         {
             self.measured += 1;
@@ -217,10 +239,11 @@ impl ChatView {
         out: &mut Vec<Line<'static>>,
     ) {
         let id = app.messages[idx].id;
+        let sig = sig(&app.messages[idx]);
         let hit = self
             .cells
             .iter()
-            .position(|c| c.id == id && c.compact == compact);
+            .position(|c| c.id == id && c.compact == compact && c.sig == sig);
         if let Some(pos) = hit {
             if let Some(cell) = self.cells.remove(pos) {
                 out.extend(cell.lines.iter().cloned());
@@ -234,6 +257,7 @@ impl ChatView {
         self.cells.push_back(Cell {
             id,
             compact,
+            sig,
             lines: seg,
         });
         #[cfg(test)]
@@ -388,6 +412,26 @@ mod tests {
                 "虚拟窗口与全量切片不一致(scroll={scroll})"
             );
         }
+    }
+
+    /// X2-17a：同 id 内容变化必须重投影，不得复用旧行。
+    #[test]
+    fn changed_content_is_not_reused() {
+        let (mut app, _h) = make_app();
+        fill(&mut app, 60);
+        let mut view = ChatView::new();
+        let before = view.layout(&app, 80, 30, false);
+        let at = app.messages.len() - 1;
+        app.messages[at].content.push_str("\n追加一行以改变块高");
+        let after = view.layout(&app, 80, 30, false);
+        let text: String = after
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("追加一行以改变块高"), "内容变化应重投影");
+        assert!(after.total > before.total, "块高变化应反映到总行数");
     }
 
     /// 行高缓存增量性：同尺寸第二帧零测量；新增仅测一条；变宽全量重测。
@@ -704,4 +748,5 @@ mod tests {
             app.messages.len()
         );
     }
+
 }
