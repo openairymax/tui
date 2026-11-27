@@ -194,6 +194,9 @@ pub struct App {
     pub(crate) banner: Banner,
     /// 错误聚合（§6.13 #2/#4）：同一错误码累计 ×N，条目有界。
     pub(crate) err_agg: ErrAgg,
+    /// 运行时间线（X6-02a）：事件投影里任务/步骤/工具三表的依赖序快照，
+    /// 每拍由事件管道刷新；渲染只读这一份，不另建状态。
+    pub(crate) run_tl: Vec<crate::engine::project::timeline::Entry>,
     /// 时间线（§6.13 #1）：墙钟/单调钟配对，回拨按单调序修正。
     pub(crate) timeline: Timeline,
     /// 最近一次时钟注入的处理结果（诊断导出读取）。
@@ -521,6 +524,7 @@ impl App {
             health: HealthTable::new(),
             banner: Banner::default(),
             err_agg: ErrAgg::new(),
+            run_tl: Vec::new(),
             timeline: Timeline::new(),
             stamp: Stamp::default(),
             health_q: None,

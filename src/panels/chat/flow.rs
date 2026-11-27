@@ -15,6 +15,7 @@ use ratatui::{
 use crate::app::{App, ChatMessage, MessageRole};
 use crate::budget::{MAX_TOOL_TEXT_BYTES, THINKING_PREVIEW_MAX_CHARS};
 use crate::engine::grid;
+use crate::engine::project::timeline::{Entry, Kind};
 use crate::gccp::FlowPhase;
 use crate::style;
 
@@ -258,9 +259,59 @@ pub(super) fn render_header(out: &mut Vec<Line<'static>>, app: &App, width: usiz
                     }
                 }
             }
+            for line in timeline_lines(&app.run_tl, width) {
+                out.push(line);
+            }
             out.push(Line::raw(""));
         }
     }
+}
+
+/// 运行时间线（X6-02a）：任务头、计划步骤与工具调用按依赖序成列。
+///
+/// 排序在归并侧已定，这里只做版式：类别用分支符区分（任务头 ◈、步骤与
+/// 工具 ├/└），状态取 D-13 八态的字形与颜色。标签按显示宽度裁剪，全角
+/// 内容不会右溢；状态串留在行尾，窄屏先让标签、再让状态。
+fn timeline_lines(entries: &[Entry], width: usize) -> Vec<Line<'static>> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    // 缩进 4 + 分支符 2 + 间隔 1 + 字形 1 + 间隔 1 = 9；行尾状态串按字符
+    // 计数，标签预算随状态长度收缩，整行不超过视口宽度。
+    const PREFIX: usize = 9;
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(entries.len() + 1);
+    out.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled("时间线", Style::default().fg(style::primary())),
+        Span::styled(
+            format!("  {} 条", entries.len()),
+            Style::default().fg(style::faint()),
+        ),
+    ]));
+    for (i, entry) in entries.iter().enumerate() {
+        let mark = entry.mark();
+        let tail = 2 + entry.state.chars().count();
+        let budget = width.saturating_sub(PREFIX + tail).max(4);
+        let last = i + 1 == entries.len();
+        let branch = match (entry.kind, last) {
+            (Kind::Task, _) => "◈",
+            (_, true) => "└─",
+            (_, false) => "├─",
+        };
+        out.push(Line::from(vec![
+            Span::styled("    ", Style::default()),
+            Span::styled(branch, Style::default().fg(style::faint())),
+            Span::styled(" ", Style::default()),
+            Span::styled(mark.glyph(), Style::default().fg(mark.color())),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                grid::clip(&entry.label, budget),
+                Style::default().fg(style::text()),
+            ),
+            Span::styled(format!("  {}", entry.state), Style::default().fg(style::faint())),
+        ]));
+    }
+    out
 }
 
 /// 流式尾段：工具状态行 + 打字机气泡 + 统一状态行（已受理/思考中/生成中 + 耗时）。
@@ -422,6 +473,42 @@ mod tests {
         // 除零 / 零宽：安全返回空
         assert_eq!(gantt_bar(1, 0, 8), "");
         assert_eq!(gantt_bar(1, 4, 0), "");
+    }
+
+    fn tl(kind: Kind, seq: u64, label: &str, state: &str) -> Entry {
+        Entry {
+            kind,
+            seq,
+            id: label.to_string(),
+            label: label.to_string(),
+            state: state.to_string(),
+        }
+    }
+
+    fn row_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// X6-02a：时间线按归并序成列，类别分支符与八态字形同时上屏。
+    #[test]
+    fn timeline_renders_order_and_glyphs() {
+        let rows = [
+            tl(Kind::Task, 1, "t1", "executing"),
+            tl(Kind::Step, 2, "读取依赖", "planned"),
+            tl(Kind::Tool, 3, "read", "ok"),
+        ];
+        let lines = timeline_lines(&rows, 80);
+        assert_eq!(lines.len(), 4, "标题一行 + 三条目");
+        assert!(row_text(&lines[0]).contains("时间线"));
+        assert!(row_text(&lines[1]).contains("◈ ◐ t1"));
+        assert!(row_text(&lines[2]).contains("├─ ◌ 读取依赖"));
+        assert!(row_text(&lines[3]).contains("└─ ● read  ok"));
+    }
+
+    /// X6-02a：无条目时不占屏，也不留孤立标题。
+    #[test]
+    fn timeline_empty_emits_nothing() {
+        assert!(timeline_lines(&[], 80).is_empty());
     }
 
     /// 节点状态短条：四态映射与标记一致。

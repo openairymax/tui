@@ -115,6 +115,7 @@ impl App {
         });
         self.lane_tx = Some(tx);
         self.clear_stream();
+        self.run_tl.clear();
         self.stream_error = None;
         self.begin_busy();
         self.set_task_control(TaskControl::Running);
@@ -185,6 +186,9 @@ impl App {
             return;
         }
         let snap = ev.snapshot();
+        // X6-02a：时间线随投影每拍重折——三表已在归并里排好依赖序，
+        // 渲染层不自己排序，也不再维护第四份状态。
+        self.run_tl = snap.timeline();
         self.absorb_rows(&mut t, &snap);
         self.absorb_tools(&mut t, &snap);
         // 水位未推进说明本轮还没开始：上一轮的终态不属于本轮，不得提前落定

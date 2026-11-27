@@ -90,6 +90,21 @@ impl Mark {
         }
     }
 
+    /// 八态 → 状态字形：形状本身即语义，8 色/单色档不依赖颜色也读得出
+    /// （X7-03b 的前置约定）。
+    pub(crate) fn glyph(self) -> &'static str {
+        match self {
+            Self::Submitted => "○",
+            Self::Planned => "◌",
+            Self::Executing => "◐",
+            Self::Paused => "◍",
+            Self::Completed => "●",
+            Self::Failed => "✕",
+            Self::Cancelled => "—",
+            Self::Unverified => "?",
+        }
+    }
+
     /// 八态 → 主题色（呈现策略）：X6-02a 时间线与 X7 色档共用此表，
     /// 深浅主题与色深映射由 style 层统一裁决。
     pub(crate) fn color(self) -> Color {
