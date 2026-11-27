@@ -28,6 +28,7 @@ mod selfhost;
 mod size;
 mod stream;
 mod theme;
+mod timeline;
 mod transcript;
 
 use ratatui::backend::TestBackend;
