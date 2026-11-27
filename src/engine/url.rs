@@ -10,8 +10,8 @@
 // 安全边界：链接来自模型输出/工具结果，只允许 http/https 交给打开器；
 // file:// 等本地协议一律拒绝，长度超过上限也拒绝（避免超长参数注入）。
 
-use std::io::{self, Stdio};
-use std::process::Command;
+use std::io;
+use std::process::{Command, Stdio};
 
 use unicode_width::UnicodeWidthStr;
 
