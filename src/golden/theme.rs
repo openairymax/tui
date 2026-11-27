@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::engine::link::Link;
-use crate::style::{apply_scheme, init_from_env, text, ColorDepth, ThemeMode};
+use crate::style::{apply_scheme, init_from_env, source_rgb, text, ColorDepth, ThemeMode};
 use ratatui::style::Color;
 
 /// 整屏配色指纹：逐格收集（前景, 背景），供主题切换做逐格差分。
@@ -148,4 +148,76 @@ fn link_indicator_three_states() {
     fx.app.link = Link::Replay(3);
     let s = fx.draw();
     assert_has(&s, "replayed · 3");
+}
+
+/// X7-02a：高对比是与深浅并列的独立档——整屏配色不同于前两档，且可逐格还原。
+#[test]
+fn contrast_theme_is_own_screen() {
+    let mut fx = Fixture::new("theme-contrast");
+    ThemeMode::Dark.set();
+    let dark = color_fingerprint(&mut fx.app);
+    ThemeMode::Light.set();
+    let light = color_fingerprint(&mut fx.app);
+    ThemeMode::Contrast.set();
+    let hc = color_fingerprint(&mut fx.app);
+    assert_ne!(hc, dark, "高对比档不得复用深色配色");
+    assert_ne!(hc, light, "高对比档不得复用浅色配色");
+    ThemeMode::Dark.set();
+    assert_eq!(color_fingerprint(&mut fx.app), dark, "回到深色应逐格还原");
+}
+
+/// X7-02b：高对比档正文级 ≥7:1、语义级 ≥4.5:1（WCAG AAA/AA）。
+/// 断言取设计源值并绕开终端降级，判的是色板本身而非某一终端的映射结果。
+#[test]
+fn contrast_tokens_meet_wcag() {
+    use crate::style::{
+        accent, bg, border, cyan, danger, dim, faint, magenta, primary, success, text, warning,
+        wcag_contrast,
+    };
+    ThemeMode::Contrast.set();
+    ColorDepth::set(ColorDepth::TrueColor);
+    let base = source_rgb(bg());
+    let strong = [
+        ("text", text(), 7.0),
+        ("dim", dim(), 7.0),
+        ("faint", faint(), 4.5),
+        ("border", border(), 4.5),
+    ];
+    for (name, color, min) in strong {
+        let got = wcag_contrast(source_rgb(color), base);
+        assert!(got >= min, "高对比 {name} 对比度 {got:.2} < {min:.1}");
+    }
+    let semantic = [
+        ("primary", primary()),
+        ("accent", accent()),
+        ("success", success()),
+        ("warning", warning()),
+        ("danger", danger()),
+        ("magenta", magenta()),
+        ("cyan", cyan()),
+    ];
+    for (name, color) in semantic {
+        let got = wcag_contrast(source_rgb(color), base);
+        assert!(got >= 4.5, "高对比语义色 {name} 对比度 {got:.2} < 4.5");
+    }
+    ThemeMode::Dark.set();
+}
+
+/// X7-02b：禁用颜色时八态仍可区分——八个字形两两不同，颜色只是增强通道。
+#[test]
+fn state_glyphs_are_distinct() {
+    use crate::engine::project::timeline::Mark;
+    use std::collections::BTreeSet;
+    let marks = [
+        Mark::Submitted,
+        Mark::Planned,
+        Mark::Executing,
+        Mark::Paused,
+        Mark::Completed,
+        Mark::Failed,
+        Mark::Cancelled,
+        Mark::Unverified,
+    ];
+    let glyphs: BTreeSet<&str> = marks.iter().map(|m| m.glyph()).collect();
+    assert_eq!(glyphs.len(), marks.len(), "八态字形必须两两不同");
 }
