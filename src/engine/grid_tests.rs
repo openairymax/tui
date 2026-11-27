@@ -252,13 +252,13 @@ fn zwj_sequences_are_atomic() {
     let wave = "\u{1F44B}\u{1F3FD}";
     let key = "\u{0031}\u{FE0F}\u{20E3}";
     // 合成字形只占一个字形宽，后续字符不被无谓挤到下一行
-    assert_eq!(wrap(format!("{family}x"), 4), vec![format!("{family}x")]);
-    assert_eq!(wrap(format!("{wave}x"), 4), vec![format!("{wave}x")]);
+    assert_eq!(wrap(&format!("{family}x"), 4), vec![format!("{family}x")]);
+    assert_eq!(wrap(&format!("{wave}x"), 4), vec![format!("{wave}x")]);
     // 键帽簇至少 2 列：预算 2 时后面的 x 必须换行，说明未被拆成裸字符
-    assert_eq!(wrap(format!("{key}x"), 2), vec![key, "x"]);
+    assert_eq!(wrap(&format!("{key}x"), 2), vec![key, "x"]);
     assert_eq!(wrap(family, 2), vec![family]);
     for max in 2..=20usize {
-        for p in wrap(format!("a {family} {wave} b"), max) {
+        for p in wrap(&format!("a {family} {wave} b"), max) {
             assert!(!p.ends_with('\u{200D}'), "段尾悬空 ZWJ: {p:?}");
             assert!(
                 p.chars().next().is_none_or(|c| !is_emoji_mod(c)),
