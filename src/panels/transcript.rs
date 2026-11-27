@@ -248,3 +248,73 @@ fn mark(line: Line<'static>, query: &str, active: bool) -> Line<'static> {
     marked.alignment = line.alignment;
     marked
 }
+
+#[cfg(test)]
+mod tests {
+    use super::mark;
+    use crate::style;
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+
+    /// 两段相邻 span 组成「构建日志」：命中串跨 span 边界。
+    fn sample() -> Line<'static> {
+        Line::from(vec![
+            Span::styled("构建", Style::default().fg(style::text())),
+            Span::styled("日志", Style::default().fg(style::faint())),
+        ])
+    }
+
+    fn text_of(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// X2-23b #1：命中跨 span 时按字节区间切分，未命中片段保留原样式，
+    /// 命中片段叠加反字 + 主色底。
+    #[test]
+    fn mark_splits_across_spans() {
+        let out = mark(sample(), "建日", true);
+        assert_eq!(text_of(&out), "构建日志");
+        assert_eq!(out.spans.len(), 4);
+        assert_eq!(out.spans[0].content.as_ref(), "构");
+        assert_eq!(out.spans[0].style.bg, None, "未命中片段不得被改色");
+        assert_eq!(out.spans[1].content.as_ref(), "建");
+        assert_eq!(out.spans[1].style.bg, Some(style::primary()));
+        assert_eq!(out.spans[2].content.as_ref(), "日");
+        assert_eq!(out.spans[2].style.bg, Some(style::primary()));
+        assert_eq!(out.spans[3].content.as_ref(), "志");
+        assert_eq!(out.spans[3].style.bg, None);
+        assert!(out.spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    /// X2-23b #2：非当前命中用强调色底，当前命中用主色底——两类命中在
+    /// 同一屏内可区分。
+    #[test]
+    fn active_and_passive_hits_differ() {
+        let active = mark(sample(), "建", true);
+        let passive = mark(sample(), "建", false);
+        assert_eq!(active.spans[1].style.bg, Some(style::primary()));
+        assert_eq!(passive.spans[1].style.bg, Some(style::accent()));
+    }
+
+    /// X2-23b #3：无命中时原样返回，不重排 span（避免每帧无谓分配）。
+    #[test]
+    fn no_hit_returns_line_untouched() {
+        let out = mark(sample(), "不存在", true);
+        assert_eq!(out.spans.len(), 2);
+        assert_eq!(text_of(&out), "构建日志");
+    }
+
+    /// X2-23b #4：行级样式与对齐不被命中层覆盖（样式层只叠加不替换）。
+    #[test]
+    fn mark_keeps_line_style_and_alignment() {
+        let mut line = sample();
+        line.style = Style::default().fg(style::warning());
+        line.alignment = Some(ratatui::layout::Alignment::Center);
+        let out = mark(line, "建", true);
+        assert_eq!(out.style, Style::default().fg(style::warning()));
+        assert_eq!(out.alignment, Some(ratatui::layout::Alignment::Center));
+    }
+}

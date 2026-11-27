@@ -451,4 +451,35 @@ mod tests {
         assert_eq!(primary(), Color::Rgb(74, 110, 178));
         ThemeMode::set(ThemeMode::Dark);
     }
+
+    /// X2-23b：命中高亮的前景（反字）与背景（主色/强调色）在三档色深下
+    /// 都不得落到同一索引——16 色反查把品牌蓝压成亮蓝、反字压成黑/白，
+    /// 若两者同索引，命中文本会在降级终端上"消失"。
+    #[test]
+    fn highlight_pair_stays_distinct_in_all_depths() {
+        let _g = lock_env();
+        let depths = [
+            (ColorDepth::TrueColor, "truecolor"),
+            (ColorDepth::Color256, "256"),
+            (ColorDepth::Basic, "16"),
+        ];
+        for (depth, name) in depths {
+            ColorDepth::set(depth);
+            for mode in [ThemeMode::Dark, ThemeMode::Light] {
+                ThemeMode::set(mode);
+                assert_ne!(
+                    primary(),
+                    on_color(),
+                    "{name}/{mode:?}: 当前命中底与反字不可同色"
+                );
+                assert_ne!(
+                    accent(),
+                    on_color(),
+                    "{name}/{mode:?}: 其他命中底与反字不可同色"
+                );
+            }
+        }
+        ColorDepth::set(ColorDepth::TrueColor);
+        ThemeMode::set(ThemeMode::Dark);
+    }
 }
