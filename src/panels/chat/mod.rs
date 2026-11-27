@@ -256,9 +256,9 @@ fn paint_selection(f: &mut Frame, area: Rect, body_w: u16, app: &App) {
             last_col
         };
         for col in from..=to {
-            if let Some(cell) = buf.get_mut(area.x + col, area.y + row) {
-                cell.modifier |= Modifier::REVERSED;
-            }
+            // ratatui 0.28 的 Buffer 以索引返回单元格，落点已在 area/body_w
+            // 范围内，无需再做 Option 兜底。
+            buf[(area.x + col, area.y + row)].modifier |= Modifier::REVERSED;
         }
     }
 }
