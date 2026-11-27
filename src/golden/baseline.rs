@@ -32,6 +32,9 @@ pub(crate) struct Baseline {
 impl Baseline {
     /// 渲染一帧并采集全部度量；渲染路径与生产完全一致。
     pub(crate) fn capture(app: &mut App, w: u16, h: u16) -> Self {
+        // 输入栏光标按会话时间呼吸（500ms 换相），不是状态的函数。采集前把
+        // 会话时钟对齐到相位 0，使同一状态的两帧在光标格上逐格一致。
+        app.session_start = std::time::Instant::now();
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("测试终端");
         term.draw(|f| crate::present::render(f, app))
             .expect("渲染一帧");
@@ -73,9 +76,14 @@ impl Baseline {
             .collect()
     }
 
-    /// 同态同帧：文本、符号、配色三者逐格相等才算一致。
+    /// 同态同帧：文本、符号、配色三者逐格相等才算一致。首行是含墙钟
+    /// 时间的状态栏（每秒变化），不属于状态内容，比较时整行排除——否则
+    /// 两帧恰好跨秒就会误报。
     fn same_frame(&self, other: &Self) -> bool {
-        self.rows == other.rows && self.symbols == other.symbols && self.colors == other.colors
+        let skip = self.cols as usize;
+        self.rows[1..] == other.rows[1..]
+            && self.symbols[skip..] == other.symbols[skip..]
+            && self.colors[skip..] == other.colors[skip..]
     }
 }
 
