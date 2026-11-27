@@ -116,8 +116,8 @@ pub(crate) fn encode_profile(buf: &Buffer, rounds: usize) -> (u64, usize, usize)
             )
             .expect("整帧编码");
         let elapsed = started.elapsed().as_micros() as u64;
-        backend.flush().expect("写出到内存");
         bytes = backend.frame_bytes().len();
+        backend.flush().expect("写出到内存");
         moves = backend.move_count();
         times.push(elapsed);
     }
