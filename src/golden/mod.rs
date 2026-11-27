@@ -102,6 +102,14 @@ pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> Screen {
     Screen { rows }
 }
 
+/// 渲染一帧并返回整屏缓冲，供相位剖析复用同一条绘制路径。
+pub(crate) fn frame_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let mut term = Terminal::new(TestBackend::new(w, h)).expect("测试终端");
+    term.draw(|f| crate::present::render(f, app))
+        .expect("渲染一帧");
+    term.backend().buffer().clone()
+}
+
 /// 从帧缓冲提取逐行文本，供 `draw` 与基线采集共用（避免两处各写一份
 /// 宽度推进逻辑而漂移）。
 pub(crate) fn rows_of(buf: &ratatui::buffer::Buffer, w: u16, h: u16) -> Vec<String> {

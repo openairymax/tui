@@ -15,6 +15,9 @@ use super::{add, Fixture, H, W};
 use crate::app::App;
 use crate::app::MessageRole;
 use crate::budget::{FRAME_P95_BUDGET_US, MAX_CHAT_MESSAGES};
+use crate::engine::backend::BufferedBackend;
+use ratatui::backend::Backend as _;
+use ratatui::buffer::Buffer;
 use std::time::Instant;
 
 /// 历史行量级下限：基准必须覆盖的真实历史规模。
@@ -91,5 +94,53 @@ fn bench_p95_within_budget() {
         p <= FRAME_P95_BUDGET_US,
         "长历史帧 p95 {p}µs 超过预算 {FRAME_P95_BUDGET_US}µs（{} 个样本）",
         sampled.len()
+    );
+}
+
+/// 编码相位剖析：整屏缓冲一次性编码（无 diff，作为上界）重复多轮，
+/// 返回编码耗时中位数（μs）、帧字节数与定位次数。
+pub(crate) fn encode_profile(buf: &Buffer, rounds: usize) -> (u64, usize, usize) {
+    let w = buf.area.width as usize;
+    let mut times = Vec::with_capacity(rounds);
+    let mut bytes = 0;
+    let mut moves = 0;
+    for _ in 0..rounds {
+        let mut backend = BufferedBackend::new(Vec::new());
+        let started = Instant::now();
+        backend
+            .draw(
+                buf.content
+                    .iter()
+                    .enumerate()
+                    .map(|(i, cell)| ((i % w) as u16, (i / w) as u16, cell)),
+            )
+            .expect("整帧编码");
+        let elapsed = started.elapsed().as_micros() as u64;
+        backend.flush().expect("写出到内存");
+        bytes = backend.frame_bytes().len();
+        moves = backend.move_count();
+        times.push(elapsed);
+    }
+    times.sort_unstable();
+    (times[times.len() / 2], bytes, moves)
+}
+
+/// 剖析用例不参与常规回归：耗时数值随 runner 负载变化，只在显式
+/// workflow_dispatch 步骤里取样，供 §16 留痕与优化前后对比。
+#[test]
+#[ignore = "剖析用例：由 workflow_dispatch 的剖析步骤显式执行"]
+fn profile_frame_phases() {
+    let mut fx = Fixture::new("x2-28a-profile");
+    long_history(&mut fx.app);
+    let render = samples(&mut fx, 30);
+    let buf = super::frame_buffer(&mut fx.app, W, H);
+    let (encode, bytes, moves) = encode_profile(&buf, 30);
+    println!(
+        "X2-28a profile: render_p95_us={} encode_p50_us={} frame_bytes={} moves={} cells={}",
+        p95(&render),
+        encode,
+        bytes,
+        moves,
+        W as usize * H as usize
     );
 }
