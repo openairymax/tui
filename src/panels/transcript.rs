@@ -20,7 +20,6 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::engine::grid;
@@ -133,7 +132,7 @@ fn render_bar(f: &mut Frame, body: Rect, app: &App) {
     let text = format!(" / {}  ·  {label} ", app.search.query);
     let inner = body.width.saturating_sub(1) as usize;
     let span = grid::clip(&text, inner);
-    let w = (UnicodeWidthStr::width(span.as_str()) as u16 + 1)
+    let w = (grid::width(span.as_str()) as u16 + 1)
         .min(BAR_COLS)
         .min(body.width);
     let Some(bar) =
@@ -168,7 +167,7 @@ fn render_bar(f: &mut Frame, body: Rect, app: &App) {
 
 /// 滚动位置浮标（右下角单行）。
 fn render_hint(f: &mut Frame, body: Rect, text: &str) {
-    let w = (UnicodeWidthStr::width(text) as u16 + 2).min(body.width);
+    let w = (grid::width(text) as u16 + 2).min(body.width);
     let hint = Rect {
         x: body.right().saturating_sub(w),
         y: body.bottom().saturating_sub(1),

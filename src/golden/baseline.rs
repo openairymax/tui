@@ -16,9 +16,9 @@ use super::{add, assert_has, assert_lacks, rows_of, Fixture, H, W};
 use crate::app::App;
 use crate::app::MessageRole;
 use crate::budget::MIN_TERM_COLS;
+use crate::engine::grid;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use unicode_width::UnicodeWidthStr;
 
 /// 一帧基线：逐行文本、逐行显示宽度、整屏符号与配色指纹。
 pub(crate) struct Baseline {
@@ -42,7 +42,7 @@ impl Baseline {
         let rows = rows_of(buf, w, h);
         let widths = rows
             .iter()
-            .map(|r| UnicodeWidthStr::width(r.as_str()))
+            .map(|r| grid::width(r.as_str()))
             .collect();
         let mut symbols = Vec::with_capacity((w as usize) * (h as usize));
         let mut colors = Vec::with_capacity((w as usize) * (h as usize));

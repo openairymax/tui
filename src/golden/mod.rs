@@ -115,7 +115,7 @@ pub(crate) fn frame_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Bu
 /// 从帧缓冲提取逐行文本，供 `draw` 与基线采集共用（避免两处各写一份
 /// 宽度推进逻辑而漂移）。
 pub(crate) fn rows_of(buf: &ratatui::buffer::Buffer, w: u16, h: u16) -> Vec<String> {
-    use unicode_width::UnicodeWidthStr;
+    use crate::engine::grid;
 
     (0..h)
         .map(|y| {
@@ -124,7 +124,7 @@ pub(crate) fn rows_of(buf: &ratatui::buffer::Buffer, w: u16, h: u16) -> Vec<Stri
             while x < w {
                 let sym = buf[(x, y)].symbol();
                 line.push_str(sym);
-                x += (UnicodeWidthStr::width(sym).max(1)) as u16;
+                x += (grid::width(sym).max(1)) as u16;
             }
             line.trim_end().to_string()
         })

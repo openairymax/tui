@@ -23,9 +23,9 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
+use crate::engine::grid;
 use crate::style;
 
 /// 渲染对话主面板。
@@ -141,7 +141,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 style::faint()
             };
-            let w = (UnicodeWidthStr::width(text.as_str()) as u16 + 2).min(area.width);
+            let w = (grid::width(text.as_str()) as u16 + 2).min(area.width);
             let hint = Rect {
                 x: area.right().saturating_sub(w),
                 y: area.bottom().saturating_sub(1),

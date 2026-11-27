@@ -29,6 +29,7 @@ use overlay::render_toasts;
 
 use crate::app::{ActivePanel, App};
 use crate::budget;
+use crate::engine::grid;
 use crate::engine::layout;
 use crate::panels;
 use crate::style;
@@ -40,7 +41,6 @@ use ratatui::{
     widgets::{Block, Paragraph, Widget},
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 /// 焦点遮罩入口（X2-22b）：把区域内已有单元格整体降一档。
 ///
@@ -262,7 +262,7 @@ fn render_too_small(f: &mut Frame, area: Rect) {
 /// 回放进度行（TUI 方案 §6.1 #2）：主区右下角常显剩余条数。
 fn render_replay(f: &mut Frame, area: Rect, left: usize) {
     let text = format!(" 回放中 · {} 条 ", left);
-    let w = (UnicodeWidthStr::width(text.as_str()) as u16).min(area.width);
+    let w = (grid::width(text.as_str()) as u16).min(area.width);
     // 浮层合成（X2-18a）：贴右下角并由视口裁剪兜底，窄屏不写越界列。
     overlay::compose_bottom_right(f.buffer_mut(), area, w, 1, |buf, rect| {
         Paragraph::new(text)

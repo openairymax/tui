@@ -9,7 +9,7 @@
 use super::*;
 use crate::app::{ActivePanel, MessageRole};
 use crate::budget::{MAX_CHAT_MESSAGES, MIN_TERM_COLS, WIDTH_CACHE_SIZE};
-use unicode_width::UnicodeWidthStr;
+use crate::engine::grid;
 
 /// §6.9 #1：46 列是窄布局断点，45 列整屏守卫、46 列恢复正常。
 #[test]
@@ -44,7 +44,7 @@ fn forty_columns_stacks_without_overflow() {
     assert_has(&s, "Ctrl+C 退出");
     for row in s.rows() {
         assert!(
-            UnicodeWidthStr::width(row.as_str()) <= 40,
+            grid::width(row.as_str()) <= 40,
             "40 列不得横向溢出: {row:?}"
         );
     }

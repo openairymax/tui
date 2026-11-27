@@ -13,7 +13,7 @@
 use std::io;
 use std::process::{Command, Stdio};
 
-use unicode_width::UnicodeWidthStr;
+use crate::engine::grid;
 
 /// 单个链接在行内的显示列区间（右开）与原始地址。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,8 +46,8 @@ pub(crate) fn scan(line: &str) -> Vec<Span> {
         let len = end_of_url(tail);
         let url = tail[..len].trim_end_matches(['.', ',', ';', ':', '!', '?']);
         if url.len() > scheme && url.len() <= MAX_URL {
-            let start = UnicodeWidthStr::width(&line[..start_b]) as u16;
-            let end = start.saturating_add(UnicodeWidthStr::width(url) as u16);
+            let start = grid::width(&line[..start_b]) as u16;
+            let end = start.saturating_add(grid::width(url) as u16);
             out.push(Span {
                 start,
                 end,

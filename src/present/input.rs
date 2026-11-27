@@ -9,6 +9,7 @@ use super::overlay::render_ime_cands;
 
 use crate::app::{ActivePanel, App};
 use crate::budget;
+use crate::engine::grid;
 use crate::gccp::FlowPhase;
 use crate::style;
 use ratatui::{
@@ -18,7 +19,6 @@ use ratatui::{
     widgets::{Block, Paragraph},
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 /// 输入光标字符（黑白两色交替闪动，替代终端方块光标）
 const BREATH_CURSOR: &str = "\u{258d}";
@@ -64,7 +64,7 @@ pub(super) fn render_input_bar(f: &mut Frame, area: Rect, app: &App) {
     let mut line_area = layout[0];
     let mut badge_at = None;
     if let Some(text) = input_status(app, area.width) {
-        let w = UnicodeWidthStr::width(text.as_str()) as u16;
+        let w = grid::width(text.as_str()) as u16;
         if area.width > w + 20 {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)

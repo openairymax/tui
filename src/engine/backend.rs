@@ -37,8 +37,6 @@ use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::{Color, Modifier};
-use unicode_width::UnicodeWidthStr;
-
 use super::backend_sgr::{color_param, mod_params};
 use super::frame_io::SYNC_OFF;
 use super::ladder::Ladder;
@@ -269,7 +267,7 @@ impl<W: Write> Backend for BufferedBackend<W> {
             self.out.extend_from_slice(cell.symbol().as_bytes());
             // 按符号真实显示宽度推进（宽字符 2 列，零宽按 1 列兜底），并把
             // 该位置登记为光标缓存：下一处空隙的前移距离由此起算。
-            let width = UnicodeWidthStr::width(cell.symbol()).max(1) as u16;
+            let width = super::grid::width(cell.symbol()).max(1) as u16;
             next = Some(Position {
                 x: x.saturating_add(width),
                 y,

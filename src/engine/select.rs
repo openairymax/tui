@@ -10,7 +10,7 @@
 // 覆盖时整字保留，零宽组合符跟随基字符——选区边界落在汉字中间也不会
 // 丢掉半个字形。
 
-use unicode_width::UnicodeWidthChar;
+use super::grid;
 
 /// 选区端点：行相对视口首行，列相对行首，单位是终端格。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -101,7 +101,7 @@ fn slice_columns(line: &str, from: usize, to: usize) -> String {
     let mut out = String::new();
     let mut col = 0usize;
     for ch in line.chars() {
-        let w = ch.width().unwrap_or(0);
+        let w = grid::char_w(ch);
         if w == 0 {
             // 组合符没有独立列：基字符被选中时随之保留。
             if col > from && col <= to {
