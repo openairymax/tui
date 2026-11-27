@@ -304,10 +304,19 @@ async fn run_tui(cli: &Cli, boot: &Boot) -> Result<engine::exit::Code> {
 
     // Setup terminal —— RAII 守卫：acquire 失败/任何后续路径（run_app Err、
     // panic、exec）退出作用域时 Drop 完整还原，终端状态永不滞留。
-    // §5.5 #7：请求形态来自 AIRY_TUI_SCREEN；备用屏不可用时守卫内部已
-    // 回滚内联，mode 为实际生效形态，视口据此构造。
-    let requested = engine::screen::Mode::from_env();
+    // X8-07/X8-08：形态裁定读连续失败计数；显式环境变量仍优先。
+    let requested = engine::screen::Mode::choose();
     let (mut guard, mode) = engine::term::TerminalGuard::acquire(requested)?;
+    // 请求备用屏却回滚内联即记一次失败；真正进入备用屏则清零，
+    // 下次启动恢复自动重试。
+    match (requested, mode) {
+        (engine::screen::Mode::Alt, engine::screen::Mode::Inline) => {
+            let n = engine::ui_state::note_fail();
+            warn!("engine/screen: 备用屏回滚内联（连续失败 {n} 次）");
+        }
+        (engine::screen::Mode::Alt, engine::screen::Mode::Alt) => engine::ui_state::reset(),
+        _ => {}
+    }
     // §5.5 #1：能力探测与首帧并发；结论在首帧后回收（晚到热修正）。
     // 声明在 guard 之后，Drop 逆序保证探测线程先于终端还原退出。
     let mut probe = engine::term::Probe::spawn();
