@@ -24,7 +24,7 @@
 // 下标，渲染只负责高亮，导航在越界时夹取而不回绕（X3-12b）。
 
 use crossterm::event::{
-    KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind,
+    KeyCode, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::{
     buffer::Buffer,
@@ -257,13 +257,12 @@ impl<T> Component for Table<T> {
         let widths = self.widths(content);
         let bottom = self.area.y.saturating_add(self.area.height);
         let off = self.offset();
-        let mut y = self.area.y;
-        for (i, row) in self.rows.iter().enumerate().skip(off) {
+        let rows = self.rows.iter().enumerate().skip(off);
+        for (y, (i, row)) in (self.area.y..).zip(rows) {
             if y >= bottom {
                 break;
             }
             self.draw_row(buf, row, i == self.sel, y, &widths);
-            y += 1;
         }
     }
 
@@ -332,15 +331,15 @@ fn grow(out: &mut [usize], widths: &[Width], mut spare: usize) {
             _ => 0,
         })
         .sum();
-    if weights > 0 {
-        for (i, w) in widths.iter().enumerate() {
-            let Width::Flex(weight) = *w else {
-                continue;
-            };
-            let add = spare * usize::from(weight) / weights;
-            out[i] += add;
-            spare -= add;
-        }
+    for (i, w) in widths.iter().enumerate() {
+        let Width::Flex(weight) = *w else {
+            continue;
+        };
+        let Some(add) = (spare * usize::from(weight)).checked_div(weights) else {
+            continue;
+        };
+        out[i] += add;
+        spare -= add;
     }
     let caps: Vec<usize> = widths
         .iter()

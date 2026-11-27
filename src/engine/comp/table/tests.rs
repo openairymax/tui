@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::engine::grid;
+use crossterm::event::KeyEvent;
 
 /// 文本列：显示行文本本身，宽度约束由用例给出。
 fn text_col(width: Width, align: Alignment) -> Column<&'static str> {
