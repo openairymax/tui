@@ -34,7 +34,10 @@ const LANGS: &[Lang] = &[
     },
     Lang {
         id: "typescript",
-        token: "typescript",
+        // syntect 默认语法包不含 TypeScript：借 JavaScript 语法做词法。
+        // 两者共享字符串/注释/关键字的词法核心，TypeScript 独有的类型标注
+        // 最多落到无作用域，不会整块退化；徽章仍显示规范 id。
+        token: "js",
     },
     Lang {
         id: "go",
