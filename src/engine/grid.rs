@@ -21,8 +21,9 @@
 //     无池索引字段；该设计随 §5A.0 一并收敛，本版不引入第二份字符串池。
 //
 // 不变量（属性测试实证）：对任意 max ≥ 2，折行结果每段显示宽度 ≤ max 且
-// 非空白字符拼接无损（断点处的空白折叠为换行）；对任意 max，截断结果显示
-// 宽度 ≤ max；列宽分配结果的实渲染总宽（Σ(列宽+unit)+fixed）≤ 可用宽度。
+// 非空白字符拼接无损（断点处的空白折叠为换行）；组合字符恒随基字符同段，
+// 不会成为某段首字符；对任意 max，截断结果显示宽度 ≤ max；列宽分配结果的
+// 实渲染总宽（Σ(列宽+unit)+fixed）≤ 可用宽度。
 
 use ratatui::style::Style;
 use ratatui::text::Span;
@@ -148,6 +149,10 @@ pub(crate) fn wrap_spans(spans: &[Span<'_>], max: usize) -> Vec<Vec<Span<'static
 /// 断点机会记录在 `brk`：最近一次「空白串起点」的下标（不含该空白），
 /// 只有在它之前已有非空白内容时才可用来断行。行满时优先回退到该点，
 /// 走不通则硬折；两条路径都保证结果宽度 ≤ `max`。
+///
+/// 输入先按「基字符 + 后续零宽字符」切簇（X4-03a）：组合符、变体选择符
+/// 显示宽度为 0，若逐字符断行，宽字符行的硬折点会把附加符甩到下一行行首；
+/// 成簇后整簇参与宽度判定与搬移，附加符恒与基字符同段（组合不拆列）。
 fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
     let mut out: Vec<Vec<(char, Style)>> = Vec::new();
     let mut cur: Vec<(char, Style)> = Vec::new();
@@ -157,8 +162,17 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
     let mut has_text = false;
     let mut any_text = false;
 
-    for &(ch, st) in units {
-        let w = char_w(ch);
+    let mut idx = 0usize;
+    while idx < units.len() {
+        let from = idx;
+        idx += 1;
+        while idx < units.len() && char_w(units[idx].0) == 0 {
+            idx += 1;
+        }
+        let cluster = &units[from..idx];
+        let w: usize = cluster.iter().map(|&(c, _)| char_w(c)).sum();
+        let ch = cluster[0].0;
+        let cl_ws = ch.is_whitespace();
         while !cur.is_empty() && cur_w + w > max {
             if let Some(b) = brk {
                 out.push(cur.drain(..b).collect());
@@ -180,11 +194,11 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
         }
         // 行首空白：上一行已在断点处折叠（或本身以空白开头），丢弃即可；
         // 否则空格会粘到新行行首，使后续词被无谓挤断（"hello world" → " worl"）。
-        if cur.is_empty() && ch.is_whitespace() {
+        if cur.is_empty() && cl_ws {
             prev_ws = true;
             continue;
         }
-        if ch.is_whitespace() {
+        if cl_ws {
             if !prev_ws && has_text {
                 brk = Some(cur.len());
             }
@@ -192,8 +206,8 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
             has_text = true;
             any_text = true;
         }
-        prev_ws = ch.is_whitespace();
-        cur.push((ch, st));
+        prev_ws = cl_ws;
+        cur.extend_from_slice(cluster);
         cur_w += w;
     }
     if !cur.is_empty() {
@@ -495,6 +509,48 @@ mod tests {
         for max in 0..=12usize {
             let c = clip(s, max);
             assert!(width(&c) <= max, "全角裁剪越界: max={max} out={c:?}");
+        }
+    }
+
+    /// X4-03a：组合符零宽、与基字符同段，裁剪也不拆列。
+    #[test]
+    fn combining_marks_follow_base_char() {
+        assert_eq!(char_w('\u{0301}'), 0);
+        assert_eq!(width("e\u{0301}"), 1);
+        assert_eq!(wrap("ae\u{0301}b", 2), vec!["ae\u{0301}", "b"]);
+        assert_eq!(
+            wrap("中\u{0301}文\u{0301}", 2),
+            vec!["中\u{0301}", "文\u{0301}"]
+        );
+        assert_eq!(clip("e\u{0301}xyz", 2), "e\u{0301}…");
+        assert_eq!(clip("中\u{0301}文\u{0301}", 3), "中\u{0301}…");
+    }
+
+    /// 附加符不得成为某段首字符：出现即说明折行把它从基字符上拆走。
+    #[test]
+    fn no_orphan_combining_marks() {
+        let marks = [
+            "e\u{0301}a\u{0301}o\u{0301}",
+            "中\u{0301}文\u{0301}字\u{0301}",
+            "a e\u{0301}b e\u{0301}c",
+            "组合 e\u{0301} 与 全角，标点。",
+            "a\u{0301}b\u{0301}c\u{0301}d\u{0301}",
+        ];
+        let kept = |t: &str| -> String {
+            t.chars().filter(|c| !c.is_whitespace()).collect()
+        };
+        for max in 2..=16usize {
+            for s in marks {
+                let pieces = wrap(s, max);
+                for p in &pieces {
+                    assert!(
+                        p.chars().next().map_or(true, |c| char_w(c) > 0),
+                        "附加符被拆到行首: s={s:?} max={max} piece={p:?}"
+                    );
+                    assert!(width(p) <= max, "组合折行越界: max={max} p={p:?}");
+                }
+                assert_eq!(kept(&pieces.concat()), kept(s), "组合符随基字符丢失");
+            }
         }
     }
 
