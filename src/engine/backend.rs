@@ -129,7 +129,22 @@ impl<W: Write> BufferedBackend<W> {
     ///
     /// 同一游程内后续单元格三路均未变化时直接返回，不产生字节；跨游程
     /// 只发差量，避免整条样式重发。
+    ///
+    /// X2-09a 最短化：目标为全默认时用单条 `SGR 0` 合并复位——它同时清
+    /// 颜色与修饰位，字节数也少于 `39;49` 加逐位关闭。
     fn emit_style(&mut self, cell: &Cell) {
+        if is_plain(cell) {
+            if self.fg != Some(Color::Reset)
+                || self.bg != Some(Color::Reset)
+                || !self.mods.is_empty()
+            {
+                self.out.extend_from_slice(b"\x1b[0m");
+                self.fg = Some(Color::Reset);
+                self.bg = Some(Color::Reset);
+                self.mods = Modifier::empty();
+            }
+            return;
+        }
         let mut parts: Vec<String> = Vec::with_capacity(4);
         if self.fg != Some(cell.fg) {
             parts.push(color_param(cell.fg, true).unwrap_or_else(|| "39".to_string()));
@@ -148,6 +163,11 @@ impl<W: Write> BufferedBackend<W> {
         }
         let _ = write!(self.out, "\x1b[{}m", parts.join(";"));
     }
+}
+
+/// 单元格是否为全默认样式（默认前景、默认背景、无修饰位）。
+fn is_plain(cell: &Cell) -> bool {
+    cell.fg == Color::Reset && cell.bg == Color::Reset && cell.modifier.is_empty()
 }
 
 impl<W: Write> Backend for BufferedBackend<W> {

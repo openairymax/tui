@@ -249,3 +249,29 @@ fn move_count_drops_for_dense_row() {
     b.draw(iter).unwrap();
     assert_eq!(b.move_count(), 1, "80 格应合并为 1 次定位");
 }
+
+/// 全默认目标用单条 `SGR 0` 合并复位，不发 39;49（X2-09a）。
+#[test]
+fn plain_style_uses_single_reset() {
+    let (mut b, _) = backend();
+    let decorated = styled(1, Color::Red, Modifier::BOLD);
+    b.draw(vec![(0u16, 0u16, &decorated[0])].into_iter()).unwrap();
+    let plain = Cell::default();
+    b.draw(vec![(1u16, 0u16, &plain)].into_iter()).unwrap();
+    let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
+    assert!(s.ends_with("\x1b[0m "), "frame = {s:?}");
+    assert!(!s.contains("39;49"), "frame = {s:?}");
+}
+
+/// 字节预算：整行默认样式的定位与复位各只一次（X2-09b）。
+#[test]
+fn plain_row_stays_within_byte_budget() {
+    let (mut b, _) = backend();
+    let cells: Vec<Cell> = (0..40).map(|_| Cell::default()).collect();
+    let iter = cells.iter().enumerate().map(|(i, c)| (i as u16, 0u16, c));
+    b.draw(iter).unwrap();
+    let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
+    assert_eq!(s.matches('m').count(), 1, "frame = {s:?}");
+    // 绝对定位 6 字节 + 复位 4 字节 + 40 个空格。
+    assert_eq!(b.frame_bytes().len(), 6 + 4 + 40, "frame = {s:?}");
+}
