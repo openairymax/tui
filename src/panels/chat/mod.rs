@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let viewport = area.height as usize;
     // 缓存视图从 App 取出，避免 layout 的 &App 与 &mut chat_view 借用冲突
     let mut view = std::mem::take(&mut app.chat_view);
-    let frame = view.layout(app, width, viewport, false);
+    let mut frame = view.layout(app, width, viewport, false);
     app.chat_view = view;
 
     // 0.1.18 B11（V11.2/V11.3）滚动契约回写：翻页步长 = 当前视口高度，
@@ -69,9 +69,24 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             body_w,
             area.height,
         ));
+        // 链接落格（X5-11b）：与拖选共用同一份可见行文本，列位天然一致。
+        let rows: Vec<(u16, crate::engine::url::Span)> = app
+            .sel_lines
+            .iter()
+            .enumerate()
+            .flat_map(|(row, text)| {
+                crate::engine::url::scan(text)
+                    .into_iter()
+                    .map(move |span| (row as u16, span))
+            })
+            .collect();
+        app.link_rows = rows;
+        app.card_rows = std::mem::take(&mut frame.cards);
     } else {
         app.sel_lines.clear();
         app.sel_area = None;
+        app.link_rows.clear();
+        app.card_rows.clear();
     }
 
     f.render_widget(Paragraph::new(Text::from(frame.lines)), area);

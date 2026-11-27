@@ -71,5 +71,6 @@ pub(crate) mod term;
 pub(crate) mod timer;
 pub(crate) mod toast;
 pub(crate) mod ui_state;
+pub(crate) mod url;
 pub(crate) mod view;
 pub(crate) mod window;

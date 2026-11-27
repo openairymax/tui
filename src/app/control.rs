@@ -393,6 +393,14 @@ impl App {
         self.toast(format!("键位模式：{name}"));
     }
 
+    /// 工具卡逐条展开/收起（X5-11a）：Alt+O 的全局展开不受影响，点击只翻
+    /// 目标卡；行高缓存按逐条展开态记账，无需整表失效。
+    pub(crate) fn toggle_card(&mut self, id: u64) {
+        if !self.expanded_cards.remove(&id) {
+            self.expanded_cards.insert(id);
+        }
+    }
+
     /// 导航意图落地（X5-03a）：模式表只描述意图，副作用只在此处发生。
     pub(crate) fn apply_nav(&mut self, nav: crate::engine::keymap::Nav) {
         use crate::engine::keymap::Nav;

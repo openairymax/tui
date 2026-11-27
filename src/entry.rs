@@ -785,9 +785,50 @@ fn click(app: &mut App, col: u16, row: u16) {
             }
         }
         Some(engine::hit::Target::Input) => app.focus_input(),
-        Some(engine::hit::Target::Main) => app.focus_main(),
+        Some(engine::hit::Target::Main) => main_click(app, col, row),
         _ => {}
     }
+}
+
+/// 正文单击（X5-11b/11a）：链接优先，其次翻工具卡，其余把焦点移到正文。
+/// 落格来自上一帧渲染（present 每帧先清空）；未开启鼠标捕获或处在会话/
+/// 焦点视图时没有正文落格，回到焦点切换这一既有行为。
+fn main_click(app: &mut App, col: u16, row: u16) {
+    let plain = !app.transcript_open
+        && app.active_panel == ActivePanel::Chat
+        && !app.wizard.active
+        && app.focus_msg.is_none();
+    let Some(sel) = app.sel_area.filter(|_| plain) else {
+        app.focus_main();
+        return;
+    };
+    if !sel.contains(col, row) {
+        app.focus_main();
+        return;
+    }
+    let rel_row = row - sel.y;
+    let rel_col = col - sel.x;
+    if let Some(url) = engine::url::find(&app.link_rows, rel_row, rel_col) {
+        let url = url.to_string();
+        match engine::url::open(&url) {
+            Ok(()) => app.toast(format!("已在浏览器打开 {url}")),
+            Err(e) => {
+                warn!("打开链接失败 {url}: {e}");
+                app.toast(format!("无法打开链接：{e}"));
+            }
+        }
+        return;
+    }
+    if let Some((_, _, id)) = app
+        .card_rows
+        .iter()
+        .find(|(a, b, _)| rel_row >= *a && rel_row < *b)
+    {
+        let id = *id;
+        app.toggle_card(id);
+        return;
+    }
+    app.focus_main();
 }
 
 /// 鼠标坐标 → 正文区相对点（X5-10a）：越界按边界钳位，拖出视口不丢选区。

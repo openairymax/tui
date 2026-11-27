@@ -126,6 +126,13 @@ pub struct App {
     pub(crate) sel_lines: Vec<String>,
     /// 正文区几何（X5-10b）：鼠标坐标换算与选区高亮的基准。
     pub(crate) sel_area: Option<crate::engine::hit::Area>,
+    /// 工具卡逐条展开态（X5-11a）：Alt+O 仍是全局开关，点击只翻目标卡；
+    /// 以稳定消息 id 记账，消息队列挤位后自然失效。
+    pub(crate) expanded_cards: std::collections::HashSet<u64>,
+    /// 正文每帧的工具卡落格（相对正文区行号，右开）：点击按上一帧几何反查。
+    pub(crate) card_rows: Vec<(u16, u16, u64)>,
+    /// 正文每帧的链接落格（X5-11b）：行号 + 显示列区间，点击开链接。
+    pub(crate) link_rows: Vec<(u16, crate::engine::url::Span)>,
     /// 焦点视图消息快照（0.1.18 B11/W14）：Alt+F 打开时取最近一条回复
     /// 克隆，渲染与滚动均基于快照，不受后续消息影响；Esc 退出即弃。
     pub focus_msg: Option<ChatMessage>,
@@ -474,6 +481,9 @@ impl App {
             select: crate::engine::select::Select::default(),
             sel_lines: Vec::new(),
             sel_area: None,
+            expanded_cards: std::collections::HashSet::new(),
+            card_rows: Vec::new(),
+            link_rows: Vec::new(),
             focus_msg: None,
             focus_scroll: 0,
             focus_scroll_max: 0,

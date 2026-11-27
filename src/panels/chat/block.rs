@@ -27,6 +27,9 @@ use crate::style;
 pub(super) const FOLD_MAX_LINES: usize = 6;
 pub(super) const FOLD_KEEP_LINES: usize = 3;
 
+/// 内容统一缩进列数。
+const INDENT: usize = 4;
+
 /// 工具角色（调用/结果）：连续工具消息紧凑呈现（Claude Code 风格，间不留空行）。
 pub(super) fn is_tool(role: MessageRole) -> bool {
     matches!(role, MessageRole::ToolCall | MessageRole::ToolResult)
@@ -75,7 +78,7 @@ pub(super) fn render(
 ) {
     let start = out.len();
     push_header(out, msg);
-    push_content(out, msg, width);
+    push_content(out, msg, width, expanded);
     // 消息间留白（替代粗分隔线，视觉更轻）；连续工具消息（compact）不插空行
     if !compact {
         out.push(Line::raw(""));
@@ -145,10 +148,9 @@ fn push_header(out: &mut Vec<Line<'static>>, msg: &ChatMessage) {
 }
 
 /// 内容段：统一固定缩进 4 列（Claude 式克制排版）。工具行为单行紧凑
-/// 预览；其余走 markdown 渲染；用户消息叠加气泡背景色块。
-fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
-    const INDENT: usize = 4;
-
+/// 预览（点击可展开该条，X5-11a）；其余走 markdown 渲染；用户消息叠加
+/// 气泡背景色块。
+fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize, expanded: bool) {
     // 工具调用/结果与思考链为次要信息：轻量 dim 色
     let base = match msg.role {
         MessageRole::ToolCall | MessageRole::ToolResult | MessageRole::System => {
@@ -164,18 +166,28 @@ fn push_content(out: &mut Vec<Line<'static>>, msg: &ChatMessage, width: usize) {
         )));
     } else if is_tool(msg.role) {
         let max = width.saturating_sub(INDENT + 3).max(8);
-        let first_line = msg.content.lines().next().unwrap_or("").trim();
-        // 预览截断按显示宽度裁决（此前按字符数取，全角首行必然右溢并挤掉时间戳）；
-        // clip 在截断时自带省略号，故多行提示只在首行未截断时补，避免出现双省略号。
-        let truncated = grid::width(first_line) > max;
-        let mut preview = grid::clip(first_line, max);
-        if !truncated && msg.content.lines().count() > 1 {
-            preview.push('…');
+        if expanded {
+            // 展开态：逐行原样铺开（工具参数/结果是机器载荷，不做 markdown）。
+            for raw in msg.content.lines() {
+                out.push(Line::from(Span::styled(
+                    format!("{:width$}{}", "", grid::clip(raw, max), width = INDENT),
+                    base,
+                )));
+            }
+        } else {
+            let first_line = msg.content.lines().next().unwrap_or("").trim();
+            // 预览截断按显示宽度裁决（此前按字符数取，全角首行必然右溢并挤掉时间戳）；
+            // clip 在截断时自带省略号，故多行提示只在首行未截断时补，避免出现双省略号。
+            let truncated = grid::width(first_line) > max;
+            let mut preview = grid::clip(first_line, max);
+            if !truncated && msg.content.lines().count() > 1 {
+                preview.push('…');
+            }
+            out.push(Line::from(Span::styled(
+                format!("{:width$}{}", "", preview, width = INDENT),
+                base,
+            )));
         }
-        out.push(Line::from(Span::styled(
-            format!("{:width$}{}", "", preview, width = INDENT),
-            base,
-        )));
         // 折叠说明（0.1.19 §6.10 #6）：工具预览只取首行，体内的截断标记与
         // 原始字节数都不可见，故单独补一行「已折叠 · 原始 N KiB」。
         if msg.original_bytes > msg.content.len() {

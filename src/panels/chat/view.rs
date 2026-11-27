@@ -50,12 +50,16 @@ pub(crate) struct ChatFrame {
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) total: usize,
     pub(crate) from_top: usize,
+    /// 视口内工具卡的行区间（相对视口首行，右开）与消息 id（X5-11a）。
+    pub(crate) cards: Vec<(u16, u16, u64)>,
 }
 
-/// 已物化回合块：`compact` 与内容签名共同参与复用判定，任一不符即重投影。
+/// 已物化回合块：`compact`、逐条展开态与内容签名共同参与复用判定，
+/// 任一不符即重投影。
 struct Cell {
     id: u64,
     compact: bool,
+    expanded: bool,
     sig: u64,
     lines: Vec<Line<'static>>,
 }
@@ -84,7 +88,7 @@ fn sig(msg: &ChatMessage) -> u64 {
 pub struct ChatView {
     width: usize,
     expanded: bool,
-    heights: HashMap<u64, (bool, u64, u32)>,
+    heights: HashMap<u64, (bool, bool, u64, u32)>,
     /// 已物化旧回合（LRU 序）：视口外最多保留 RETAINED_TURNS_LIMIT 条。
     cells: VecDeque<Cell>,
     /// 行高缓存是否已完整走完一帧；冷启动首帧据此启用 30 条初帧预算。
@@ -191,10 +195,20 @@ impl ChatView {
             slice_out(&mut lines, &welcome_seg, head.len(), w0, w1);
         }
         let mut seg: Vec<Line<'static>> = Vec::new();
+        let mut cards: Vec<(u16, u16, u64)> = Vec::new();
         for at in win.start..win.end {
             seg.clear();
             self.push_block(app, at, width, &mut seg, !all);
-            slice_out(&mut lines, &seg, idx.start(at), w0, w1);
+            let b0 = idx.start(at);
+            slice_out(&mut lines, &seg, b0, w0, w1);
+            // 卡片落格：只记与视口相交的工具卡（X5-11a 点击反查）。
+            if !all && block::is_tool(app.messages[at].role) {
+                let lo = b0.max(w0);
+                let hi = (b0 + seg.len()).min(w1);
+                if lo < hi {
+                    cards.push(((lo - w0) as u16, (hi - w0) as u16, app.messages[at].id));
+                }
+            }
         }
         slice_out(&mut lines, &tail, idx.end(), w0, w1);
 
@@ -205,6 +219,7 @@ impl ChatView {
             lines,
             total,
             from_top,
+            cards,
         }
     }
 
@@ -219,19 +234,29 @@ impl ChatView {
         let compact =
             idx > 0 && block::is_tool(app.messages[idx - 1].role) && block::is_tool(msg.role);
         let sig = sig(msg);
+        let expanded = self.expanded || app.expanded_cards.contains(&msg.id);
         let body = match self.heights.get(&msg.id) {
-            Some((c, s, h)) if *c == compact && *s == sig => *h,
-            _ => self.measure(app, idx, width, compact, sig),
+            Some((c, e, s, h)) if *c == compact && *e == expanded && *s == sig => *h,
+            _ => self.measure(app, idx, width, compact, expanded, sig),
         };
         sep + body
     }
 
     /// 物化一次测量块高并写入缓存（与窗口物化走同一渲染路径，保证一致）。
-    fn measure(&mut self, app: &App, idx: usize, width: usize, compact: bool, sig: u64) -> u32 {
+    fn measure(
+        &mut self,
+        app: &App,
+        idx: usize,
+        width: usize,
+        compact: bool,
+        expanded: bool,
+        sig: u64,
+    ) -> u32 {
         let mut seg: Vec<Line<'static>> = Vec::new();
-        self.body(app, idx, width, compact, &mut seg);
+        self.body(app, idx, width, compact, expanded, &mut seg);
         let h = seg.len() as u32;
-        self.heights.insert(app.messages[idx].id, (compact, sig, h));
+        self.heights
+            .insert(app.messages[idx].id, (compact, expanded, sig, h));
         #[cfg(test)]
         {
             self.measured += 1;
@@ -255,10 +280,11 @@ impl ChatView {
         }
         let compact =
             idx > 0 && block::is_tool(app.messages[idx - 1].role) && block::is_tool(msg.role);
+        let expanded = self.expanded || app.expanded_cards.contains(&msg.id);
         if cache {
             self.cell(app, idx, width, compact, out);
         } else {
-            self.body(app, idx, width, compact, out);
+            self.body(app, idx, width, compact, expanded, out);
         }
     }
 
@@ -273,10 +299,11 @@ impl ChatView {
     ) {
         let id = app.messages[idx].id;
         let sig = sig(&app.messages[idx]);
+        let expanded = self.expanded || app.expanded_cards.contains(&id);
         let hit = self
             .cells
             .iter()
-            .position(|c| c.id == id && c.compact == compact && c.sig == sig);
+            .position(|c| c.id == id && c.compact == compact && c.expanded == expanded && c.sig == sig);
         if let Some(pos) = hit {
             if let Some(cell) = self.cells.remove(pos) {
                 out.extend(cell.lines.iter().cloned());
@@ -289,7 +316,7 @@ impl ChatView {
             return;
         }
         let mut seg: Vec<Line<'static>> = Vec::new();
-        self.body(app, idx, width, compact, &mut seg);
+        self.body(app, idx, width, compact, expanded, &mut seg);
         out.extend(seg.iter().cloned());
         #[cfg(test)]
         {
@@ -298,6 +325,7 @@ impl ChatView {
         self.cells.push_back(Cell {
             id,
             compact,
+            expanded,
             sig,
             lines: seg,
         });
@@ -342,11 +370,12 @@ impl ChatView {
         idx: usize,
         width: usize,
         compact: bool,
+        expanded: bool,
         out: &mut Vec<Line<'static>>,
     ) {
         let base = out.len();
-        block::render(out, &app.messages[idx], width, compact, self.expanded);
-        if self.expanded {
+        block::render(out, &app.messages[idx], width, compact, expanded);
+        if expanded {
             return;
         }
         let len = out.len() - base;
@@ -553,7 +582,7 @@ mod tests {
         let mut view = ChatView::new();
         let frame = view.layout(&app, 80, 30, true);
         let id = app.messages.back().expect("message").id;
-        let (_, _, h) = view.heights.get(&id).copied().expect("height cached");
+        let (_, _, _, h) = view.heights.get(&id).copied().expect("height cached");
         assert_eq!(
             h as usize,
             crate::budget::MAX_CELLS_PER_TURN,
@@ -567,7 +596,7 @@ mod tests {
 
         app.browse_expanded = true;
         let full = view.layout(&app, 80, 30, true);
-        let (_, _, h) = view.heights.get(&id).copied().expect("height cached");
+        let (_, _, _, h) = view.heights.get(&id).copied().expect("height cached");
         assert!(
             h as usize > crate::budget::MAX_CELLS_PER_TURN,
             "展开态应取全量: {h}"
