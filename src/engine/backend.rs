@@ -23,11 +23,13 @@
 // 失败回退（X2-12/X2-15）均在本文件与 frame_io 落位；编码策略与写出
 // 策略分离，后续卡只换内部实现，不动 Backend 接口。
 //
-// 接线（entry.rs 把 `Terminal::new(CrosstermBackend::new(stdout))` 换成
-// `Terminal::new(BufferedBackend::new(stdout))`）属 X2-09，本卡不动运行期
-// 路径，故模块暂以 `allow(dead_code)` 挂起。
+// 接线（X2-12a）：entry 的终端构造已换成
+// `Terminal::new(BufferedBackend::new(stdout))`，能力探测结论经
+// `SyncCaps::apply_sync` 落到同步开关上；原 `term::Bounded` 包装已删除，
+// 它按任意字节数截断会切断同步块。测量访问器（写次数、定位次数、失败
+// 计数、降级态）只供用例断言，故本模块允许它们在生产构建中未被读取。
 
-#![allow(dead_code)] // X2-06 骨架，运行期接线在 X2-09
+#![allow(dead_code)] // 测量访问器仅测试读取
 
 use std::io::{self, Write};
 
@@ -388,6 +390,20 @@ impl<W: Write> BufferedBackend<W> {
         }
         self.writes += 1;
         Ok(())
+    }
+}
+
+/// 同步输出能力施加点（X2-13a）：终端能力只有落到后端开关才真正生效。
+///
+/// 单独成 trait 而不并进 `Backend`：`Backend` 是对 ratatui 的契约，同步
+/// 包裹是本项目对帧写出的增强，二者生命周期不同——测试后端无需实现它。
+pub(crate) trait SyncCaps {
+    fn apply_sync(&mut self, on: bool);
+}
+
+impl<W: Write> SyncCaps for BufferedBackend<W> {
+    fn apply_sync(&mut self, on: bool) {
+        self.set_sync(on);
     }
 }
 

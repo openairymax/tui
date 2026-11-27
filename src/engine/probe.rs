@@ -40,8 +40,10 @@ pub(crate) enum Src {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Caps {
     pub(crate) scheme: Option<(Scheme, Src)>,
-    /// DECRQM 2026（同步输出）：`Some(true)` 已开启，`Some(false)` 支持但关闭。
-    pub(crate) sync_output: Option<bool>,
+    /// DECRQM 2026（同步输出）三态：`None` 未回包（未知）；`Some(Unsupported)`
+    /// 明确不支持；`Some(On/Off)` 支持，仅当前开关状态不同。判断能否发包裹
+    /// 只应经 `sync_usable()`，不要直接与 `Some(true)` 比较。
+    pub(crate) sync_output: Option<Sync>,
     /// kitty 键盘协议：见到 `CSI ? <flags> u` 即为支持。
     pub(crate) kitty: Option<bool>,
     /// 真彩能力：COLORTERM/TERM 的标记，或 OSC11 的 24 位通道回包；
@@ -59,12 +61,21 @@ impl Caps {
         self.scheme.map(|(s, _)| s == Scheme::Dark)
     }
 
+    /// 终端是否接受同步输出包裹（X2-13a）：支持但未开启同样可用——
+    /// 包裹由后端自己发，不依赖终端当前状态。
+    pub(crate) fn sync_usable(&self) -> bool {
+        matches!(self.sync_output, Some(Sync::On | Sync::Off))
+    }
+
     /// 应用 `AIRY_TUI_CAPS_*` 覆盖：SYNC_OUTPUT / TRUECOLOR / KITTY / DARK。
     ///
     /// 取值 1/0、true/false、on/off（大小写不敏感）；缺失或非法时保留探测
-    /// 结论，不把「写错环境变量」降级成「能力缺失」。
+    /// 结论，不把「写错环境变量」降级成「能力缺失」。SYNC_OUTPUT 的 0 表示
+    /// 不用同步包裹，落 `Unsupported`，与「支持但关闭」区分。
     pub(crate) fn override_env(mut self, var: impl Fn(&str) -> Option<String>) -> Self {
-        self.sync_output = flag_of(var("AIRY_TUI_CAPS_SYNC_OUTPUT")).or(self.sync_output);
+        self.sync_output = flag_of(var("AIRY_TUI_CAPS_SYNC_OUTPUT"))
+            .map(|on| if on { Sync::On } else { Sync::Unsupported })
+            .or(self.sync_output);
         if let Some(on) = flag_of(var("AIRY_TUI_CAPS_TRUECOLOR")) {
             self.truecolor = on;
         }
@@ -212,29 +223,22 @@ fn scheme_of(buf: &[u8]) -> Option<(Scheme, Src)> {
 /// 「未识别」是终端给出的明确否定回执，与「尚无回包」是两件事：前者可
 /// 断言不支持，后者只能记为未知。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Sync {
+pub(crate) enum Sync {
     Unsupported,
     On,
     Off,
 }
 
-impl Sync {
-    fn enabled(self) -> bool {
-        self == Sync::On
-    }
-}
-
 /// 解析 DECRQM 2026 回执 `CSI ? 2026 ; Ps $ y`。
 ///
 /// Ps：0 未识别（不支持）、1 已设置、2 已重置、3 永久设置、4 永久重置。
-/// 前三者构成三分支：0 与 2/4 均落「不可用」，仅 1/3 为开。畸形回包
-/// 继续向后扫描；整段无有效回执时返回 None——未知不得当作不支持。
-pub(crate) fn parse_sync(buf: &[u8]) -> Option<bool> {
+/// 畸形回包继续向后扫描；整段无有效回执时返回 None——未知不得当作不支持。
+pub(crate) fn parse_sync(buf: &[u8]) -> Option<Sync> {
     let mut at = 0;
     while let Some(pos) = find(&buf[at..], DECRQ_SYNC) {
         let head = at + pos + DECRQ_SYNC.len();
         if let Some(state) = sync_state(&buf[head..]) {
-            return Some(state.enabled());
+            return Some(state);
         }
         at = head;
     }
@@ -379,14 +383,31 @@ mod tests {
 
     #[test]
     fn decrqm_2026_states() {
-        assert_eq!(parse_sync(b"\x1b[?2026;1$y"), Some(true));
-        assert_eq!(parse_sync(b"\x1b[?2026;2$y"), Some(false));
-        assert_eq!(parse_sync(b"\x1b[?2026;3$y"), Some(true));
-        assert_eq!(parse_sync(b"\x1b[?2026;4$y"), Some(false));
-        assert_eq!(parse_sync(b"\x1b[?2026;0$y"), Some(false), "未识别即不支持");
+        assert_eq!(parse_sync(b"\x1b[?2026;1$y"), Some(Sync::On));
+        assert_eq!(parse_sync(b"\x1b[?2026;2$y"), Some(Sync::Off));
+        assert_eq!(parse_sync(b"\x1b[?2026;3$y"), Some(Sync::On));
+        assert_eq!(parse_sync(b"\x1b[?2026;4$y"), Some(Sync::Off));
+        assert_eq!(
+            parse_sync(b"\x1b[?2026;0$y"),
+            Some(Sync::Unsupported),
+            "未识别即不支持"
+        );
         assert_eq!(parse_sync(b"\x1b[?2026;1n"), None);
         assert_eq!(parse_sync(b"\x1b[?2026;"), None);
         assert_eq!(parse_sync(b"noise"), None);
+    }
+
+    /// 包裹判定：支持（无论开关状态）即可用；未识别与未知均不可用。
+    #[test]
+    fn sync_usable_only_when_supported() {
+        let of = |state| Caps {
+            sync_output: state,
+            ..Caps::default()
+        };
+        assert!(of(Some(Sync::On)).sync_usable());
+        assert!(of(Some(Sync::Off)).sync_usable());
+        assert!(!of(Some(Sync::Unsupported)).sync_usable());
+        assert!(!of(None).sync_usable());
     }
 
     /// 三分支状态机：未识别 / 已设置 / 已重置各归其位。
@@ -400,7 +421,7 @@ mod tests {
 
     #[test]
     fn decrqm_skips_malformed_occurrence() {
-        assert_eq!(parse_sync(b"\x1b[?2026;x\x1b[?2026;2$y"), Some(false));
+        assert_eq!(parse_sync(b"\x1b[?2026;x\x1b[?2026;2$y"), Some(Sync::Off));
     }
 
     /// 四分支表驱动：不支持 / 支持且开 / 支持但关 / 窗口结束无应答。
@@ -409,10 +430,10 @@ mod tests {
     /// 的事实，混同会让健康面板谎报终端的真实能力。
     #[test]
     fn decrqm_2026_four_branch_table() {
-        let cases: [(&[u8], Option<bool>); 4] = [
-            (b"\x1b[?2026;0$y", Some(false)),
-            (b"\x1b[?2026;1$y", Some(true)),
-            (b"\x1b[?2026;2$y", Some(false)),
+        let cases: [(&[u8], Option<Sync>); 4] = [
+            (b"\x1b[?2026;0$y", Some(Sync::Unsupported)),
+            (b"\x1b[?2026;1$y", Some(Sync::On)),
+            (b"\x1b[?2026;2$y", Some(Sync::Off)),
             (b"", None),
         ];
         for (raw, want) in cases {
@@ -482,7 +503,7 @@ mod tests {
         let raw = b"\x1b[?997;1n\x1b[?2026;2$y\x1b[?1u\x1b]11;rgb:1414/1414/1313\x07";
         let got = caps(raw);
         assert_eq!(got.scheme, Some((Scheme::Dark, Src::Osc11)));
-        assert_eq!(got.sync_output, Some(false));
+        assert_eq!(got.sync_output, Some(Sync::Off));
         assert_eq!(got.kitty, Some(true));
         assert_eq!(got.dark(), Some(true));
         assert_eq!(Caps::default().dark(), None, "未探明时不得猜测明暗");
@@ -503,7 +524,7 @@ mod tests {
         let raw = b"\x1b]11;rgb:1414/1414/1313\x07\x1b[?997;2n\x1b[?2026;1$y\x1b[?1u";
         let got = merge(raw);
         assert_eq!(got.scheme, Some((Scheme::Dark, Src::Osc11)), "OSC11 优先");
-        assert_eq!(got.sync_output, Some(true));
+        assert_eq!(got.sync_output, Some(Sync::On));
         assert_eq!(got.kitty, Some(true));
         assert!(got.truecolor, "OSC11 回包即真彩证据");
     }
@@ -582,7 +603,7 @@ mod tests {
         let reply = b"\x1b]11;rgb:0000/0000/0000\x07\x1b[?997;1n\x1b[?2026;1$y\x1b[?1u";
         let got = caps(reply);
         assert_eq!(got.scheme, Some((Scheme::Dark, Src::Osc11)));
-        assert_eq!(got.sync_output, Some(true));
+        assert_eq!(got.sync_output, Some(Sync::On));
         assert_eq!(got.kitty, Some(true));
     }
 
@@ -612,12 +633,12 @@ mod tests {
         };
         let base = Caps {
             scheme: Some((Scheme::Dark, Src::Osc11)),
-            sync_output: Some(false),
+            sync_output: Some(Sync::Off),
             kitty: Some(true),
             truecolor: false,
         };
         let got = base.override_env(vars);
-        assert_eq!(got.sync_output, Some(true), "显式覆盖必须压过探测结论");
+        assert_eq!(got.sync_output, Some(Sync::On), "显式覆盖必须压过探测结论");
         assert_eq!(got.kitty, Some(false));
         assert!(got.truecolor);
         assert_eq!(got.scheme, Some((Scheme::Light, Src::Env)));
@@ -628,11 +649,11 @@ mod tests {
     fn env_override_is_partial_and_lenient() {
         let vars = |k: &str| (k == "AIRY_TUI_CAPS_KITTY").then(|| "yes".to_string());
         let base = Caps {
-            sync_output: Some(true),
+            sync_output: Some(Sync::On),
             ..Caps::default()
         };
         let got = base.override_env(vars);
-        assert_eq!(got.sync_output, Some(true), "缺失的覆盖项保持原值");
+        assert_eq!(got.sync_output, Some(Sync::On), "缺失的覆盖项保持原值");
         assert_eq!(got.kitty, None, "非法取值不得当作关闭");
         assert_eq!(got.scheme, None);
     }

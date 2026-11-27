@@ -38,6 +38,7 @@ use crate::engine::boot::Boot;
 use crate::engine::sched::{Beat, Cfg, Lane, Sched};
 // 本模块从 main.rs 迁入库后，原先在 crate 根可直接命名的模块需显式引入；
 // 显式 use 优先于 ratatui 前奏里的同名 `style` 模块。
+use crate::engine::backend::SyncCaps;
 use crate::{engine, keys, present, style};
 
 /// AgentRT Terminal User Interface
@@ -311,8 +312,9 @@ async fn run_tui(cli: &Cli, boot: &Boot) -> Result<engine::exit::Code> {
     // 声明在 guard 之后，Drop 逆序保证探测线程先于终端还原退出。
     let mut probe = engine::term::Probe::spawn();
 
-    // 出帧写入统一经有界包装：单次写不超过 `MAX_RENDER_WRITE_CHARS`。
-    let backend = CrosstermBackend::new(engine::term::Bounded::new(io::stdout()));
+    // 出帧写入统一经帧编码后端（X2-12a）：一帧在内存中编码完成后一次性
+    // 写出；分片在转义序列边界处切（frame_io），不再按任意字节数截断。
+    let backend = engine::backend::BufferedBackend::new(io::stdout());
     let mut terminal = Terminal::with_options(
         backend,
         TerminalOptions {
@@ -425,7 +427,7 @@ fn leave_on_dead(err: io::Error) -> Result<engine::exit::Code> {
     }
 }
 
-async fn run_app<B: Backend>(
+async fn run_app<B: Backend + SyncCaps>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     boot: &Boot,
@@ -615,7 +617,16 @@ async fn run_app<B: Backend>(
         // join 探测线程，之后才允许进入事件轮询（stdin 单一读者）。结论
         // 与启动期 COLORFGBG 推断不同则热修正主题并补一帧，不重建终端。
         if let Some(probe) = probe.take() {
-            match probe.collect().scheme {
+            let caps = probe.collect();
+            // X2-13a：DECRQM 2026 有肯定回执（无论当前开关）即启用同步包裹，
+            // 由后端在每片自包 `\e[?2026h/l`；未回包或明确不支持则保持关闭。
+            if caps.sync_usable() {
+                terminal.backend_mut().apply_sync(true);
+                info!("engine/probe: 同步输出可用（{:?}），启用 2026 包裹", caps.sync_output);
+                sched.push(Lane::Panel);
+                compose.invalidate();
+            }
+            match caps.scheme {
                 Some((scheme, src)) => {
                     let light = matches!(scheme, engine::probe::Scheme::Light);
                     if style::apply_scheme(light) {
