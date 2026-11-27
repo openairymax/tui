@@ -283,8 +283,9 @@ mod tests {
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
+        style::{Color, Style},
         text::{Line, Text},
-        widgets::{Paragraph, Widget},
+        widgets::{Block, Paragraph, Widget},
     };
 
     fn dotted(w: u16, h: u16) -> Buffer {
@@ -328,13 +329,14 @@ mod tests {
         let mut buf = dotted(10, 4);
         let drawn = compose_bottom_right(&mut buf, view, 40, 9, |b, r| {
             assert_eq!(r, view, "越界请求收敛为整视口");
-            Paragraph::new(Line::from("X")).render(r, b);
+            Block::default()
+                .style(Style::default().bg(Color::Blue))
+                .render(r, b);
         });
         assert!(drawn);
-        assert_eq!(buf[(0, 0)].symbol(), "X");
         for y in 0..4 {
             for x in 0..10 {
-                assert_ne!(buf[(x, y)].symbol(), "·", "裁剪矩形应覆盖整视口");
+                assert_eq!(buf[(x, y)].bg, Color::Blue, "裁剪矩形应覆盖整视口");
             }
         }
     }
