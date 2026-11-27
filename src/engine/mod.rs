@@ -24,6 +24,7 @@
 // dead_code 门禁风险，一律不做。
 
 pub(crate) mod backend;
+pub(crate) mod backend_sgr;
 pub(crate) mod block;
 pub(crate) mod boot;
 pub(crate) mod cache;

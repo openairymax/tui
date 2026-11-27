@@ -18,9 +18,9 @@
 //
 //   - X2-06a：`BufferedBackend` 可实例化；
 //   - X2-06b：`draw` 期把单元格 diff 编码进 `Vec<u8>`，可产出字节用例。
-// 游程合并（X2-07）、样式游程与 SGR 最短化（X2-08）、整帧 diff 编码器
-// （X2-09/X2-10）在后续卡落位；本卡按「位置游标 + 前景/背景色最小 SGR +
-// 符号字节」编码，够用且可被后续卡替换内部策略而不动接口。
+// 游程合并（X2-07）、样式游程（X2-08）、SGR 最短化与整帧编码器
+// （X2-09/X2-10）在后续卡落位；本卡按「位置游标 + 样式差量 + 符号字节」
+// 编码，够用且可被后续卡替换内部策略而不动接口。
 //
 // 接线（entry.rs 把 `Terminal::new(CrosstermBackend::new(stdout))` 换成
 // `Terminal::new(BufferedBackend::new(stdout))`）属 X2-09，本卡不动运行期
@@ -33,8 +33,10 @@ use std::io::{self, Write};
 use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr;
+
+use super::backend_sgr::{color_param, mod_params};
 
 /// 同一行内改用前移（CUF）的最大间距：超过即绝对定位。
 ///
@@ -50,9 +52,10 @@ pub(crate) struct BufferedBackend<W: Write> {
     out: Vec<u8>,
     /// 上一次显式定位后的光标位置；用于省略连续的重复定位。
     cursor: Option<Position>,
-    /// 已生效的前景/背景色，用于最小化 SGR 输出。
+    /// 已生效的前景/背景色与修饰位，用于最小化 SGR 输出。
     fg: Option<Color>,
     bg: Option<Color>,
+    mods: Modifier,
     /// `flush()` 实际发生的 `write_all` 次数（判据：一帧恰好 1 次）。
     writes: usize,
     /// 累计定位次数（X2-07b 判据：游程合并后应显著低于单元格数）。
@@ -67,6 +70,7 @@ impl<W: Write> BufferedBackend<W> {
             cursor: None,
             fg: None,
             bg: None,
+            mods: Modifier::empty(),
             writes: 0,
             moves: 0,
         }
@@ -121,25 +125,26 @@ impl<W: Write> BufferedBackend<W> {
         }
     }
 
-    /// 前景/背景色最小 SGR：只对发生变化的通道发参数。
+    /// 样式游程（X2-08a/b）：前景、背景、修饰位三路差量合并成一条 SGR。
+    ///
+    /// 同一游程内后续单元格三路均未变化时直接返回，不产生字节；跨游程
+    /// 只发差量，避免整条样式重发。
     fn emit_style(&mut self, cell: &Cell) {
-        if self.fg == Some(cell.fg) && self.bg == Some(cell.bg) {
-            return;
-        }
-        let mut parts: Vec<String> = Vec::with_capacity(2);
+        let mut parts: Vec<String> = Vec::with_capacity(4);
         if self.fg != Some(cell.fg) {
-            parts.push(match sgr_channel(cell.fg, true) {
-                Some(s) => s,
-                None => "39".to_string(),
-            });
+            parts.push(color_param(cell.fg, true).unwrap_or_else(|| "39".to_string()));
             self.fg = Some(cell.fg);
         }
         if self.bg != Some(cell.bg) {
-            parts.push(match sgr_channel(cell.bg, false) {
-                Some(s) => s,
-                None => "49".to_string(),
-            });
+            parts.push(color_param(cell.bg, false).unwrap_or_else(|| "49".to_string()));
             self.bg = Some(cell.bg);
+        }
+        if self.mods != cell.modifier {
+            mod_params(self.mods, cell.modifier, &mut parts);
+            self.mods = cell.modifier;
+        }
+        if parts.is_empty() {
+            return;
         }
         let _ = write!(self.out, "\x1b[{}m", parts.join(";"));
     }
@@ -204,6 +209,7 @@ impl<W: Write> Backend for BufferedBackend<W> {
         self.cursor = None;
         self.fg = None;
         self.bg = None;
+        self.mods = Modifier::empty();
         Ok(())
     }
 
@@ -249,230 +255,6 @@ impl<W: Write> Backend for BufferedBackend<W> {
     }
 }
 
-/// 把 `Color` 映射到 SGR 参数串；`Reset` 返回 `None`（调用方回落到 39/49）。
-fn sgr_channel(color: Color, fg: bool) -> Option<String> {
-    let base: u8 = if fg { 30 } else { 40 };
-    let bright: u8 = if fg { 90 } else { 100 };
-    let (r#type, n): (u8, u8) = match color {
-        Color::Reset => return None,
-        Color::Black => (base, 0),
-        Color::Red => (base, 1),
-        Color::Green => (base, 2),
-        Color::Yellow => (base, 3),
-        Color::Blue => (base, 4),
-        Color::Magenta => (base, 5),
-        Color::Cyan => (base, 6),
-        Color::Gray => (base, 7),
-        Color::DarkGray => (bright, 0),
-        Color::LightRed => (bright, 1),
-        Color::LightGreen => (bright, 2),
-        Color::LightYellow => (bright, 3),
-        Color::LightBlue => (bright, 4),
-        Color::LightMagenta => (bright, 5),
-        Color::LightCyan => (bright, 6),
-        Color::White => (bright, 7),
-        Color::Indexed(i) => {
-            return Some(format!("{};5;{}", if fg { 38 } else { 48 }, i));
-        }
-        Color::Rgb(r, g, b) => {
-            return Some(format!("{};2;{};{};{}", if fg { 38 } else { 48 }, r, g, b));
-        }
-    };
-    Some((r#type + n).to_string())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Arc, Mutex};
-
-    /// 写次数与字节同时计量的探针 writer。
-    #[derive(Clone, Default)]
-    struct Sink {
-        writes: Arc<Mutex<usize>>,
-        bytes: Arc<Mutex<Vec<u8>>>,
-    }
-
-    impl Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            *self.writes.lock().unwrap() += 1;
-            self.bytes.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn backend() -> (BufferedBackend<Sink>, Sink) {
-        let sink = Sink::default();
-        (BufferedBackend::new(sink.clone()), sink)
-    }
-
-    fn cell(symbol: &str) -> Cell {
-        let mut c = Cell::default();
-        c.set_symbol(symbol);
-        c
-    }
-
-    #[test]
-    fn new_frame_is_empty() {
-        let (b, _) = backend();
-        assert!(b.frame_bytes().is_empty());
-        assert_eq!(b.write_count(), 0);
-    }
-
-    #[test]
-    fn draw_encodes_symbol_and_color() {
-        let (mut b, _) = backend();
-        let mut c = cell("A");
-        c.fg = Color::Red;
-        b.draw(vec![(0u16, 0u16, &c)].into_iter()).unwrap();
-        let bytes = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(bytes.contains('A'), "frame = {bytes:?}");
-        assert!(bytes.contains("\x1b[31m"), "frame = {bytes:?}");
-    }
-
-    #[test]
-    fn draw_skips_skipped_cells() {
-        let (mut b, _) = backend();
-        let mut c = cell("B");
-        c.skip = true;
-        b.draw(vec![(2u16, 1u16, &c)].into_iter()).unwrap();
-        assert!(b.frame_bytes().is_empty());
-    }
-
-    #[test]
-    fn draw_emits_rgb_truecolor() {
-        let (mut b, _) = backend();
-        let mut c = cell("x");
-        c.fg = Color::Rgb(1, 2, 3);
-        c.bg = Color::Indexed(9);
-        b.draw(vec![(0u16, 0u16, &c)].into_iter()).unwrap();
-        let bytes = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(bytes.contains("38;2;1;2;3"), "frame = {bytes:?}");
-        assert!(bytes.contains("48;5;9"), "frame = {bytes:?}");
-    }
-
-    #[test]
-    fn flush_writes_exactly_once_and_clears() {
-        let (mut b, sink) = backend();
-        let c = cell("Z");
-        b.draw(vec![(0u16, 0u16, &c)].into_iter()).unwrap();
-        assert_eq!(b.write_count(), 0, "draw 不得产生 IO");
-        b.flush().unwrap();
-        assert_eq!(b.write_count(), 1);
-        assert_eq!(*sink.writes.lock().unwrap(), 1, "一帧一次 write");
-        assert!(b.frame_bytes().is_empty());
-        assert!(String::from_utf8_lossy(&sink.bytes.lock().unwrap()).contains('Z'));
-    }
-
-    #[test]
-    fn empty_flush_is_noop() {
-        let (mut b, sink) = backend();
-        b.flush().unwrap();
-        assert_eq!(b.write_count(), 0);
-        assert_eq!(*sink.writes.lock().unwrap(), 0);
-    }
-
-    #[test]
-    fn clear_encoding_and_reset_style_cache() {
-        let (mut b, _) = backend();
-        let mut c = cell("A");
-        c.fg = Color::Blue;
-        b.draw(vec![(0u16, 0u16, &c)].into_iter()).unwrap();
-        b.clear().unwrap();
-        let bytes = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(bytes.contains("\x1b[2J"), "frame = {bytes:?}");
-        // 清屏后样式缓存必须失效：同色单元需重新发 SGR。
-        let before = b.frame_bytes().len();
-        b.draw(vec![(0u16, 0u16, &c)].into_iter()).unwrap();
-        let after = String::from_utf8_lossy(&b.frame_bytes()[before..]).to_string();
-        assert!(after.contains("\x1b[34m"), "frame tail = {after:?}");
-    }
-
-    #[test]
-    fn cursor_visibility_encoding() {
-        let (mut b, _) = backend();
-        b.hide_cursor().unwrap();
-        b.show_cursor().unwrap();
-        let bytes = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(bytes.contains("\x1b[?25l"));
-        assert!(bytes.contains("\x1b[?25h"));
-    }
-
-    /// 横向无空隙的一行：整条游程只定位一次（X2-07a）。
-    #[test]
-    fn contiguous_run_merges_into_one_move() {
-        let (mut b, _) = backend();
-        let cells: Vec<Cell> = (0..5).map(|_| cell("x")).collect();
-        let iter = cells.iter().enumerate().map(|(i, c)| (i as u16, 0u16, c));
-        b.draw(iter).unwrap();
-        assert_eq!(b.move_count(), 1);
-        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert_eq!(s.matches('H').count(), 1, "frame = {s:?}");
-        assert!(s.starts_with("\x1b[1;1H"), "frame = {s:?}");
-    }
-
-    /// 短空隙走前移（CUF），省掉行列两个数字（X2-07a）。
-    #[test]
-    fn short_gap_uses_forward() {
-        let (mut b, _) = backend();
-        let a = cell("a");
-        let d = cell("d");
-        b.draw(vec![(0u16, 0u16, &a), (3u16, 0u16, &d)].into_iter())
-            .unwrap();
-        assert_eq!(b.move_count(), 2);
-        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(s.contains("\x1b[3C"), "frame = {s:?}");
-        assert_eq!(s.matches('H').count(), 1, "frame = {s:?}");
-    }
-
-    /// 远距跳转与跨行一律绝对定位，避免长前移在折行处越界。
-    #[test]
-    fn far_and_row_jumps_are_absolute() {
-        let (mut b, _) = backend();
-        let a = cell("a");
-        let z = cell("z");
-        b.draw(vec![(0u16, 0u16, &a), (40u16, 0u16, &z)].into_iter())
-            .unwrap();
-        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(s.contains("\x1b[1;41H"), "frame = {s:?}");
-        assert_eq!(s.matches('H').count(), 2, "frame = {s:?}");
-
-        let (mut b, _) = backend();
-        b.draw(vec![(5u16, 0u16, &a), (0u16, 1u16, &z)].into_iter())
-            .unwrap();
-        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(s.contains("\x1b[2;1H"), "frame = {s:?}");
-    }
-
-    /// 宽字符与其 skip 占位格同属一条游程（X2-07a）。
-    #[test]
-    fn wide_cell_and_skip_share_one_move() {
-        let (mut b, _) = backend();
-        let wide = cell("中");
-        let mut skip = Cell::default();
-        skip.skip = true;
-        let tail = cell("b");
-        b.draw(
-            vec![(0u16, 0u16, &wide), (1u16, 0u16, &skip), (2u16, 0u16, &tail)].into_iter(),
-        )
-        .unwrap();
-        assert_eq!(b.move_count(), 1);
-        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
-        assert!(s.contains('中') && s.contains('b'), "frame = {s:?}");
-        assert_eq!(s.matches('H').count(), 1, "frame = {s:?}");
-    }
-
-    /// 逐格定位的旧行为对 N 格需 N 次定位；游程合并后为 1 次（X2-07b）。
-    #[test]
-    fn move_count_drops_for_dense_row() {
-        let (mut b, _) = backend();
-        let cells: Vec<Cell> = (0..80).map(|_| cell(".")).collect();
-        let iter = cells.iter().enumerate().map(|(i, c)| (i as u16, 0u16, c));
-        b.draw(iter).unwrap();
-        assert_eq!(b.move_count(), 1, "80 格应合并为 1 次定位");
-    }
-}
+#[path = "backend_tests.rs"]
+mod tests;
