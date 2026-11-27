@@ -44,7 +44,8 @@ impl CfgAction {
             CfgAction::Think(false) => "双思考：开启".to_string(),
             CfgAction::Theme => match crate::style::ThemeMode::current() {
                 crate::style::ThemeMode::Dark => "主题：切换为浅色".to_string(),
-                crate::style::ThemeMode::Light => "主题：切换为深色".to_string(),
+                crate::style::ThemeMode::Light => "主题：切换为高对比".to_string(),
+                crate::style::ThemeMode::Contrast => "主题：切换为深色".to_string(),
             },
             CfgAction::SetKey => "设置模型 API Key（预填 /set-key）".to_string(),
             CfgAction::Wizard => "重开配置向导（/hiairy）".to_string(),
@@ -138,7 +139,8 @@ impl App {
             CfgAction::Theme => {
                 let next = match crate::style::ThemeMode::current() {
                     crate::style::ThemeMode::Dark => crate::style::ThemeMode::Light,
-                    crate::style::ThemeMode::Light => crate::style::ThemeMode::Dark,
+                    crate::style::ThemeMode::Light => crate::style::ThemeMode::Contrast,
+                    crate::style::ThemeMode::Contrast => crate::style::ThemeMode::Dark,
                 };
                 next.set();
                 self.add_log(

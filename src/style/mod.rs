@@ -22,7 +22,8 @@
 //     终端背景），中性色与语义色均随主题切换。
 //
 // 主题选择优先级：
-//   1. AIRY_TUI_THEME=dark|light 显式指定；
+//   1. AIRY_TUI_THEME=dark|light|contrast 显式指定（contrast 为无障碍高对比档，
+//      探测结论不得覆盖）；
 //   2. OSC11（背景 RGB）/ DEC2031（明暗偏好）探测结论，首帧后晚到热修正；
 //   3. COLORFGBG 环境变量（终端导出的前景/背景色，bg>6 视为浅色背景）；
 //   4. 默认深色。
@@ -32,17 +33,25 @@ use ratatui::style::Color;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 mod depth;
+mod palette;
 
 pub use depth::ColorDepth;
 use depth::{detect_depth, mapped};
+use palette::Rgb;
 
-/// 主题模式
+/// 主题档位。
+///
+/// 前两档描述终端背景，第三档是显式无障碍选择（X7-02a）：高对比不是
+/// 「深色加强」，而是独立色板（纯黑底/纯白字），故与背景探测并列为一档，
+/// 由 `AIRY_TUI_THEME=contrast` 显式进入；探测结论不得把用户从该档拉走。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
     /// 深色背景（默认）
     Dark,
     /// 浅色背景（终端为浅色时自动切换）
     Light,
+    /// 高对比（纯黑底/纯白字，语义色高亮端）
+    Contrast,
 }
 
 /// 主题态的进程内单一权威：生产期由探测线程写入、渲染线程读取，故用
@@ -81,12 +90,14 @@ impl ThemeMode {
         store(match self {
             ThemeMode::Dark => 0,
             ThemeMode::Light => 1,
+            ThemeMode::Contrast => 2,
         });
     }
 
     pub fn current() -> ThemeMode {
         match load() {
             1 => ThemeMode::Light,
+            2 => ThemeMode::Contrast,
             _ => ThemeMode::Dark,
         }
     }
@@ -128,6 +139,7 @@ fn explicit() -> Option<ThemeMode> {
     {
         "light" => Some(ThemeMode::Light),
         "dark" => Some(ThemeMode::Dark),
+        "contrast" | "high" | "hc" | "high-contrast" => Some(ThemeMode::Contrast),
         _ => None,
     }
 }
@@ -152,50 +164,41 @@ pub(crate) fn apply_scheme(light: bool) -> bool {
     true
 }
 
-// ─────────────────────── 品牌 / 语义色（随主题分层） ───────────────────────
+// ─────────────────────── 品牌 / 语义色（色板唯一来源） ───────────────────────
+//
+// 每个令牌只做「当前色板取值 → 终端色深降级」两步；档位差异全部落在
+// `palette`，取色面不再出现 `match ThemeMode`——新增一档不必复制 19 处
+// 分支，也不会漏改其中几处造成档位半生效。
 
-/// 品牌主色：雾蓝（深）/ 靛蓝（浅）。用于品牌/焦点/主操作。
-/// 降饱和蓝相保持 Airymax 品牌连续性，深浅各自调优至 WCAG AA。
+/// 取色板字段并交给色深映射（降级唯一实现仍在 `depth`）。
+fn token(pick: fn(&palette::Tokens) -> Rgb) -> Color {
+    let (r, g, b) = pick(palette::current());
+    mapped(r, g, b)
+}
+
+/// 品牌主色：雾蓝（深）/ 靛蓝（浅）/ 亮蓝（高对比）。用于品牌/焦点/主操作。
 pub fn primary() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(118, 152, 208),
-        ThemeMode::Light => mapped(74, 110, 178),
-    }
+    token(|t| t.primary)
 }
 /// 品牌辅助强调：青瓷（深）/ 深青瓷（浅）。用于信息高亮。
 pub fn accent() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(138, 190, 178),
-        ThemeMode::Light => mapped(62, 120, 108),
-    }
+    token(|t| t.accent)
 }
 /// 成功 / 在线 / 用户消息：橄榄绿（Crail 降饱和体系，参考 Claude Olive）
 pub fn success() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(150, 174, 108),
-        ThemeMode::Light => mapped(96, 118, 62),
-    }
+    token(|t| t.success)
 }
 /// 警告 / 等待 / 系统消息：Crail 橙降调（参考 Anthropic #d97757 色相）
 pub fn warning() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(214, 138, 92),
-        ThemeMode::Light => mapped(162, 92, 44),
-    }
+    token(|t| t.warning)
 }
 /// 危险 / 离线 / 错误：陶红
 pub fn danger() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(208, 112, 100),
-        ThemeMode::Light => mapped(168, 76, 66),
-    }
+    token(|t| t.danger)
 }
 /// 品红（工具 / GRAD 阶段）
 pub fn magenta() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(172, 142, 200),
-        ThemeMode::Light => mapped(118, 94, 156),
-    }
+    token(|t| t.magenta)
 }
 /// 工具状态行（SSE tool_call/tool_result，Claude Code 风格工具执行提示）
 pub fn tool_fg() -> Color {
@@ -203,112 +206,73 @@ pub fn tool_fg() -> Color {
 }
 /// 青（用户角色 [For Thee]，与 C 版 airy_cli CLR_CYAN 对齐）
 pub fn cyan() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(110, 178, 186),
-        ThemeMode::Light => mapped(52, 120, 130),
-    }
+    token(|t| t.cyan)
 }
 /// 彩色徽章上的文字色：取主题背景色做反字，色底对比即语义色/背景对比
-/// （深色端语义色 vs 暖黑、浅色端 vs 米白，均 ≥4.5:1，机制自洽）
+/// （各档语义色 vs 底色均 ≥4.5:1，机制自洽）
 pub fn on_color() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(20, 20, 19),
-        ThemeMode::Light => mapped(250, 249, 245),
-    }
+    token(|t| t.on_color)
 }
 
-// ─────────────────────────── 中性色（随主题切换） ───────────────────────────
+// ─────────────────────────── 中性色（随档位切换） ───────────────────────────
 
-/// 终端背景：暖黑纸张（深）/ 米白纸张（浅）。参考 Claude #141413/#faf9f5，
-/// 告别纯黑/纯白，降低视觉疲劳（2.2.1.5.1 命令窗背景随主题明暗切换）
+/// 终端背景：暖黑纸张（深）/ 米白纸张（浅）/ 纯黑（高对比）。参考
+/// Claude #141413/#faf9f5，告别纯黑/纯白降低视觉疲劳；高对比档例外。
 pub fn bg() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(20, 20, 19),
-        ThemeMode::Light => mapped(250, 249, 245),
-    }
+    token(|t| t.bg)
 }
 
 /// 面板表面（略提亮一档，暖灰层次）
 pub fn surface() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(30, 29, 27),
-        ThemeMode::Light => mapped(243, 241, 234),
-    }
+    token(|t| t.surface)
 }
 
 /// 悬浮/激活表面
 pub fn surface_active() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(42, 41, 38),
-        ThemeMode::Light => mapped(233, 230, 220),
-    }
+    token(|t| t.surface_active)
 }
 
 /// 常规边框
 pub fn border() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(72, 70, 64),
-        ThemeMode::Light => mapped(208, 204, 192),
-    }
+    token(|t| t.border)
 }
 
-/// 正文：暖白（深）/ 墨黑（浅）
+/// 正文：暖白（深）/ 墨黑（浅）/ 纯白（高对比）
 pub fn text() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(233, 229, 220),
-        ThemeMode::Light => mapped(38, 37, 33),
-    }
+    token(|t| t.text)
 }
 
 /// 次要文字
 pub fn dim() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(166, 162, 152),
-        ThemeMode::Light => mapped(110, 106, 98),
-    }
+    token(|t| t.dim)
 }
 
 /// 极弱文字（时间戳/装饰）
 pub fn faint() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(118, 115, 106),
-        ThemeMode::Light => mapped(148, 144, 134),
-    }
+    token(|t| t.faint)
 }
 
-// ─────────────────────── 3.0 分层表面体系（随主题切换） ───────────────────────
+// ─────────────────────── 3.0 分层表面体系（随档位切换） ───────────────────────
 
 /// 顶部状态条底色：背景深调，与内容区分层（暖石=炭黑 / 羊皮纸=亚麻白）。
 /// 让系统状态条成为"纸张书脊"，内容区 surface 承接主体，纵深清晰。
 pub fn bar() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(13, 13, 12),
-        ThemeMode::Light => mapped(244, 242, 236),
-    }
+    token(|t| t.bar)
 }
 
 /// 次级表面（卡片/信息块，比 surface 再亮一档，用于会话 tab、chips 底）
 pub fn surface_2() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(38, 37, 34),
-        ThemeMode::Light => mapped(236, 233, 224),
-    }
+    token(|t| t.surface_2)
 }
 
 /// 三级表面（最高亮层：激活胶囊、悬浮块）
 pub fn surface_3() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(47, 46, 42),
-        ThemeMode::Light => mapped(228, 224, 213),
-    }
+    token(|t| t.surface_3)
 }
 
 /// 状态条分段分隔符（细竖线）：主色弱化蓝灰，比 border 更贴近品牌
 pub fn separator() -> Color {
-    match ThemeMode::current() {
-        ThemeMode::Dark => mapped(54, 66, 92),
-        ThemeMode::Light => mapped(170, 182, 208),
-    }
+    token(|t| t.separator)
 }
 
 // ─────────────────────────── 测试 ───────────────────────────
@@ -327,9 +291,9 @@ fn wcag_luminance(r: u8, g: u8, b: u8) -> f64 {
     0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
 }
 
-/// WCAG 对比度（fg/bg 各通道 RGB）。仅测试用。
+/// WCAG 对比度（fg/bg 各通道 RGB）。测试与 golden 对比度门禁共用。
 #[cfg(test)]
-fn wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> f64 {
+pub(crate) fn wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> f64 {
     let l1 = wcag_luminance(fg.0, fg.1, fg.2);
     let l2 = wcag_luminance(bg.0, bg.1, bg.2);
     let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
@@ -337,9 +301,9 @@ fn wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> f64 {
 }
 
 /// 取当前主题模式下某 token 的源 RGB（强制 TrueColor 深度，只取设计源值）。
-/// 仅测试用（对比度门禁取设计源值，绕过终端降级映射）。
+/// 测试与 golden 对比度门禁共用；调用方须先置 TrueColor。
 #[cfg(test)]
-fn source_rgb(c: Color) -> (u8, u8, u8) {
+pub(crate) fn source_rgb(c: Color) -> (u8, u8, u8) {
     match c {
         Color::Rgb(r, g, b) => (r, g, b),
         _ => panic!("token must be source RGB under TrueColor, got {:?}", c),

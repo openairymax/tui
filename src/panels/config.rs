@@ -406,6 +406,7 @@ fn host_env_lines() -> Vec<Line<'static>> {
     let theme_mode = match style::ThemeMode::current() {
         style::ThemeMode::Dark => "深色（Dark）",
         style::ThemeMode::Light => "浅色（Light）",
+        style::ThemeMode::Contrast => "高对比（Contrast）",
     };
     let home = std::env::var("AIRY_HOME").unwrap_or_else(|_| "未设置".to_string());
 

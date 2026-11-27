@@ -60,7 +60,9 @@ fn load() -> u8 {
 }
 
 impl ColorDepth {
-    pub(super) fn set(self) {
+    /// 写入当前深度：生产期由启动探测一次写入；测试/golden 用它在同一
+    /// 进程内确定性切换三档（线程本地，用例互不污染）。
+    pub(crate) fn set(self) {
         store(self as u8);
     }
 
