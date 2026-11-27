@@ -123,7 +123,9 @@ fn hash_content(content: &str) -> u64 {
 }
 
 /// 行序列占用估算：结构开销 + 片段文本字节。
-fn line_bytes(lines: &[Line<'static>]) -> usize {
+///
+/// 代码块渲染缓存（markdown/code）复用同一口径，避免两套字节预算估算漂移。
+pub(crate) fn line_bytes(lines: &[Line<'static>]) -> usize {
     lines
         .iter()
         .map(|line| {

@@ -171,6 +171,10 @@ pub(crate) const MAX_FPS: u32 = 240;
 pub(crate) const COMPOSE_CACHE_ENTRIES: usize = 256;
 /// 解析缓存字节上限（engine/cache）。
 pub(crate) const COMPOSE_CACHE_BYTES: usize = 8 * 1024 * 1024;
+/// 代码块渲染缓存条目上限（markdown/code）。
+pub(crate) const CODE_CACHE_ENTRIES: usize = 64;
+/// 代码块渲染缓存字节上限（markdown/code）。
+pub(crate) const CODE_CACHE_BYTES: usize = 2 * 1024 * 1024;
 /// 事件流单屏物化行数（panels/events）。
 pub(crate) const MAX_EVENT_ROWS: usize = 256;
 /// 看板单屏物化行数（panels/board）。
@@ -217,6 +221,8 @@ const _: () = {
     assert!(MAX_FPS > 0);
     assert!(COMPOSE_CACHE_ENTRIES > 0);
     assert!(COMPOSE_CACHE_BYTES > 0);
+    assert!(CODE_CACHE_ENTRIES > 0);
+    assert!(CODE_CACHE_BYTES > 0);
     assert!(MAX_EVENT_ROWS > 0);
     assert!(MAX_BOARD_ROWS > 0);
     assert!(MAX_CHAT_MESSAGES > 0);

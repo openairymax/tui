@@ -12,15 +12,63 @@
 //
 // 宽度纪律：超长行经 L2 唯一裁决点 `crate::engine::grid::clip_spans` 横向省略，
 // 本模块不自行测量后截断。
+//
+// 缓存纪律（X4-06）：正文按（文本 / 宽度 / 语言）三元组 + 样式维度 memo，命中
+// 即克隆；徽章只含语言名，不单独缓存。流式尾段旁路消息级缓存，但稳定围栏块
+// 的正文与语言不变时逐帧重绘不再重跑词法分析。
 
-use crate::engine::grid;
-use crate::style;
+use std::cell::RefCell;
+use std::hash::Hasher;
+
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
+use rustc_hash::{FxHashMap, FxHasher};
+
+use crate::budget::{CODE_CACHE_BYTES, CODE_CACHE_ENTRIES};
+use crate::engine::cache::line_bytes;
+use crate::engine::grid;
+use crate::style::{self, ColorDepth, ThemeMode};
 
 use super::{lang, lex};
+
+/// 代码渲染缓存键：文本 / 宽度 / 语言三元组，外加影响输出的样式维度。
+///
+/// 三元组是流式场景的复用基础：瞬态消息旁路消息级缓存（engine/cache），
+/// 但稳定围栏块的正文与语言不变时，逐帧重绘不必重跑词法分析。indent、
+/// 基础样式与主题态同样影响输出，缺任一维都会串味。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CodeKey {
+    text_hash: u64,
+    token: &'static str,
+    width: usize,
+    indent: usize,
+    base: Style,
+    depth: u8,
+    mode: u8,
+}
+
+/// 缓存条目：着色折行后的正文行 + 占用估算 + 最近使用刻度。
+struct CodeEntry {
+    lines: Vec<Line<'static>>,
+    bytes: usize,
+    tick: u64,
+}
+
+/// 有界代码渲染缓存（LRU 淘汰，命中率自省）。
+#[derive(Default)]
+struct CodeCache {
+    entries: FxHashMap<CodeKey, CodeEntry>,
+    bytes: usize,
+    clock: u64,
+    hits: u64,
+    misses: u64,
+}
+
+thread_local! {
+    static CACHE: RefCell<CodeCache> = RefCell::new(CodeCache::default());
+}
 
 /// 渲染代码块：语言徽章 + 高亮正文（超长行横向省略）。
 pub(super) fn render_code(
@@ -31,8 +79,6 @@ pub(super) fn render_code(
     base: Style,
 ) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    // 正文每行另占 indent + 1 列前缀，预算须先扣除，否则窄屏下必然右溢
-    let budget = width.saturating_sub(indent + 1);
     let bg = base.bg(style::surface());
     // 徽章展示探测后的规范名：```main.py 与 ```py 应显示同一个语言
     let shown = match lang::detect(lang) {
@@ -41,6 +87,8 @@ pub(super) fn render_code(
     };
 
     if !shown.is_empty() {
+        // 正文每行另占 indent + 1 列前缀，预算须先扣除，否则窄屏下必然右溢
+        let budget = width.saturating_sub(indent + 1);
         out.push(Line::from(vec![
             Span::styled(" ".repeat(indent), Style::default()),
             Span::styled(
@@ -52,22 +100,69 @@ pub(super) fn render_code(
         ]));
     }
 
-    for line in highlight(lang, body, bg) {
-        let mut spans = vec![Span::styled(" ".repeat(indent + 1), bg)];
-        spans.extend(grid::clip_spans(&line, budget));
-        out.push(Line::from(spans));
-    }
+    out.extend(body_lines(lang, body, indent, width, bg));
     out
+}
+
+/// 正文行：命中缓存则克隆，否则着色 + 折行后落库。
+///
+/// 徽章与正文分开缓存：徽章只含语言名，重算代价可忽略；正文才是词法
+/// 分析的成本所在。
+fn body_lines(
+    lang: &str,
+    body: &str,
+    indent: usize,
+    width: usize,
+    base: Style,
+) -> Vec<Line<'static>> {
+    let token = match lang::detect(lang) {
+        Some(found) => found.token,
+        None => "",
+    };
+    let ck = CodeKey {
+        text_hash: hash_text(body),
+        token,
+        width,
+        indent,
+        base,
+        depth: ColorDepth::current() as u8,
+        mode: ThemeMode::current() as u8,
+    };
+    CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        match cache.fetch(ck) {
+            Some(lines) => lines,
+            None => {
+                let lines = build_body(token, body, indent, width, base);
+                cache.store(ck, &lines);
+                lines
+            }
+        }
+    })
+}
+
+/// 未命中路径：词法（lex）→ 样式（token_spans）→ 折行/裁剪（grid）。
+fn build_body(
+    token: &str,
+    body: &str,
+    indent: usize,
+    width: usize,
+    base: Style,
+) -> Vec<Line<'static>> {
+    let budget = width.saturating_sub(indent + 1);
+    highlight(token, body, base)
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(" ".repeat(indent + 1), base)];
+            spans.extend(grid::clip_spans(&line, budget));
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// 逐行分词着色：词法由 lex 层产出（X4-05a），本函数只做作用域 → 设计令牌
 /// 的样式映射（X4-05b）。语言无法识别时 lex 退化为纯文本，绝不放弃整块内容。
-fn highlight(lang: &str, body: &str, base: Style) -> Vec<Vec<Span<'static>>> {
-    // 走探测表：syntect 的 token 查找认不出 `main.py`、`BASH` 这类写法
-    let token = match lang::detect(lang) {
-        Some(found) => found.token,
-        None => lang,
-    };
+fn highlight(token: &str, body: &str, base: Style) -> Vec<Vec<Span<'static>>> {
     lex::lines(token, body)
         .into_iter()
         .map(|row| token_spans(row, base))
@@ -82,6 +177,89 @@ fn token_spans(row: Vec<lex::Token>, base: Style) -> Vec<Span<'static>> {
     row.into_iter()
         .map(|t| Span::styled(t.text, scope_style(&t.scopes, base)))
         .collect()
+}
+
+/// 文本指纹：FxHash 足够（键不跨外部边界，无需抗碰撞）。
+fn hash_text(text: &str) -> u64 {
+    let mut hasher = FxHasher::default();
+    hasher.write(text.as_bytes());
+    hasher.finish()
+}
+
+impl CodeCache {
+    /// 查表：命中则刷新使用刻度并交出克隆，未命中返回 `None`。
+    fn fetch(&mut self, key: CodeKey) -> Option<Vec<Line<'static>>> {
+        self.clock = self.clock.wrapping_add(1);
+        match self.entries.get_mut(&key) {
+            Some(entry) => {
+                entry.tick = self.clock;
+                self.hits += 1;
+                Some(entry.lines.clone())
+            }
+            None => {
+                self.misses += 1;
+                None
+            }
+        }
+    }
+
+    /// 落库并回收超额条目。
+    fn store(&mut self, key: CodeKey, lines: &[Line<'static>]) {
+        self.clock = self.clock.wrapping_add(1);
+        let bytes = line_bytes(lines);
+        if let Some(old) = self.entries.insert(
+            key,
+            CodeEntry {
+                lines: lines.to_vec(),
+                bytes,
+                tick: self.clock,
+            },
+        ) {
+            self.bytes = self.bytes.saturating_sub(old.bytes);
+        }
+        self.bytes += bytes;
+        self.evict(CODE_CACHE_ENTRIES, CODE_CACHE_BYTES);
+    }
+
+    /// 淘汰最久未用条目至双界之内；单条超预算时连同自身淘汰。
+    fn evict(&mut self, max_entries: usize, max_bytes: usize) {
+        while self.entries.len() > max_entries || self.bytes > max_bytes {
+            let victim = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.tick)
+                .map(|(key, _)| *key);
+            match victim.and_then(|key| self.entries.remove(&key)) {
+                Some(entry) => self.bytes = self.bytes.saturating_sub(entry.bytes),
+                None => break,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn reset() {
+    CACHE.with(|cell| *cell.borrow_mut() = CodeCache::default());
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+struct CodeStats {
+    hits: u64,
+    misses: u64,
+    entries: usize,
+}
+
+#[cfg(test)]
+fn stats() -> CodeStats {
+    CACHE.with(|cell| {
+        let cache = cell.borrow();
+        CodeStats {
+            hits: cache.hits,
+            misses: cache.misses,
+            entries: cache.entries.len(),
+        }
+    })
 }
 
 /// scope 栈 → 设计令牌样式。由最具体的作用域向外匹配，未分类作用域向上回退。
@@ -193,175 +371,5 @@ pub(crate) fn last_fenced(text: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn joined(lines: &[Line<'static>]) -> String {
-        lines
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn renders_badge_and_body() {
-        let lines = render_code("rust", "fn main() {}", 0, 60, Style::default());
-        assert_eq!(lines.len(), 2, "徽章行 + 正文行");
-        assert!(joined(&lines).contains("rust"));
-        assert!(joined(&lines).contains("fn main() {}"));
-    }
-
-    #[test]
-    fn omits_badge_without_language() {
-        let lines = render_code("", "plain", 0, 60, Style::default());
-        assert_eq!(lines.len(), 1);
-        assert!(!joined(&lines).contains("  "));
-    }
-
-    #[test]
-    fn unknown_language_degrades_to_plain() {
-        let lines = render_code("no-such-lang-xyz", "some text", 0, 60, Style::default());
-        assert!(joined(&lines).contains("some text"));
-    }
-
-    #[test]
-    fn path_tag_renders_canonical_badge() {
-        let lines = render_code("src/main.py", "x = 1", 0, 60, Style::default());
-        assert!(joined(&lines).contains("python"), "应显示探测后的规范名");
-        assert!(!joined(&lines).contains("main.py"), "徽章不显示原始路径");
-    }
-
-    #[test]
-    fn keyword_is_highlighted() {
-        let lines = render_code("rust", "let x = 1;", 0, 60, Style::default());
-        let colored = lines[1]
-            .spans
-            .iter()
-            .any(|s| s.content.contains("let") && s.style.fg == Some(style::primary()));
-        assert!(colored, "关键字应取主色: {:?}", lines[1]);
-    }
-
-    #[test]
-    fn long_line_is_clipped_with_ellipsis() {
-        let long = "x".repeat(200);
-        let lines = render_code("", &long, 0, 40, Style::default());
-        assert!(joined(&lines).contains('…'), "超长行应横向省略");
-        for line in &lines {
-            assert!(grid::line_w(&line.spans) <= 40, "行宽越界: {line:?}");
-        }
-    }
-
-    #[test]
-    fn keeps_blank_lines() {
-        let lines = render_code("", "a\n\nb", 0, 40, Style::default());
-        assert_eq!(lines.len(), 3);
-    }
-
-    #[test]
-    fn last_fenced_returns_latest_complete_block() {
-        let md = "before\n```rust\nfn a() {}\n```\nmid\n~~~py\nprint(1)\n~~~\n";
-        assert_eq!(last_fenced(md).as_deref(), Some("print(1)"));
-    }
-
-    #[test]
-    fn last_fenced_ignores_unclosed_tail() {
-        let md = "```sh\necho ok\n```\n```sh\necho half\n";
-        assert_eq!(
-            last_fenced(md).as_deref(),
-            Some("echo ok"),
-            "未闭合尾块不参与选取"
-        );
-    }
-
-    #[test]
-    fn last_fenced_accepts_indented_fence() {
-        let md = "   ```\n   x\n   ```\n";
-        assert_eq!(last_fenced(md).as_deref(), Some("   x"));
-    }
-
-    #[test]
-    fn last_fenced_requires_matching_char_and_length() {
-        let md = "````\na\n```\nb\n````\n";
-        assert_eq!(
-            last_fenced(md).as_deref(),
-            Some("a\n```\nb"),
-            "短围栏不能闭合长围栏"
-        );
-    }
-
-    #[test]
-    fn last_fenced_skips_inline_and_empty() {
-        assert_eq!(last_fenced("no code `inline` here"), None);
-        assert_eq!(last_fenced("```\n```\n"), None, "空块不参与选取");
-    }
-
-    /// X4-05b：token 作用域到设计令牌的映射表逐项钉死。
-    #[test]
-    fn scope_categories_map_to_design_tokens() {
-        use ratatui::style::Color;
-        let fg = |name: &str| classify(name, Style::default()).and_then(|s| s.fg);
-        let table: &[(&str, Color)] = &[
-            ("comment.line.double-slash", style::faint()),
-            ("string.quoted.double", style::success()),
-            ("constant.numeric.integer", style::magenta()),
-            ("constant.language.boolean", style::warning()),
-            ("keyword.control.flow", style::primary()),
-            ("storage.type.function", style::primary()),
-            ("entity.name.function", style::cyan()),
-            ("entity.name.type", style::accent()),
-            ("support.function.builtin", style::cyan()),
-            ("support.type.primitive", style::accent()),
-            ("variable.other.readwrite", style::text()),
-            ("punctuation.terminator", style::dim()),
-            ("invalid.illegal", style::danger()),
-        ];
-        for (name, want) in table {
-            assert_eq!(fg(name), Some(*want), "作用域映射漂移: {name}");
-        }
-        // 结构性包裹作用域不表态，否则整块正文会被染成同一色
-        for name in ["source.rust", "meta.block", "markup.heading"] {
-            assert_eq!(classify(name, Style::default()), None, "{name}");
-        }
-        // 关键字加粗、注释斜体：颜色之外还有字形冗余，8 色档下仍可区分
-        let kw = classify("keyword.control", Style::default()).unwrap();
-        assert!(kw.add_modifier.contains(Modifier::BOLD));
-        let cm = classify("comment.line", Style::default()).unwrap();
-        assert!(cm.add_modifier.contains(Modifier::ITALIC));
-    }
-
-    /// X4-05b：八种语言都产出非默认取色的片段，且文本一字不丢。
-    #[test]
-    fn eight_languages_are_colored() {
-        const SAMPLES: &[(&str, &str)] = &[
-            ("rust", "fn main() { let s = \"hi\"; }"),
-            ("python", "def f():\n    return \"hi\""),
-            ("javascript", "const s = \"hi\";"),
-            ("typescript", "const s: string = \"hi\";"),
-            ("go", "var s = \"hi\""),
-            ("c", "char *s = \"hi\";"),
-            ("sh", "echo \"hi\""),
-            ("json", "{\"s\": \"hi\"}"),
-        ];
-        for (tag, body) in SAMPLES {
-            let token = lang::detect(tag).expect("白名单内语言应当可探测").token;
-            let styled: Vec<Vec<Span<'static>>> = lex::lines(token, body)
-                .into_iter()
-                .map(|row| token_spans(row, Style::default()))
-                .collect();
-            assert!(
-                styled
-                    .iter()
-                    .flatten()
-                    .any(|s| { s.style.fg.is_some() && !s.content.trim().is_empty() }),
-                "{tag} 未产出着色片段: {styled:?}"
-            );
-            let joined: String = styled
-                .iter()
-                .map(|row| row.iter().map(|s| s.content.as_ref()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert_eq!(joined, *body, "{tag} 着色改了文本");
-        }
-    }
-}
+#[path = "code_tests.rs"]
+mod tests;
