@@ -422,7 +422,7 @@ mod tests {
         let mut view = ChatView::new();
         let before = view.layout(&app, 80, 30, false);
         let at = app.messages.len() - 1;
-        app.messages[at].content.push_str("\n追加一行以改变块高");
+        app.messages[at].content.push_str("\n\n追加一段以改变块高");
         let after = view.layout(&app, 80, 30, false);
         let text: String = after
             .lines
@@ -430,7 +430,7 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("追加一行以改变块高"), "内容变化应重投影");
+        assert!(text.contains("追加一段以改变块高"), "内容变化应重投影");
         assert!(after.total > before.total, "块高变化应反映到总行数");
     }
 
