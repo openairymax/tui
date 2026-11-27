@@ -159,11 +159,11 @@ mod tests {
 
     /// 二分定位与语义定义（相交块集合的首尾）在含零高块的样本上逐例一致。
     fn by_definition(idx: &Index, w0: usize, w1: usize) -> (usize, usize) {
-        let mut hits = (0..idx.len()).filter(|&i| {
-            idx.start(i) < w1 && idx.start(i) + idx.spans()[i] as usize > w0
-        });
-        match (hits.next(), hits.last()) {
-            (Some(first), Some(last)) => (first, last + 1),
+        let hits: Vec<usize> = (0..idx.len())
+            .filter(|&i| idx.start(i) < w1 && idx.start(i) + idx.spans()[i] as usize > w0)
+            .collect();
+        match (hits.first(), hits.last()) {
+            (Some(first), Some(last)) => (*first, last + 1),
             _ => (idx.len(), idx.len()),
         }
     }
