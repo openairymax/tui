@@ -21,6 +21,7 @@ mod observe;
 mod panels;
 mod perf;
 mod progress;
+mod rich;
 mod sample;
 mod scroll;
 mod selfhost;
