@@ -19,8 +19,8 @@
 //   - X2-06a：`BufferedBackend` 可实例化；
 //   - X2-06b：`draw` 期把单元格 diff 编码进 `Vec<u8>`，可产出字节用例。
 // 游程合并（X2-07）、样式游程与最短 SGR（X2-08/X2-09）、三流合一的
-// 帧编码器（X2-10）、分片与同步块（X2-11/X2-13/X2-14）、单批写出与
-// 失败回退（X2-12/X2-15）均在本文件与 frame_io 落位；编码策略与写出
+// 帧编码器（X2-10）在本文件；分片与同步块的纯计算在 frame_io；单批写出
+// 与失败回退（X2-11/X2-12/X2-14/X2-15）在 backend_write。编码策略与写出
 // 策略分离，后续卡只换内部实现，不动 Backend 接口。
 //
 // 接线（X2-12a）：entry 的终端构造已换成
@@ -40,8 +40,11 @@ use ratatui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr;
 
 use super::backend_sgr::{color_param, mod_params};
-use super::frame_io::{self, SYNC_OFF};
-use crate::budget::MAX_RENDER_WRITE_CHARS;
+use super::frame_io::SYNC_OFF;
+
+/// 写出策略子模块：与编码器共用私有字段，单独成文以控制单体行数。
+#[path = "backend_write.rs"]
+mod write;
 
 /// 连续写失败达此数即回退逐格写（X2-15a）。
 const FAIL_LIMIT: u8 = 3;
@@ -360,53 +363,6 @@ impl<W: Write> Backend for BufferedBackend<W> {
                 Err(e)
             }
         }
-    }
-}
-
-impl<W: Write> BufferedBackend<W> {
-    /// 整帧批次：切分（X2-11a/b）后按片上同步块（X2-14a），一次写出。
-    fn write_batch(&mut self) -> io::Result<()> {
-        let parts = frame_io::split(&self.out, MAX_RENDER_WRITE_CHARS);
-        let batch = frame_io::wrap(&self.out, &parts, self.sync);
-        self.writer.write_all(&batch)?;
-        self.writer.flush()?;
-        self.writes += 1;
-        Ok(())
-    }
-
-    /// 逐格回退（X2-15b）：按编码时的单元格边界逐段写出，段间不合并。
-    ///
-    /// 单元格标记只记录单元格起点，首个标记之前（如清屏）与末个标记之后
-    /// 的字节同样必须写出，故按「前缀 + 各格 + 尾段」遍历，空标记则整帧
-    /// 一段。任何一段失败即返回，剩余内容留给下一次重试。
-    fn write_cells(&mut self) -> io::Result<()> {
-        let len = self.out.len();
-        let mut start = 0;
-        for i in 0..self.marks.len() {
-            let end = self.marks[i];
-            if end > start && end <= len {
-                self.write_chunk(start, end)?;
-                start = end;
-            }
-        }
-        self.write_chunk(start, len)?;
-        self.writer.flush()
-    }
-
-    /// 写出 `out[start..end]` 一段，同步开启时自包一对 `h/l`。
-    fn write_chunk(&mut self, start: usize, end: usize) -> io::Result<()> {
-        if start >= end || end > self.out.len() {
-            return Ok(());
-        }
-        if self.sync {
-            self.writer.write_all(frame_io::SYNC_ON)?;
-        }
-        self.writer.write_all(&self.out[start..end])?;
-        if self.sync {
-            self.writer.write_all(SYNC_OFF)?;
-        }
-        self.writes += 1;
-        Ok(())
     }
 }
 
