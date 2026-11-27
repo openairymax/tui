@@ -85,7 +85,8 @@ pub(crate) fn lines(token: &str, body: &str) -> Vec<Vec<Token>> {
 mod tests {
     use super::*;
 
-    /// 八种语言的样本：都含字符串字面量，便于断言「确实分出了 string 作用域」。
+    /// 八种语言的样本：围栏标注 + 含字符串字面量的正文。token 先经
+    /// markdown::lang 探测归一——这正是生产路径，用例不得绕过探测层。
     const SAMPLES: &[(&str, &str)] = &[
         ("rust", "fn main() { let s = \"hi\"; }"),
         ("python", "def f():\n    return \"hi\""),
@@ -99,21 +100,24 @@ mod tests {
 
     #[test]
     fn eight_languages_lex_without_loss() {
-        for (token, body) in SAMPLES {
-            let rows = lines(token, body);
+        for (tag, body) in SAMPLES {
+            let Some(found) = crate::markdown::lang::detect(tag) else {
+                panic!("未探测到语言: {tag}");
+            };
+            let rows = lines(found.token, body);
             let rows_n = body.split('\n').count();
-            assert_eq!(rows.len(), rows_n, "行数不一致: {token}");
+            assert_eq!(rows.len(), rows_n, "行数不一致: {tag}");
             let joined = rows
                 .iter()
                 .map(|r| r.iter().map(|t| t.text.as_str()).collect::<String>())
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert_eq!(joined, *body, "token 文本必须无损: {token}");
+            assert_eq!(joined, *body, "token 文本必须无损: {tag}");
             let has_string = rows
                 .iter()
                 .flatten()
                 .any(|t| t.scopes.iter().any(|s| s.starts_with("string")));
-            assert!(has_string, "未分出字符串作用域: {token}");
+            assert!(has_string, "未分出字符串作用域: {tag}");
         }
     }
 
