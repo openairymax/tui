@@ -357,4 +357,23 @@ mod tests {
         assert_eq!(got[1].mark(), Mark::Completed, "步骤 done 折为 completed");
         assert_eq!(got[2].mark(), Mark::Completed, "工具 ok 折为 completed");
     }
+
+    /// X6-01b：八态配色表全量可达。色间可辨与对比度不在此断言——CI 无
+    /// TERM 时色深为 Basic，多态会坍缩到同一 ANSI 档；可辨性归 X7-02b
+    /// （对比度）与 X7-03b（8 色 + 符号）按色深另行裁决。
+    #[test]
+    fn eight_marks_map_to_theme_colors() {
+        for m in [
+            Mark::Submitted,
+            Mark::Planned,
+            Mark::Executing,
+            Mark::Paused,
+            Mark::Completed,
+            Mark::Failed,
+            Mark::Cancelled,
+            Mark::Unverified,
+        ] {
+            let _ = m.color();
+        }
+    }
 }
