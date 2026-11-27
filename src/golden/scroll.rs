@@ -37,13 +37,14 @@ fn wheel_modifiers_change_granularity() {
     assert_eq!(fx.app.wheel_lines(false, false), 3);
 }
 
-/// §6.3 #2：默认不捕获鼠标，保留终端原生文本选择能力。
+/// X5（0.1.21）：鼠标默认捕获（点击/拖选/滚轮可用），Ctrl+M 可关闭以
+/// 回归终端原生文本选择。
 #[test]
-fn mouse_capture_defaults_off() {
+fn mouse_capture_defaults_on() {
     let mut fx = Fixture::new("scroll-mouse");
-    assert!(!fx.app.mouse_capture);
-    assert!(fx.app.toggle_mouse_capture());
+    assert!(fx.app.mouse_capture);
     assert!(!fx.app.toggle_mouse_capture());
+    assert!(fx.app.toggle_mouse_capture());
 }
 
 /// §6.3 #2：滚轮滚动与翻页键结果一致（同一控制面）。

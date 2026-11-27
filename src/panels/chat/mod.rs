@@ -58,9 +58,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     app.chat_scroll_max = frame.total.saturating_sub(viewport) as u16;
     app.follow_observe(frame.total, body_w);
 
-    // 0.1.21 X5-10b：拖选需要「屏幕上这段字是什么」的同一份事实。在把
-    // 行交给 Paragraph 前做纯文本快照，与落格几何同帧回写；只在鼠标
-    // 捕获开启（拖选前提）时物化，关闭捕获的用户零额外分配。
+    // 链接落格（X5-11b/12a）：鼠标点击与键盘 Alt+L 共用同一份可见行事实，
+    // 不依赖捕获开关；按可见行现扫，`Span` 自带 URL 所有权，不借本帧缓冲。
+    app.link_rows = frame
+        .lines
+        .iter()
+        .enumerate()
+        .flat_map(|(row, line)| {
+            let text = line_text(line);
+            crate::engine::url::scan(&text)
+                .into_iter()
+                .map(move |span| (row as u16, span))
+        })
+        .collect();
+    // 0.1.21 X5-10b：拖选需要「屏幕上这段字是什么」的同一份事实。只在鼠标
+    // 捕获开启（拖选前提）时物化整屏纯文本，关闭捕获的用户零额外分配。
     if app.mouse_capture {
         app.sel_lines = frame.lines.iter().map(line_text).collect();
         app.sel_area = Some(crate::engine::hit::Area::new(
@@ -69,23 +81,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             body_w,
             area.height,
         ));
-        // 链接落格（X5-11b）：与拖选共用同一份可见行文本，列位天然一致。
-        let rows: Vec<(u16, crate::engine::url::Span)> = app
-            .sel_lines
-            .iter()
-            .enumerate()
-            .flat_map(|(row, text)| {
-                crate::engine::url::scan(text)
-                    .into_iter()
-                    .map(move |span| (row as u16, span))
-            })
-            .collect();
-        app.link_rows = rows;
         app.card_rows = std::mem::take(&mut frame.cards);
     } else {
         app.sel_lines.clear();
         app.sel_area = None;
-        app.link_rows.clear();
         app.card_rows.clear();
     }
 

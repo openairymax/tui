@@ -104,16 +104,16 @@ fn x5_anchor_holds_viewport_on_new_lines() {
     assert_eq!(app.scroll_offset, 0, "钉底时保持跟随最新");
 }
 
-/// B11（0.1.18）V11.1：鼠标捕获默认关（保终端原生文本选择）；Ctrl+M
-/// 翻转状态，run_app 循环头据差分发送终端序列。
+/// X5（0.1.21）：鼠标为一等公民，捕获默认开；Ctrl+M 翻转状态，run_app
+/// 循环头据差分发送终端序列，关闭后回归终端原生文本选择。
 #[test]
 fn b11_toggle_mouse_capture_flips_state() {
     let _h = crate::test_env::Home::new("b11-mouse-toggle");
     let mut app = App::new("agents/main.agent.yaml");
-    assert!(!app.mouse_capture, "默认关");
-    assert!(app.toggle_mouse_capture());
-    assert!(app.mouse_capture);
+    assert!(app.mouse_capture, "默认开");
     assert!(!app.toggle_mouse_capture());
+    assert!(!app.mouse_capture);
+    assert!(app.toggle_mouse_capture());
 }
 
 /// B11（0.1.18）Alt+F 焦点视图：快照最近一条回复进入全屏只读视图；
@@ -288,5 +288,35 @@ fn toasts_stay_bounded_and_expire() {
         std::time::Instant::now() + std::time::Duration::from_millis(crate::budget::TOAST_TTL_MS);
     assert!(app.toast_expire(deadline), "到期须报告变化以补帧");
     assert_eq!(app.toasts().len(), 0);
+}
+
+/// X5-12b（P4 出口判据）：关闭鼠标捕获后，键盘仍覆盖点击动作的全部
+/// 语义——半页滚动、无链接提示、无审批时的决议反馈都可达，不存在
+/// 「只有鼠标能做」的操作。
+#[test]
+fn x5_keyboard_paths_work_without_mouse() {
+    use crate::engine::action::Action;
+
+    let _h = crate::test_env::Home::new("x5-keyboard-only");
+    let mut app = App::new("agents/main.agent.yaml");
+    assert!(!app.toggle_mouse_capture(), "捕获已关闭，仅键盘操作");
+    app.chat_scroll_max = 40;
+    app.page_step = 10;
+    app.apply_action(Action::HalfUp);
+    assert_eq!(app.scroll_offset, 5, "Alt+U 半页上滚");
+    app.apply_action(Action::HalfDown);
+    assert_eq!(app.scroll_offset, 0, "Alt+D 半页下滚");
+
+    app.link_rows.clear();
+    app.apply_action(Action::OpenLink);
+    assert_eq!(app.toasts().len(), 1, "无链接时给出可达反馈而非静默");
+
+    app.apply_action(Action::Allow);
+    assert!(
+        app.messages
+            .back()
+            .is_some_and(|m| m.content.contains("没有待决议")),
+        "无审批时键盘决议也有明确反馈"
+    );
 }
 

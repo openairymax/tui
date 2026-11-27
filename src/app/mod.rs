@@ -108,9 +108,9 @@ pub struct App {
     last_total: usize,
     /// 上次观测的对话正文宽度：宽度变化即重排，净差值不可信。
     last_width: u16,
-    /// 鼠标滚轮捕获开关（0.1.18 B11/W14）：默认关（不牺牲终端原生文本
-    /// 选择）；Ctrl+M 会话级切换。开启后滚轮滚动对话（Shift 加速 /
-    /// Ctrl 细粒度），关闭即还原捕获（V11.1）。
+    /// 鼠标滚轮捕获开关（0.1.21 X5）：默认开（鼠标为一等公民：点击、
+    /// 拖选、滚轮可用）；Ctrl+M 会话级切换，关闭即回归终端原生文本
+    /// 选择；终端序列与 alt-screen 同生命周期（V11.1）。
     pub mouse_capture: bool,
     /// 键位模式（0.1.21 X5-03）：vi/emacs 只映射视口导航，编辑键不随模式
     /// 变化；启动期由 AIRY_TUI_KEYMAP 裁定，运行期 Alt+K 切换。
@@ -474,7 +474,9 @@ impl App {
             follow_at_ms: 0,
             last_total: 0,
             last_width: 0,
-            mouse_capture: false,
+            // 鼠标为一等公民（0.1.21 C8/IS-16）：点击、拖选、滚轮默认可用；
+            // Ctrl+M 随时关闭以换回终端原生选择，终端序列与 alt-screen 同生命周期。
+            mouse_capture: true,
             keymap: crate::engine::keymap::Mode::from_env(),
             focus_ring: crate::engine::focus::Focus::new(),
             shell: crate::engine::hit::Shell::default(),

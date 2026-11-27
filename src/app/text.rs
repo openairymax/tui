@@ -57,9 +57,11 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  Alt+F       - 焦点视图（全屏只读查看最近一条回复，Esc 返回）".to_string(),
         "  Alt+S       - 自托管专页（/selfhost 等价：模型/后端/显存/并发/队列/失败率）"
             .to_string(),
-        "  Alt+O       - 展开/折叠长系统消息".to_string(),
-        "  Ctrl+M      - 鼠标滚轮捕获开关（默认关保终端文本选择；开：滚轮滚动对话，".to_string(),
-        "                Shift 翻页 / Ctrl 单行）".to_string(),
+        "  Alt+O       - 展开/折叠长系统消息与工具卡（点击单张卡只翻该卡）".to_string(),
+        "  Alt+L       - 打开正文可见区第一个链接（点击链接的键盘等价物）".to_string(),
+        "  Ctrl+M      - 鼠标捕获开关（默认开：点击/拖选/滚轮可用；关：回归终端文本选择）"
+            .to_string(),
+        "                鼠标滚轮 Shift 翻页 / Ctrl 单行".to_string(),
         "  Alt+K       - 键位模式切换（vi/emacs；vi 下 Tab 聚焦正文后 j/k/g/G 导航，".to_string(),
         "                Ctrl+D/U 半页；AIRY_TUI_KEYMAP 可设启动默认）".to_string(),
         "  Enter       - 发送消息".to_string(),

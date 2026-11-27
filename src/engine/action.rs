@@ -28,6 +28,8 @@ pub(crate) enum Action {
     MouseToggle,
     /// vi/emacs 键位模式互切（X5-03b）。
     KeymapToggle,
+    /// 打开视口内首个链接（X5-12a）：鼠标点击开链的键盘等价物。
+    OpenLink,
 }
 
 /// 动作生效条件。
@@ -58,6 +60,7 @@ pub(crate) const CHORDS: &[(KeyCode, KeyModifiers, Need, Action)] = &[
     (KeyCode::Char('d'), KeyModifiers::ALT, Need::Any, Action::HalfDown),
     (KeyCode::Char('m'), KeyModifiers::CONTROL, Need::Any, Action::MouseToggle),
     (KeyCode::Char('k'), KeyModifiers::ALT, Need::Any, Action::KeymapToggle),
+    (KeyCode::Char('l'), KeyModifiers::ALT, Need::Any, Action::OpenLink),
 ];
 
 fn norm(key: &KeyEvent) -> (KeyCode, KeyModifiers) {
@@ -188,6 +191,29 @@ mod tests {
             key_action(&ev(KeyCode::Char('k'), KeyModifiers::ALT), ctx(false)),
             Some(Action::KeymapToggle)
         );
+        assert_eq!(
+            key_action(&ev(KeyCode::Char('L'), KeyModifiers::ALT), ctx(false)),
+            Some(Action::OpenLink)
+        );
+    }
+
+    /// X5-12a：鼠标动作的键盘等价物可在同一动作表中枚举——审批三项、
+    /// 半页滚动、捕获开关、链接打开都有对应的和弦。
+    #[test]
+    fn mouse_actions_have_keyboard_equivalents() {
+        let ctx = ctx(true);
+        let acts = [
+            (KeyCode::Char('y'), KeyModifiers::NONE, Action::Allow),
+            (KeyCode::Char('a'), KeyModifiers::NONE, Action::AllowAlways),
+            (KeyCode::Char('n'), KeyModifiers::NONE, Action::Deny),
+            (KeyCode::Char('u'), KeyModifiers::ALT, Action::HalfUp),
+            (KeyCode::Char('d'), KeyModifiers::ALT, Action::HalfDown),
+            (KeyCode::Char('m'), KeyModifiers::CONTROL, Action::MouseToggle),
+            (KeyCode::Char('l'), KeyModifiers::ALT, Action::OpenLink),
+        ];
+        for (code, mods, want) in acts {
+            assert_eq!(key_action(&ev(code, mods), ctx), Some(want), "{code:?}");
+        }
     }
 
     #[test]

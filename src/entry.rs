@@ -470,7 +470,10 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
     // 0.1.18 B11（V11.1）：鼠标捕获终端序列的唯一执行点。Ctrl+M 只翻转
     // app.mouse_capture 状态，循环头检测到与当前终端态不一致时才发送
     // Enable/DisableMouseCapture——状态与序列不散落（SSoT）。
-    let mut mouse_on = app.mouse_capture;
+    //
+    // 终端进入 alt-screen 时尚未捕获，故起点恒为 false（不是 app 默认值）：
+    // 默认开启时首轮循环立即补发 EnableMouseCapture，关闭时不发。
+    let mut mouse_on = false;
 
     loop {
         // N-1：TERM/HUP 到达即收敛退出；终端还原由 run_tui 返回后的 RAII 守卫

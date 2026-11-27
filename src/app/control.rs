@@ -382,6 +382,26 @@ impl App {
                 log::info!("Mouse capture: {}", if on { "ON" } else { "OFF" });
             }
             Action::KeymapToggle => self.toggle_keymap(),
+            Action::OpenLink => self.open_first_link(),
+        }
+    }
+
+    /// 打开视口内首个链接（X5-12a）：与鼠标点击同一落地（`engine::url`），
+    /// 只取当前可见行里最靠上的一条；无链接时给出提示而非静默。
+    pub(crate) fn open_first_link(&mut self) {
+        let Some(url) = self.link_rows.first().map(|(_, s)| s.url.clone()) else {
+            self.toast("当前视口没有链接");
+            return;
+        };
+        match crate::engine::url::open(&url) {
+            Ok(()) => {
+                log::info!("Open link: {url}");
+                self.toast("已在浏览器打开");
+            }
+            Err(e) => {
+                log::warn!("open link failed: {e}");
+                self.toast("无法打开链接");
+            }
         }
     }
 
@@ -470,8 +490,8 @@ impl App {
     }
 
     /// 鼠标滚轮捕获会话级切换（Ctrl+M）：返回切换后的状态，调用方据此
-    /// 执行 Enable/DisableMouseCapture 终端序列。默认关（不牺牲终端
-    /// 原生文本选择，V11.1）。
+    /// 执行 Enable/DisableMouseCapture 终端序列。默认开（鼠标一等公民），
+    /// 关闭后终端原生文本选择回归，键盘路径不受影响。
     pub fn toggle_mouse_capture(&mut self) -> bool {
         self.mouse_capture = !self.mouse_capture;
         self.mouse_capture
