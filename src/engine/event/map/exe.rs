@@ -9,6 +9,8 @@
 //   catalog         data.available/tools            可用工具数与目录；
 //   tool_start      data.tool/tool_id/args_preview  调用开始，参数据服务端原样；
 //   tool_end        data.tool_id/status/result_hash 成败与结果摘录；
+//   step            data.task_id/step_index/step_count/step_status/step
+//                                                   计划步骤（时间线依赖骨架）；
 //   subagent_start  data.sub_id/goal/depth/budget   子任务委派开始；
 //   subagent_end    data.sub_id/status/tokens       子任务收尾。
 //
@@ -33,7 +35,7 @@ use super::{at, field};
 pub(crate) fn known(kind: &str) -> bool {
     matches!(
         kind,
-        "catalog" | "tool_start" | "tool_end" | "subagent_start" | "subagent_end"
+        "catalog" | "tool_start" | "tool_end" | "step" | "subagent_start" | "subagent_end"
     )
 }
 
@@ -43,6 +45,7 @@ pub(crate) fn read(kind: &str, p: &Value) -> Option<Execution> {
         "catalog" => Some(Execution::Tools { count: count(p) }),
         "tool_start" => call(p),
         "tool_end" => result(p),
+        "step" => step(p),
         "subagent_start" => sub_start(p),
         "subagent_end" => sub_end(p),
         _ => None,
@@ -74,6 +77,20 @@ fn result(p: &Value) -> Option<Execution> {
         id: field(p, "tool_id").unwrap_or_default(),
         ok,
         text: field(p, "result_hash").unwrap_or_default(),
+    })
+}
+
+/// 计划步骤：缺步序的帧无法定位与排序，丢帧；标题缺失只留空标题。
+///
+/// 步序/总数是服务端给的数值，越界或缺失总数按 0 收下——渲染层据此决定
+/// 是否显示「N/M」，不在这里替服务端补数。
+fn step(p: &Value) -> Option<Execution> {
+    Some(Execution::Step {
+        task: field(p, "task_id").unwrap_or_default(),
+        index: at(p, "step_index").and_then(Value::as_u64)? as usize,
+        total: at(p, "step_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+        status: field(p, "step_status").unwrap_or_default(),
+        title: field(p, "step").unwrap_or_default(),
     })
 }
 
@@ -221,6 +238,36 @@ mod tests {
                 text: "agent_error".into(),
             })
         );
+    }
+
+    /// 计划步骤：步序缺失即丢帧（无法定位），标题缺失留空；其余字段原样。
+    #[test]
+    fn step_needs_index() {
+        assert!(known("step"));
+        assert_eq!(
+            read(
+                "step",
+                &json!({"data": {"task_id": "t1", "step_index": 1, "step_count": 3, "step_status": "planned", "step": "生成报告"}})
+            ),
+            Some(Execution::Step {
+                task: "t1".into(),
+                index: 1,
+                total: 3,
+                status: "planned".into(),
+                title: "生成报告".into(),
+            })
+        );
+        assert_eq!(
+            read("step", &json!({"data": {"task_id": "t1", "step_index": 0}})),
+            Some(Execution::Step {
+                task: "t1".into(),
+                index: 0,
+                total: 0,
+                status: String::new(),
+                title: String::new(),
+            })
+        );
+        assert_eq!(read("step", &json!({"data": {"task_id": "t1"}})), None);
     }
 
     /// 其他域的类型不越界收下。

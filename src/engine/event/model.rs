@@ -135,6 +135,18 @@ pub(crate) enum Cognition {
 pub(crate) enum Execution {
     /// 工具目录（可用工具数量与名称由后续映射补齐）。
     Tools { count: usize },
+    /// 计划步骤（计划确认后逐条下发）：任务号 + 步序 + 总数 + 状态 + 标题。
+    ///
+    /// 步骤先于工具调用到达，是时间线的依赖骨架（X6-01a）。步序由服务端
+    /// 给出（0 基），同一歩的后续状态帧原地推进；映射层不解释状态机，
+    /// `status` 原样交给投影与呈现层。
+    Step {
+        task: String,
+        index: usize,
+        total: usize,
+        status: String,
+        title: String,
+    },
     /// 工具调用开始。
     Call {
         id: String,
@@ -271,6 +283,13 @@ mod tests {
 
         let exe = [
             Execution::Tools { count: 12 },
+            Execution::Step {
+                task: "t1".into(),
+                index: 0,
+                total: 3,
+                status: "planned".into(),
+                title: "读取依赖".into(),
+            },
             Execution::Result {
                 id: "c1".into(),
                 ok: true,

@@ -90,6 +90,8 @@ impl Tools {
                 true
             }
             Execution::Result { id, ok, text } => self.close(ev, id, *ok, text),
+            // 计划步骤归步骤表（X6-01a）：工具表只认调用与结果。
+            Execution::Step { .. } => false,
         }
     }
 
