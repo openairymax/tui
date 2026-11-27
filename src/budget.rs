@@ -158,6 +158,9 @@ pub(crate) const MEM_HIT_CLIP_CHARS: usize = 160;
 pub(crate) const IDLE_WAIT_MS: u64 = 250;
 /// 单帧时间预算（μs）：超限置降级态（engine/sched）。
 pub(crate) const FRAME_BUDGET_US: u64 = 8_000;
+/// 长历史稳态帧 p95 上限（μs，X2-27b / §23.9 #10）：5k 行量级历史下
+/// 逐帧绘制耗时的统计上界，高于单帧即时预算以容纳偶发尖峰。
+pub(crate) const FRAME_P95_BUDGET_US: u64 = 16_000;
 /// 待办帧队列上限（engine/sched 背压）。
 pub(crate) const FRAME_QUEUE_CAP: usize = 64;
 /// 帧率上限（engine/sched，`AIRY_TUI_MAX_FPS` 收敛上界）。
@@ -206,6 +209,7 @@ const _: () = {
     assert!(DEGRADED_BANNER_COOLDOWN_MS > 0);
     assert!(IDLE_WAIT_MS > 0);
     assert!(FRAME_BUDGET_US > 0);
+    assert!(FRAME_P95_BUDGET_US >= FRAME_BUDGET_US);
     assert!(FRAME_QUEUE_CAP > 0);
     assert!(MAX_FPS > 0);
     assert!(COMPOSE_CACHE_ENTRIES > 0);

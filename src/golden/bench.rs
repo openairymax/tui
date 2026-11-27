@@ -14,7 +14,7 @@
 use super::{add, Fixture, H, W};
 use crate::app::App;
 use crate::app::MessageRole;
-use crate::budget::MAX_CHAT_MESSAGES;
+use crate::budget::{FRAME_P95_BUDGET_US, MAX_CHAT_MESSAGES};
 use std::time::Instant;
 
 /// 历史行量级下限：基准必须覆盖的真实历史规模。
@@ -77,4 +77,19 @@ fn bench_history_is_replayable() {
     let two = samples(&mut fx, 3);
     assert_eq!(one.len(), 3);
     assert_eq!(two.len(), 3);
+}
+
+/// 判定接线（§23.9 #10）：5k 行历史稳态帧 p95 不超 16ms 预算。
+#[test]
+fn bench_p95_within_budget() {
+    assert_eq!(FRAME_P95_BUDGET_US, 16_000);
+    let mut fx = Fixture::new("x2-27b-p95");
+    long_history(&mut fx.app);
+    let sampled = samples(&mut fx, 60);
+    let p = p95(&sampled);
+    assert!(
+        p <= FRAME_P95_BUDGET_US,
+        "长历史帧 p95 {p}µs 超过预算 {FRAME_P95_BUDGET_US}µs（{} 个样本）",
+        sampled.len()
+    );
 }
