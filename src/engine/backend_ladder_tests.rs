@@ -81,7 +81,9 @@ fn cell_path_recovers_capped_writes() {
     .unwrap();
     let whole = b.frame_bytes().len();
     assert!(whole > 10, "整帧须超过通道上限，{whole} 字节");
-    for _ in 0..2 {
+    // Fused 三次失败 → 降 Batch 并立即重投（仍超限，记 Batch 首次失败）；
+    // Batch 再三次失败 → 降 Cell 并重投成功，故前四次 flush 均失败。
+    for _ in 0..4 {
         assert!(b.flush().is_err());
     }
     assert!(b.flush().is_ok(), "逐格后每段都不超上限");
