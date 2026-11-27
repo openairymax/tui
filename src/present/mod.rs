@@ -42,6 +42,15 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+/// 焦点遮罩入口（X2-22b）：把区域内已有单元格整体降一档。
+///
+/// 全屏视图内同一时刻只有一个区域获焦，获焦浮层打开时由调用方压暗其
+/// 下层，使高对比区域唯一；降亮规则集中在 `overlay::scrim`，此处只做
+/// 模块边界的可见性收敛，不让呈现层各自手写修饰符。
+pub(crate) fn dim(f: &mut Frame, area: Rect) {
+    overlay::scrim(f.buffer_mut(), area);
+}
+
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 

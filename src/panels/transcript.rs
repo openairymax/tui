@@ -111,7 +111,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     );
 
     // 检索框压住滚动位置浮标：同一底部区域出现两个浮层时，获焦者在上。
+    // 焦点遮罩（X2-22b）：检索框获焦即正文降一档，视觉焦点收在浮条上；
+    // 浮条随后绘制并清除底层降亮修饰，保持满对比。
     if app.search.open {
+        crate::present::dim(f, body);
         render_bar(f, body, app);
     } else if let Some(text) = focus_hint(from_top, app.transcript_scroll_max as usize, viewport) {
         render_hint(f, body, &text);
@@ -154,7 +157,11 @@ fn render_bar(f: &mut Frame, body: Rect, app: &App) {
                 }),
             ),
         ]))
-        .style(Style::default().bg(style::surface_2())),
+        .style(
+            Style::default()
+                .bg(style::surface_2())
+                .remove_modifier(Modifier::DIM),
+        ),
         Rect::new(bar.x, bar.y, bar.w, bar.h),
     );
 }

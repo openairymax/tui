@@ -207,3 +207,33 @@ async fn search_bar_fits_narrow_viewport() {
     assert!(s.rows().iter().all(|r| r.chars().count() <= 46));
     assert_has(&s, "1/1 条");
 }
+
+/// X2-22b #1：检索框获焦时正文整屏降一档，浮条自身保持满对比。
+#[tokio::test]
+async fn search_focus_dims_body_but_not_bar() {
+    let mut fx = Fixture::new("transcript-focus-dim");
+    add(&mut fx.app, MessageRole::Agent, "焦点遮罩正文内容");
+    fx.app.toggle_transcript();
+
+    let buf = super::frame_buffer(&mut fx.app, super::W, super::H);
+    assert!(!dim_at(&buf, 0, 1), "无浮层时正文首行不应降亮");
+
+    type_keys(&mut fx, &[key(KeyCode::Char('/'), KeyModifiers::NONE)]).await;
+    let buf = super::frame_buffer(&mut fx.app, super::W, super::H);
+    assert!(dim_at(&buf, 0, 1), "检索框获焦时正文应降一档");
+
+    let y = super::H - 1;
+    let slash = (0..super::W)
+        .find(|&x| buf[(x, y)].symbol() == "/")
+        .expect("浮条应含 / 前缀");
+    assert!(!dim_at(&buf, slash, y), "浮条前缀不得被降亮");
+    assert!(
+        !dim_at(&buf, (slash + 3).min(super::W - 1), y),
+        "浮条文字不得被降亮"
+    );
+}
+
+/// 指定格是否带降亮修饰（焦点遮罩的唯一可观测效应）。
+fn dim_at(buf: &ratatui::buffer::Buffer, x: u16, y: u16) -> bool {
+    buf[(x, y)].modifier.contains(ratatui::style::Modifier::DIM)
+}
