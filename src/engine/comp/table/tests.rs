@@ -55,6 +55,8 @@ fn tri_cols() -> Vec<Column<Row3>> {
     ]
 }
 
+/// 逐行文本快照：按显示宽度推进（宽字符续格是空格占位，逐格拼接会把
+/// 全角文本量成两倍宽，与真实屏幕不符）。
 fn snapshot<T>(tbl: &mut Table<T>, w: u16, h: u16) -> Vec<String> {
     let area = Rect::new(0, 0, w, h);
     let mut buf = Buffer::empty(area);
@@ -62,9 +64,14 @@ fn snapshot<T>(tbl: &mut Table<T>, w: u16, h: u16) -> Vec<String> {
     tbl.render(&mut buf);
     (0..h)
         .map(|y| {
-            (0..w)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
+            let mut line = String::new();
+            let mut x = 0u16;
+            while x < w {
+                let sym = buf[(x, y)].symbol();
+                line.push_str(sym);
+                x += grid::width(sym).max(1) as u16;
+            }
+            line
         })
         .collect()
 }
@@ -203,7 +210,8 @@ fn nav_clamps_and_handles_empty() {
     let mut empty = Table::new(vec![id_col()]);
     empty.set_rows(Vec::new());
     assert_eq!(empty.event(Input::Key(KeyEvent::from(KeyCode::Down))), Act::None);
-    assert_eq!(empty.measure(Size { w: 20, h: 5 }), Size { w: 1, h: 0 });
+    // 空表高度为零；宽度沿用列约束求解（Max(8) 在富余空间下增长到上限）。
+    assert_eq!(empty.measure(Size { w: 20, h: 5 }), Size { w: 8, h: 0 });
 }
 
 /// X3-04b + X3-12a：鼠标点击按落格行反查并回传选中动作。
