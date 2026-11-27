@@ -41,11 +41,11 @@ where
     true
 }
 
-const fn eng_rect(r: Rect) -> overlay::Rect {
+fn eng_rect(r: Rect) -> overlay::Rect {
     overlay::Rect::new(r.x, r.y, r.width, r.height)
 }
 
-const fn term_rect(r: overlay::Rect) -> Rect {
+fn term_rect(r: overlay::Rect) -> Rect {
     Rect::new(r.x, r.y, r.w, r.h)
 }
 
