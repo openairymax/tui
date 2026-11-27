@@ -13,7 +13,7 @@ use crate::style;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::Paragraph,
     Frame,
@@ -49,10 +49,41 @@ fn term_rect(r: overlay::Rect) -> Rect {
     Rect::new(r.x, r.y, r.w, r.h)
 }
 
-/// 遮罩（X2-19a）：把区域内已有单元格整体压暗一档，区域外一格不动。
+/// 近似半透明（X2-19b）：把色号降一档，配合 DIM 让内容退向背景。
+///
+/// 终端没有 alpha 通道，无法真的与背景混合，只能沿色阶近似：真彩色按
+/// 一半亮度收敛；16 色按「亮 → 常 → 灰 → 黑」下移；256 色的亮色档
+/// （8~15）同样下移，16 档以上保留色号——色立方本身已暗，再降会丢失
+/// 前景与错误色的可区分性。`Reset` 跟随终端默认色，保持不动，避免把
+/// 主题底色写死成黑。
+fn shade(c: Color) -> Color {
+    match c {
+        Color::Reset => Color::Reset,
+        Color::Rgb(r, g, b) => Color::Rgb(r / 2, g / 2, b / 2),
+        Color::Indexed(i @ 8..=15) => Color::Indexed(i - 8),
+        Color::Indexed(i) => Color::Indexed(i),
+        Color::LightRed => Color::Red,
+        Color::LightGreen => Color::Green,
+        Color::LightYellow => Color::Yellow,
+        Color::LightBlue => Color::Blue,
+        Color::LightMagenta => Color::Magenta,
+        Color::LightCyan => Color::Cyan,
+        Color::White => Color::Gray,
+        Color::Gray => Color::DarkGray,
+        Color::Black | Color::DarkGray => Color::Black,
+        c @ (Color::Red
+        | Color::Green
+        | Color::Yellow
+        | Color::Blue
+        | Color::Magenta
+        | Color::Cyan) => c,
+    }
+}
+
+/// 遮罩（X2-19a/b）：把区域内已有单元格整体压暗一档，区域外一格不动。
 ///
 /// 终端没有 alpha 通道，跨平台一致的降亮手段是 `Modifier::DIM`（终端按
-/// 自身调色板降亮前景）：不换符号、不换色号，宽字符与颜色语义都保持。
+/// 自身调色板降亮前景）叠加色号降档：不换符号，宽字符与颜色语义保持。
 /// 区域先与缓冲区求交——布局给的是屏幕矩形，缓冲区可能只覆盖局部，
 /// 直接按下标写会越界 panic。
 pub(super) fn scrim(buf: &mut Buffer, area: Rect) {
@@ -61,7 +92,10 @@ pub(super) fn scrim(buf: &mut Buffer, area: Rect) {
     };
     for y in area.y..area.bottom() {
         for x in area.x..area.right() {
-            buf[(x, y)].modifier |= Modifier::DIM;
+            let cell = &mut buf[(x, y)];
+            cell.fg = shade(cell.fg);
+            cell.bg = shade(cell.bg);
+            cell.modifier |= Modifier::DIM;
         }
     }
 }
@@ -397,5 +431,32 @@ mod tests {
         scrim(&mut buf, Rect::new(2, 1, 10, 10));
         assert!(buf[(3, 1)].modifier.contains(Modifier::DIM));
         assert!(!buf[(1, 1)].modifier.contains(Modifier::DIM));
+    }
+
+    /// X2-19b 视觉 golden：遮罩结果落在固定色阶表上，逐格可离线复算。
+    #[test]
+    fn scrim_shading_follows_fixed_tone_ladder() {
+        let cases = [
+            (Color::LightBlue, Color::White, Color::Blue, Color::Gray),
+            (
+                Color::Rgb(200, 100, 50),
+                Color::Indexed(12),
+                Color::Rgb(100, 50, 25),
+                Color::Indexed(4),
+            ),
+            (Color::Reset, Color::Reset, Color::Reset, Color::Reset),
+            (Color::Gray, Color::Black, Color::DarkGray, Color::Black),
+        ];
+        let mut buf = dotted(cases.len() as u16, 1);
+        for (x, (fg, bg, _, _)) in cases.iter().enumerate() {
+            buf[(x as u16, 0)].set_fg(*fg);
+            buf[(x as u16, 0)].set_bg(*bg);
+        }
+        scrim(&mut buf, Rect::new(0, 0, cases.len() as u16, 1));
+        for (x, (_, _, want_fg, want_bg)) in cases.iter().enumerate() {
+            let cell = &buf[(x as u16, 0)];
+            assert_eq!((cell.fg, cell.bg), (*want_fg, *want_bg), "第 {x} 档色阶");
+            assert!(cell.modifier.contains(Modifier::DIM), "第 {x} 档须带 DIM");
+        }
     }
 }
