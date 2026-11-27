@@ -671,4 +671,37 @@ mod tests {
         view.layout(&app, 80, 30, false);
         assert!(view.rendered > first, "上滚应重新投影旧回合");
     }
+
+    /// IS-13：物化只发生在视口（及投影预算）内，离屏历史只留行高摘要。
+    #[test]
+    fn offscreen_blocks_stay_unmaterialized() {
+        let (mut app, _h) = make_app();
+        fill(&mut app, 1200);
+        let mut view = ChatView::new();
+        let budget = crate::budget::MAX_PROJECTED_TURNS as u64;
+        view.layout(&app, 80, 30, false);
+        let first = view.rendered;
+        assert!(first > 0, "首帧应物化可见块");
+        assert!(first <= budget, "首帧物化块数应受投影预算约束: {first}");
+        assert!(
+            first < app.messages.len() as u64 / 4,
+            "离屏历史不得物化: {first} / {}",
+            app.messages.len()
+        );
+        view.layout(&app, 80, 30, false);
+        assert_eq!(view.rendered, first, "同视口不得重复物化");
+        app.scroll_offset = u16::MAX;
+        view.layout(&app, 80, 30, false);
+        assert!(
+            view.rendered - first <= budget,
+            "跳转后新物化块数受预算约束: {}",
+            view.rendered - first
+        );
+        assert!(
+            view.rendered < app.messages.len() as u64 / 4,
+            "累计物化仍应远离全量: {} / {}",
+            view.rendered,
+            app.messages.len()
+        );
+    }
 }
