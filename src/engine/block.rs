@@ -55,23 +55,46 @@ impl Index {
     }
 
     /// 与行窗口 `[w0, w1)` 相交的块下标区间 `[first, end)`；无相交时返回空区间。
+    ///
+    /// 与行高前缀和同构：`starts` 非降，`starts[i] + spans[i]` 也非降（行高
+    /// 非负），两端各一次二分即可定位相交区间。历史长度进入「数千条」后，
+    /// 每帧线性扫块会随历史增长，而可见区间实际只有屏内十几块；二分把这项
+    /// 开销钉在 O(log n)（X2-16a）。
     pub(crate) fn visible(&self, w0: usize, w1: usize) -> (usize, usize) {
-        let mut first = self.len();
-        let mut end = self.len();
-        for idx in 0..self.len() {
-            let start = self.starts[idx];
-            if start >= w1 {
-                break;
-            }
-            if start + self.spans[idx] as usize <= w0 {
-                continue;
-            }
-            if first == self.len() {
-                first = idx;
-            }
-            end = idx + 1;
+        let first = self.first_touching(w0);
+        let end = self.first_at_or_after(w1);
+        if first >= end {
+            return (self.len(), self.len());
         }
         (first, end)
+    }
+
+    /// 第一个终点越过 `w0` 的块（即末行 > w0，与窗口有交）。
+    fn first_touching(&self, w0: usize) -> usize {
+        let (mut lo, mut hi) = (0, self.len());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.starts[mid] + self.spans[mid] as usize <= w0 {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// 第一个起点不早于 `w1` 的块。
+    fn first_at_or_after(&self, w1: usize) -> usize {
+        let (mut lo, mut hi) = (0, self.len());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.starts[mid] < w1 {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
     }
 
     /// 块行高序列（供投影预算按块裁量）。
@@ -132,6 +155,33 @@ mod tests {
     fn zero_height_blocks_do_not_hide() {
         let idx = Index::build([0, 0, 1], 0);
         assert_eq!(idx.visible(0, 1), (2, 3));
+    }
+
+    /// 二分定位与语义定义（相交块集合的首尾）在含零高块的样本上逐例一致。
+    fn by_definition(idx: &Index, w0: usize, w1: usize) -> (usize, usize) {
+        let mut hits = (0..idx.len()).filter(|&i| {
+            idx.start(i) < w1 && idx.start(i) + idx.spans()[i] as usize > w0
+        });
+        match (hits.next(), hits.last()) {
+            (Some(first), Some(last)) => (first, last + 1),
+            _ => (idx.len(), idx.len()),
+        }
+    }
+
+    #[test]
+    fn visible_matches_definition() {
+        let spans: Vec<u32> = (0..200).map(|i| ((i * 7) % 5) as u32).collect();
+        let idx = Index::build(spans, 3);
+        let end = idx.end();
+        for w0 in (0..end + 9).step_by(3) {
+            for w1 in (w0 + 1..end + 13).step_by(7) {
+                assert_eq!(
+                    idx.visible(w0, w1),
+                    by_definition(&idx, w0, w1),
+                    "w0={w0} w1={w1}"
+                );
+            }
+        }
     }
 
     /// 片段截取：两端按窗口裁剪，完全在窗口外时不追加。
