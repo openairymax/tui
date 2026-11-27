@@ -9,6 +9,7 @@
 // 用户目录）+ 离线网关地址（构造期无网络 IO，主循环不参与渲染）。
 
 mod approval;
+mod baseline;
 mod boot;
 mod degrade;
 mod error;
@@ -93,13 +94,19 @@ impl Screen {
 /// 续格被置为空格；若逐格拼接，中文会被拆成「当 前」而令所有子串断言
 /// 失效。这里以符号显示宽度为步长跳读续格，还原用户真正看到的文本。
 pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> Screen {
-    use unicode_width::UnicodeWidthStr;
-
     let mut term = Terminal::new(TestBackend::new(w, h)).expect("测试终端");
     term.draw(|f| crate::present::render(f, app))
         .expect("渲染一帧");
-    let buf = term.backend().buffer();
-    let rows = (0..h)
+    let rows = rows_of(term.backend().buffer(), w, h);
+    Screen { rows }
+}
+
+/// 从帧缓冲提取逐行文本，供 `draw` 与基线采集共用（避免两处各写一份
+/// 宽度推进逻辑而漂移）。
+pub(crate) fn rows_of(buf: &ratatui::buffer::Buffer, w: u16, h: u16) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+
+    (0..h)
         .map(|y| {
             let mut line = String::new();
             let mut x = 0u16;
@@ -110,8 +117,7 @@ pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> Screen {
             }
             line.trim_end().to_string()
         })
-        .collect();
-    Screen { rows }
+        .collect()
 }
 
 /// 追加一条对话消息（走真实 sanitize/截断/记账路径）。
