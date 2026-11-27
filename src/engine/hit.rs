@@ -116,6 +116,9 @@ mod tests {
     #[test]
     fn without_approval_banner_click_falls_to_main() {
         let mut s = shell();
+        // 审批条离场后主区仍覆盖该行（真实布局里主区延伸到底部），
+        // 此时同一点应落到主区，而不是变成死区。
+        s.main = Area::new(0, 0, 80, 30);
         s.approval = None;
         assert_eq!(s.hit(10, 21), Some(Target::Main));
     }
