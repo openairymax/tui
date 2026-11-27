@@ -114,7 +114,29 @@ impl ChatView {
         viewport: usize,
         all: bool,
     ) -> ChatFrame {
-        self.sync(width, app.browse_expanded);
+        self.layout_from(
+            app,
+            width,
+            viewport,
+            all,
+            app.scroll_offset,
+            app.browse_expanded,
+        )
+    }
+
+    /// 指定滚动偏移与展开态的布局（X8-04a）：全量会话视图与对话区共用
+    /// 同一虚拟视图和行高缓存，仅「距底偏移 / 是否展开折叠」由调用方给出。
+    /// 这样 Ctrl+O 回看长会话不会另起一套测量，切换视图也只多一次缓存失效。
+    pub(crate) fn layout_from(
+        &mut self,
+        app: &App,
+        width: usize,
+        viewport: usize,
+        all: bool,
+        scroll: u16,
+        expanded: bool,
+    ) -> ChatFrame {
+        self.sync(width, expanded);
         #[cfg(test)]
         {
             self.reused = 0;
@@ -142,7 +164,7 @@ impl ChatView {
         let total = idx.end() + tail.len();
         // 行级滚动语义：scroll_offset 为「距底部向上滚的行数」，反转为距顶偏移
         let max_offset = total.saturating_sub(viewport);
-        let from_top = max_offset.saturating_sub((app.scroll_offset as usize).min(max_offset));
+        let from_top = max_offset.saturating_sub((scroll as usize).min(max_offset));
         let (w0, w1) = if all {
             (0, total)
         } else {

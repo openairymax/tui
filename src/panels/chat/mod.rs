@@ -169,9 +169,9 @@ pub fn render_focus(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// 滚动位置文案（对话区与焦点视图共用契约）：已到顶显式提示、滚动途中
-/// `末行/总行`、底部安静。
-fn focus_hint(from_top: usize, scroll_max: usize, viewport: usize) -> Option<String> {
+/// 滚动位置文案（对话区、焦点视图与全量会话视图共用契约）：已到顶显式
+/// 提示、滚动途中 `末行/总行`、底部安静。
+pub(super) fn focus_hint(from_top: usize, scroll_max: usize, viewport: usize) -> Option<String> {
     if scroll_max == 0 {
         return None;
     }

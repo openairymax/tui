@@ -43,6 +43,13 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
                 app.exit_task_mode();
             }
         }
+        // Ctrl+O：打开全量会话视图（X8-04a），全屏只读回放整个会话，
+        // 与对话区滚动互不影响；再次 Ctrl+O 或 Esc 返回。
+        KeyCode::Char('o') | KeyCode::Char('O')
+            if key.modifiers.contains(event::KeyModifiers::CONTROL) && !app.wizard.active =>
+        {
+            app.toggle_transcript();
+        }
         // 首次启动向导激活：按键全部交给向导
         // （↑↓ 移动 · 1-3 直达 · Enter 确认/编辑 · Esc 跳过/返回）
         _ if app.wizard.active => {

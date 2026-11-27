@@ -469,6 +469,63 @@ impl App {
         self.focus_scroll = self.focus_scroll.saturating_sub(self.page_step as usize);
     }
 
+    /// 全量会话视图（X8-04a）：Ctrl+O 切换。每次打开都回到最新（底部），
+    /// 关闭后对话区视口原样保留——两条滚动路径互不写对方的偏移。
+    pub fn toggle_transcript(&mut self) {
+        self.transcript_open = !self.transcript_open;
+        if self.transcript_open {
+            self.transcript_scroll = 0;
+        }
+    }
+
+    /// 关闭全量会话视图（Esc / Ctrl+O 再按）。
+    pub fn close_transcript(&mut self) {
+        self.transcript_open = false;
+    }
+
+    /// 全量会话视图上滚一行（钳位到 `transcript_scroll_max`，渲染每帧回写）。
+    pub fn transcript_scroll_up(&mut self) {
+        self.transcript_scroll = (self.transcript_scroll + 1).min(self.transcript_scroll_max);
+    }
+
+    /// 全量会话视图下滚一行，0 封底（最新）。
+    pub fn transcript_scroll_down(&mut self) {
+        self.transcript_scroll = self.transcript_scroll.saturating_sub(1);
+    }
+
+    /// 全量会话视图上翻一页（步长 = 视口高度 SSoT）。
+    pub fn transcript_page_up(&mut self) {
+        self.transcript_scroll =
+            (self.transcript_scroll + self.page_step).min(self.transcript_scroll_max);
+    }
+
+    /// 全量会话视图下翻一页。
+    pub fn transcript_page_down(&mut self) {
+        self.transcript_scroll = self.transcript_scroll.saturating_sub(self.page_step);
+    }
+
+    /// 全量会话视图直达最旧一条。
+    pub fn transcript_top(&mut self) {
+        self.transcript_scroll = self.transcript_scroll_max;
+    }
+
+    /// 全量会话视图直达最新一条。
+    pub fn transcript_bottom(&mut self) {
+        self.transcript_scroll = 0;
+    }
+
+    /// 全量会话视图按行滚动（滚轮步长由控制面给出：默认 3 行、Ctrl 1 行、
+    /// Shift 一页），与键盘滚动共用同一钳位。
+    pub fn transcript_wheel(&mut self, up: bool, lines: u16) {
+        self.transcript_scroll = if up {
+            self.transcript_scroll
+                .saturating_add(lines)
+                .min(self.transcript_scroll_max)
+        } else {
+            self.transcript_scroll.saturating_sub(lines)
+        };
+    }
+
     /// F3 日志面板：向更早方向滚一条（距最新的条目偏移 +1）。
     pub fn logs_scroll_older(&mut self) {
         self.logs_scroll = self.logs_scroll.saturating_add(1);

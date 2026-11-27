@@ -68,6 +68,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    // 全量会话视图（X8-04a）：Ctrl+O 打开后整屏接管，输入面与状态条让行，
+    // 只保留键位提示、正文与滚动位置；关闭即回到原视口。
+    if app.transcript_open {
+        panels::transcript::render(f, area, app);
+        return;
+    }
+
     // 顶部：1 行系统状态条（实时状态，紧凑不占屏；品牌/能力墙在
     // chat 空态欢迎区，避免与系统头重叠——2026-08-23 重设计）
     //

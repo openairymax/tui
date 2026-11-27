@@ -20,3 +20,4 @@ pub mod plugins;
 pub mod selfhost;
 pub mod think;
 pub mod trace;
+pub mod transcript;

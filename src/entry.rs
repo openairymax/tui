@@ -708,14 +708,18 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
                 let ctrl = m.modifiers.contains(event::KeyModifiers::CONTROL);
                 match m.kind {
                     MouseEventKind::ScrollUp => {
-                        if app.active_panel == ActivePanel::Focus {
+                        if app.transcript_open {
+                            app.transcript_wheel(true, app.wheel_lines(shift, ctrl));
+                        } else if app.active_panel == ActivePanel::Focus {
                             app.focus_scroll_up();
                         } else {
                             app.wheel_up(app.wheel_lines(shift, ctrl));
                         }
                     }
                     MouseEventKind::ScrollDown => {
-                        if app.active_panel == ActivePanel::Focus {
+                        if app.transcript_open {
+                            app.transcript_wheel(false, app.wheel_lines(shift, ctrl));
+                        } else if app.active_panel == ActivePanel::Focus {
                             app.focus_scroll_down();
                         } else {
                             app.wheel_down(app.wheel_lines(shift, ctrl));

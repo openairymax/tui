@@ -12,6 +12,7 @@
 
 mod busy;
 mod idle;
+mod transcript;
 mod util;
 
 use anyhow::Result;
@@ -21,6 +22,7 @@ use crate::app::App;
 
 use busy::busy_key;
 use idle::idle_key;
+use transcript::transcript_key;
 
 /// 键位处理出口信号：`Flow::Exit` 表示请求退出 TUI 主循环（F8 切 CLI），
 /// `Flow::SigInt` 表示用户以 Ctrl+C 主动中断，二者退出码不同（§8.2），
@@ -35,6 +37,11 @@ pub(crate) enum Flow {
 /// 两条分支均只改应用状态——等待节拍、结果消费与插入对话推进都归主循环
 /// （0.1.18 §5A.3 W4：等待泵并入统一调度，不再有第二套节拍）。
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> Result<Flow> {
+    // 全量会话视图独占按键面（X8-04a）：Ctrl+C 例外，落回下方分派面
+    // 复用双击退出守卫，避免只读视图里退不出去或一按即退。
+    if app.transcript_open && !is_ctrl_c(&key) {
+        return Ok(transcript_key(app, key));
+    }
     if !app.wizard.active {
         if let Some(flow) = leader_key(app, key) {
             return Ok(flow);
@@ -45,6 +52,12 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> Result<Flow> {
     } else {
         idle_key(app, key).await
     }
+}
+
+/// Ctrl+C 判定：只读视图与输入面共用同一退出守卫，不重复实现。
+fn is_ctrl_c(key: &KeyEvent) -> bool {
+    key.modifiers.contains(event::KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
 }
 
 /// 两段式 leader 拦截（0.1.19 L7 U8，TUI 方案 §5.4 #3 / §6.4 #7）。

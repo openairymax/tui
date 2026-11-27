@@ -116,6 +116,13 @@ pub struct App {
     pub focus_scroll: usize,
     /// 焦点视图可滚总量（总行数 - 视口高度，渲染每帧回写，钳位用）。
     pub focus_scroll_max: usize,
+    /// 全量会话视图（X8-04a，Ctrl+O）：全屏只读回放整个会话。打开期间
+    /// 输入面整段让行，滚动与对话区互不影响（各自持有偏移与可滚总量）。
+    pub transcript_open: bool,
+    /// 全量会话视图滚动偏移（距底部向上滚的行数，0 = 最新）。
+    pub transcript_scroll: u16,
+    /// 全量会话视图可滚总量（渲染每帧回写，钳位用）。
+    pub transcript_scroll_max: u16,
     /// 渲染降级标志（0.1.18 §5A.3 W10）：合成层连续故障（渲染回调 panic /
     /// 后端写失败）时为真，状态条显示降级横幅；成功一帧即自愈转假。由主循环
     /// 每轮从合成层回写——本字段只作呈现，不参与任何判定。
@@ -444,6 +451,9 @@ impl App {
             focus_msg: None,
             focus_scroll: 0,
             focus_scroll_max: 0,
+            transcript_open: false,
+            transcript_scroll: 0,
+            transcript_scroll_max: 0,
             render_degraded: false,
             browse_expanded: false,
             connected: false,

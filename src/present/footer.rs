@@ -72,7 +72,7 @@ pub(super) fn render_shortcuts(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled("  ", Style::default()));
         spans.push(Span::styled("┃", Style::default().fg(style::primary())));
         spans.push(Span::styled(
-            "  控制  Ctrl+X 中止",
+            "  控制  Ctrl+X 中止 · Ctrl+O 全文",
             Style::default().fg(style::faint()),
         ));
     }
