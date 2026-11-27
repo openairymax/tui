@@ -23,6 +23,7 @@
 // 轮询。空壳类型（无消费者的 Node/ViewTree）会同时构成桩实现与
 // dead_code 门禁风险，一律不做。
 
+pub(crate) mod action;
 pub(crate) mod backend;
 pub(crate) mod backend_sgr;
 pub(crate) mod block;
@@ -41,6 +42,7 @@ pub(crate) mod framelog;
 pub(crate) mod grid;
 pub(crate) mod guard;
 pub(crate) mod health;
+pub(crate) mod hit;
 pub(crate) mod ladder;
 pub(crate) mod layout;
 pub(crate) mod leader;

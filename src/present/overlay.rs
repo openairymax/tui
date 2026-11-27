@@ -240,14 +240,53 @@ pub(super) fn render_ime_cands(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// 工具审批提示条：pending 审批时在输入栏上方高亮显示（Claude Code 风格
-/// permission prompt），给出工具、主体与 [a]/[A]/[n] 快捷决议提示。
+/// permission prompt），给出工具、主体与决议快捷提示。
+///
+/// 审批决议标签：渲染与命中测试共用的唯一文案表（X5-11a）。
+const ACT_LABELS: [&str; 3] = ["[y] 允许本次", "[a] 允许本次（总是待支持）", "[n] 拒绝（Esc）"];
+/// 决议段之间的间隔列数。
+const ACT_GAP: u16 = 2;
+
+/// 决议段总宽（显示列）。
+fn act_width() -> u16 {
+    let text: u16 = ACT_LABELS
+        .iter()
+        .map(|l| grid::width(l) as u16)
+        .sum::<u16>();
+    text + ACT_GAP * (ACT_LABELS.len() as u16 - 1)
+}
+
+/// 决议段列区间：横幅第二行右对齐，点击与文字用同一算式对齐。
+pub(crate) fn approval_actions(area: Rect) -> [(Rect, u8); 3] {
+    let mut x = area.x + area.width.saturating_sub(act_width());
+    let mut out = [(Rect::new(0, 0, 0, 0), 0); 3];
+    for (i, label) in ACT_LABELS.iter().enumerate() {
+        let w = grid::width(label) as u16;
+        out[i] = (Rect::new(x, area.y + 1, w, 1), i as u8);
+        x = x.saturating_add(w + ACT_GAP);
+    }
+    out
+}
+
+/// 命中决议段：行须在决议行，列须落在某段标签内（间隙不命中）。
+pub(crate) fn approval_pick(area: Rect, col: u16, row: u16) -> Option<u8> {
+    approval_actions(area)
+        .into_iter()
+        .find(|(r, _)| {
+            row >= r.y && row < r.y.saturating_add(r.height) && col >= r.x && col < r.x + r.width
+        })
+        .map(|(_, i)| i)
+}
+
 pub(super) fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
     let Some(a) = app.approvals.first() else {
         return;
     };
-    // 参数预览单行截断：避免长 JSON 撑满横幅。预算为列，故按显示宽度裁决：
-    // 此前按字符数兑现列预算，全角参数会把右侧 [a]/[A]/[n] 决议提示挤出横幅。
-    let params_preview = grid::clip(&a.params, area.width.saturating_sub(8) as usize);
+    // 参数预览单行截断：决议段固定在行尾，参数预算先扣掉段宽与前后间隔，
+    // 长 JSON 只挤自己，不再把决议提示挤出横幅。
+    let act_w = act_width();
+    let budget = area.width.saturating_sub(act_w + 5) as usize;
+    let params_preview = grid::clip(&a.params, budget);
     let line1 = Line::from(vec![
         Span::styled(
             " ⚠ ",
@@ -298,25 +337,27 @@ pub(super) fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(style::faint()),
         ),
     ]);
+    // 决议段右对齐：段起点与 approval_actions 的算式一致，点击落点即段。
+    let used = (3 + grid::width(&params_preview)) as u16;
+    let pad = area.width.saturating_sub(used + act_w) as usize;
     let line2 = Line::from(vec![
-        Span::raw(format!("   {params_preview}")),
-        Span::raw("  "),
+        Span::raw(format!("   {params_preview}{}", " ".repeat(pad))),
         Span::styled(
-            "[y] 允许本次",
+            ACT_LABELS[0],
             Style::default()
                 .fg(style::success())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
-            "[a] 允许本次（总是待支持）",
+            ACT_LABELS[1],
             Style::default()
                 .fg(style::accent())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
-            "[n] 拒绝（Esc）",
+            ACT_LABELS[2],
             Style::default()
                 .fg(style::danger())
                 .add_modifier(Modifier::BOLD),
@@ -460,3 +501,43 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod act_tests {
+    use super::*;
+
+    #[test]
+    fn action_segments_are_right_aligned_and_disjoint() {
+        let area = Rect::new(0, 10, 100, 2);
+        let acts = approval_actions(area);
+        assert_eq!(acts[2].0.x + acts[2].0.width, 100);
+        for pair in acts.windows(2) {
+            let (a, _) = pair[0];
+            let (b, _) = pair[1];
+            assert!(a.x + a.width < b.x, "决议段不得重叠");
+        }
+    }
+
+    #[test]
+    fn pick_maps_columns_to_same_segment() {
+        let area = Rect::new(0, 10, 100, 2);
+        for (idx, (r, want)) in approval_actions(area).into_iter().enumerate() {
+            assert_eq!(approval_pick(area, r.x, 11), Some(want), "第 {idx} 段起点");
+            assert_eq!(
+                approval_pick(area, r.x + r.width - 1, 11),
+                Some(want),
+                "第 {idx} 段末列"
+            );
+        }
+    }
+
+    #[test]
+    fn title_row_and_gaps_do_not_decide() {
+        let area = Rect::new(0, 10, 100, 2);
+        assert_eq!(approval_pick(area, 99, 10), None);
+        let (first, _) = approval_actions(area)[0];
+        assert_eq!(approval_pick(area, first.x - 1, 11), None);
+        assert_eq!(approval_pick(area, 99, 12), None);
+    }
+}
+

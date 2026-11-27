@@ -17,7 +17,7 @@
 mod footer;
 mod hero;
 mod input;
-mod overlay;
+pub(crate) mod overlay;
 
 use footer::render_shortcuts;
 use hero::{render_hero, render_tab_bar};
@@ -53,6 +53,9 @@ pub(crate) fn dim(f: &mut Frame, area: Rect) {
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    // 命中几何每帧重建（X5-07a）：早退路径（向导/过小/会话视图）不留旧快照，
+    // 否则下一帧的点击会打到已经不存在的分区。
+    app.shell = crate::engine::hit::Shell::default();
 
     // 0.1.8：整屏先铺主题背景。此前各面板仅给自身控件设 bg，chat 正文区
     // 等未显式着色的区域透出**终端默认背景**——终端配色与主题不符时
@@ -193,6 +196,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     render_input_bar(f, main_layout[plan.slots.input], app);
     render_shortcuts(f, main_layout[plan.slots.shortcuts], app);
+    // 落格事实回写（X5-07a）：命中测试读这一份，不另行推算分区。
+    app.shell = crate::engine::hit::Shell {
+        main: cell(main_area),
+        approval: plan
+            .slots
+            .approval
+            .map(|at| cell(main_layout[at])),
+        input: cell(main_layout[plan.slots.input]),
+        shortcuts: cell(main_layout[plan.slots.shortcuts]),
+    };
+}
+
+/// 呈现层矩形 → 命中层矩形（唯一换算式）。
+fn cell(r: Rect) -> crate::engine::hit::Area {
+    crate::engine::hit::Area::new(r.x, r.y, r.width, r.height)
 }
 
 /// 终端过小提示（TUI 方案 §6.9 #1）：布局不崩坏，给出可执行的恢复路径。

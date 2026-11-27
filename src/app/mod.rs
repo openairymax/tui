@@ -114,6 +114,8 @@ pub struct App {
     pub mouse_capture: bool,
     /// 焦点环（0.1.21 X5-01/02）：Tab/Shift-Tab 遍历，逐面板记忆回位。
     pub(crate) focus_ring: crate::engine::focus::Focus,
+    /// 外壳几何快照（0.1.21 X5-07）：渲染每帧回写，命中测试只读同一份事实。
+    pub(crate) shell: crate::engine::hit::Shell,
     /// 焦点视图消息快照（0.1.18 B11/W14）：Alt+F 打开时取最近一条回复
     /// 克隆，渲染与滚动均基于快照，不受后续消息影响；Esc 退出即弃。
     pub focus_msg: Option<ChatMessage>,
@@ -457,6 +459,7 @@ impl App {
             last_width: 0,
             mouse_capture: false,
             focus_ring: crate::engine::focus::Focus::new(),
+            shell: crate::engine::hit::Shell::default(),
             focus_msg: None,
             focus_scroll: 0,
             focus_scroll_max: 0,

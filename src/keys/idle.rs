@@ -17,6 +17,14 @@ use crate::app::{ActivePanel, App, MessageRole};
 
 /// 空闲态按键分派。返回 `Exit` 时调用方立即退出主循环（终端守卫 Drop 还原）。
 pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
+    // 动作表统一入口（X5-08）：审批决议、半页滚动、滚轮捕获，键盘与
+    // 鼠标共用同一落地路径；向导独占键盘，不经过此表。
+    if !app.wizard.active {
+        if let Some(action) = super::util::action_of(app, &key) {
+            app.apply_action(action);
+            return Ok(Flow::Continue);
+        }
+    }
     match key.code {
         KeyCode::Char('c') | KeyCode::Char('C')
             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
@@ -96,10 +104,7 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         KeyCode::Esc if app.ime_visible() => {
             app.ime_cancel();
         }
-        // §6.5 #3：有待审批时 Esc 等同拒绝（fail-closed 语义）
-        KeyCode::Esc if !app.approvals.is_empty() => {
-            app.approve_request("deny");
-        }
+        // 有待审批时 Esc 等同拒绝已上收动作表（X5-08），此处不再重复。
         KeyCode::Esc if app.active_panel != ActivePanel::Chat => {
             debug!("Panel: Esc → return to Chat");
             app.active_panel = ActivePanel::Chat;
@@ -338,14 +343,7 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         {
             app.open_selfhost();
         }
-        // Ctrl+M：鼠标滚轮捕获会话级开关（0.1.18 B11，默认关；
-        // 终端序列由 run_app 循环头的唯一执行点发送）
-        KeyCode::Char('m') | KeyCode::Char('M')
-            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-        {
-            let on = app.toggle_mouse_capture();
-            info!("Mouse capture: {}", if on { "ON" } else { "OFF" });
-        }
+        // Ctrl+M 滚轮捕获开关已上收动作表（X5-08），本处不再保留副本。
         // Alt+O：展开/折叠全部长系统消息（0.1.7 折叠与滚动解耦，
         // 滚动基于稳定折叠视图；B4 起该功能从 Alt+E 迁至 Alt+O）
         KeyCode::Char('o') | KeyCode::Char('O')

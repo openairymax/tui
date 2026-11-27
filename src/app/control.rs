@@ -354,6 +354,36 @@ impl App {
         self.scroll_offset = self.scroll_offset.saturating_sub(self.page_step);
     }
 
+    /// 上半页（X5-09）：步长取当前视口页高的一半，resize 后自动跟随；
+    /// 视口极矮时至少 1 行，避免「按了没反应」。
+    pub fn scroll_half_up(&mut self) {
+        let step = (self.page_step / 2).max(1);
+        self.scroll_offset = (self.scroll_offset + step).min(self.chat_scroll_max);
+    }
+
+    /// 下半页：步长同上。
+    pub fn scroll_half_down(&mut self) {
+        let step = (self.page_step / 2).max(1);
+        self.scroll_offset = self.scroll_offset.saturating_sub(step);
+    }
+
+    /// 统一动作落地（X5-08）：键盘与鼠标解析出同一 `Action` 后只走此处，
+    /// 两侧不存在各自的副作用副本。
+    pub(crate) fn apply_action(&mut self, action: crate::engine::action::Action) {
+        use crate::engine::action::Action;
+        match action {
+            Action::Allow => self.approve_request("allow"),
+            Action::AllowAlways => self.approve_request("always"),
+            Action::Deny => self.approve_request("deny"),
+            Action::HalfUp => self.scroll_half_up(),
+            Action::HalfDown => self.scroll_half_down(),
+            Action::MouseToggle => {
+                let on = self.toggle_mouse_capture();
+                log::info!("Mouse capture: {}", if on { "ON" } else { "OFF" });
+            }
+        }
+    }
+
     /// 视口滚动到顶（Alt+Home）：偏移 = 可滚总量。
     /// Home 无修饰键语义为输入光标行首（readline 惯例，不在此改写）。
     pub fn scroll_top(&mut self) {

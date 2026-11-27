@@ -28,6 +28,21 @@ impl App {
         self.focus_ring.set(Zone::Input);
     }
 
+    /// 聚焦主区（对话正文或面板列表）：点击主区时调用。
+    pub fn focus_main(&mut self) {
+        let zone = if self.active_panel == ActivePanel::Chat {
+            Zone::Conversation
+        } else {
+            Zone::List
+        };
+        self.focus_ring.set(zone);
+    }
+
+    /// 聚焦审批条（点击横幅时调用）。
+    pub(crate) fn focus_approval(&mut self) {
+        self.focus_ring.set(Zone::Approval);
+    }
+
     /// 当前是否聚焦输入栏：Tab 的补全语义只在此成立。
     pub fn focus_is_input(&self) -> bool {
         self.focus_ring.is(Zone::Input)

@@ -22,6 +22,11 @@ use crate::app::{ActivePanel, App};
 /// 本函数不循环、不睡眠、不成帧：等待节拍由 L4 调度器统一给出，在途结果由
 /// 主循环 `poll_pending` 消费，插入对话队列由主循环在请求完成后逐条提交。
 pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
+    // 动作表统一入口（X5-08）：与空闲态同一张表、同一落地路径。
+    if let Some(action) = super::util::action_of(app, &key) {
+        app.apply_action(action);
+        return Ok(Flow::Continue);
+    }
     match key.code {
         // 与空闲态一致：busy（等待回复/任务执行）期间按
         // Ctrl+C 同样退出 TUI，不再被 busy 内层循环吞键；
@@ -49,28 +54,8 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         {
             app.toggle_transcript();
         }
-        // 工具级权限审批（§6.5 #3：y=允许本次 / a=允许本次，会话级总是
-        // 待 CLI 支持 / n=拒绝，Esc 亦为拒绝）。仅当存在待审批请求时生效——
-        // 此前无条件拦截 a/y/n/d/A，busy 期间输入含这些字母的文本会被吞字并
-        // 向对话区插入"没有待决议的权限请求"污染聊天。
-        KeyCode::Char('y')
-            if !app.approvals.is_empty()
-                && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-        {
-            app.approve_request("allow");
-        }
-        KeyCode::Char('a') | KeyCode::Char('A')
-            if !app.approvals.is_empty()
-                && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-        {
-            app.approve_request("always");
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('d') | KeyCode::Char('D')
-            if !app.approvals.is_empty()
-                && !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-        {
-            app.approve_request("deny");
-        }
+        // 工具级权限审批已上收动作表（X5-08）：y/a/n/d/Esc 的语义、
+        // 生效条件与键位冲突自检集中在 engine::action，本处不再保留副本。
         // ── 2.3.13：等待回复（busy）期间 F6/F7 可切换看板/事件流 ──
         // 此前 F 键仅在非 busy 主循环处理，LLM 请求进行中（可能
         // 数十秒）按键落入 _ => {} 被吞，用户感知"看板不可操作"。
@@ -186,27 +171,18 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         {
             app.open_selfhost();
         }
-        // Ctrl+M：鼠标滚轮捕获开关（终端序列由主循环头执行点发送）
-        KeyCode::Char('m') | KeyCode::Char('M')
-            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-        {
-            let on = app.toggle_mouse_capture();
-            info!("Mouse capture: {}", if on { "ON" } else { "OFF" });
-        }
         // Alt+O：展开/折叠长系统消息（B4 从 Alt+E 迁出）
         KeyCode::Char('o') | KeyCode::Char('O')
             if key.modifiers.contains(event::KeyModifiers::ALT) && !app.ime_visible() =>
         {
             app.browse_expanded = !app.browse_expanded;
         }
-        // IME 拼音态：Esc 取消拼音（微信语义）
+        // IME 拼音态：Esc 取消拼音（微信语义）；审批拒绝由动作表处理，
+        // 拼音态下 Esc 归输入法，故此分支先于其它 Esc 语义。
         KeyCode::Esc if app.ime_visible() => {
             app.ime_cancel();
         }
-        // §6.5 #3：审批在场时 Esc 等同拒绝，优先于面板返回
-        KeyCode::Esc if !app.approvals.is_empty() => {
-            app.approve_request("deny");
-        }
+        // 审批在场时 Esc 等同拒绝已上收动作表（X5-08），此处不再重复。
         // 非拼音态 Esc：与空闲态一致返回对话（busy 期间
         // 在只读面板/看板上也能 Esc 退出，不困在面板里）；
         // §6.2 #6：等待期 Esc 同时请求中断，立即呈递「已请求中断…」。

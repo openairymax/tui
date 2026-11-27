@@ -175,6 +175,16 @@ pub async fn run() {
     // 首帧预算的计时基准：进程进入 main 的第一时刻（§6.1 #1）。
     let boot = Boot::mark();
 
+    // 键位表启动自检（X5-05）：同和弦重复绑定会让一侧静默失效，属配置
+    // 缺陷而非运行时错误，故在任何终端副作用之前拒绝启动。
+    if let Err(e) = engine::action::validate() {
+        let code = engine::exit::Code::Internal;
+        engine::exit::record("keymap", code);
+        eprintln!("❌ 键位表冲突：{e}");
+        eprintln!("❌ {}（退出码 {}）", code.human(), code.code());
+        std::process::exit(code.code());
+    }
+
     // 参数解析先于一切门禁：探针必须在 TTY 检查之前裁决——它存在的理由
     // 正是「非 TTY 环境（CI／容器／串口）也要能判定二进制存活」，排在门禁
     // 之后则永远走不到（0.1.20 P2-8）。
@@ -734,10 +744,37 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
                             app.wheel_down(app.wheel_lines(shift, ctrl));
                         }
                     }
+                    // 左键点击（X5-07/11）：命中事实来自上一帧的落格快照，
+                    // 决议点击与键盘 y/a/n 共用动作表落地。
+                    MouseEventKind::Down(event::MouseButton::Left) => {
+                        click(app, m.column, m.row);
+                    }
                     _ => {}
                 }
             }
             _ => {}
         }
+    }
+}
+
+/// 左键点击分派（X5-07/11）：按上一帧落格快照定区，区分内再解析。
+///
+/// 审批条：点中决议段即决议，与键盘 y/a/n 共用动作表；点标题行只聚焦，
+/// 防止误触决定放行。主区只聚焦（对话正文/面板列表），输入栏取回光标。
+fn click(app: &mut App, col: u16, row: u16) {
+    app.sync_focus();
+    match app.shell.hit(col, row) {
+        Some(engine::hit::Target::Approval) => {
+            let area = app.shell.approval.map(|a| Rect::new(a.x, a.y, a.w, a.h));
+            match area.and_then(|r| present::overlay::approval_pick(r, col, row)) {
+                Some(0) => app.apply_action(engine::action::Action::Allow),
+                Some(1) => app.apply_action(engine::action::Action::AllowAlways),
+                Some(_) => app.apply_action(engine::action::Action::Deny),
+                None => app.focus_approval(),
+            }
+        }
+        Some(engine::hit::Target::Input) => app.focus_input(),
+        Some(engine::hit::Target::Main) => app.focus_main(),
+        _ => {}
     }
 }

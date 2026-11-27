@@ -6,6 +6,20 @@
 // 键位分派共用判定：只读面板集合与日志用的安全截断。
 
 use crate::app::ActivePanel;
+use crate::engine::action::{self, Action, Ctx};
+use crossterm::event::KeyEvent;
+
+/// 动作表入口（X5-08）：键盘侧唯一的语义解析点。生效条件从应用状态
+/// 折算，解析与落地分属两个单元，两侧共享同一张表。
+pub(super) fn action_of(app: &crate::app::App, key: &KeyEvent) -> Option<Action> {
+    action::key_action(
+        key,
+        Ctx {
+            approvals: !app.approvals.is_empty(),
+            ime: app.ime_visible(),
+        },
+    )
+}
 
 pub(super) fn truncate_str(s: &str, max: usize) -> &str {
     if s.len() <= max {
