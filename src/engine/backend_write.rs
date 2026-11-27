@@ -16,9 +16,10 @@
 
 use std::io::{self, Write};
 
-use super::frame_io;
-use super::BufferedBackend;
+use crate::engine::frame_io;
 use crate::budget::MAX_RENDER_WRITE_CHARS;
+
+use super::BufferedBackend;
 
 impl<W: Write> BufferedBackend<W> {
     /// 整帧批次：切分（X2-11a/b）后按片上同步块（X2-14a），一次写出。
