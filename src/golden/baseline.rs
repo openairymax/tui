@@ -12,8 +12,9 @@
 // 转为尺寸提示，Ctrl+C 退出路径必须可达；宽度合规保证后续 X2-21 把
 // 40 列做成真实堆叠布局时，同一套判据可以直接复用。
 
-use super::{assert_has, assert_lacks, rows_of, Fixture, H, W};
+use super::{add, assert_has, assert_lacks, rows_of, Fixture, H, W};
 use crate::app::App;
+use crate::app::MessageRole;
 use crate::budget::MIN_TERM_COLS;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -123,4 +124,30 @@ fn baseline_40col_differs_from_wide() {
         "40 列守卫态不应与 100 列常规界面同形"
     );
     assert_has(&fx.draw_at(W, H), "❯");
+}
+
+/// 80/120 列两档：进入常规界面区间后，守卫不再出现且锚点齐备。
+#[test]
+fn baseline_80_120_fit() {
+    let mut fx = Fixture::new("x2-26b-wide");
+    for w in [80u16, 120] {
+        assert_fits(&Baseline::capture(&mut fx.app, w, H));
+        let s = fx.draw_at(w, H);
+        assert_lacks(&s, "终端尺寸不足");
+        assert_has(&s, "AirymaxRT");
+        assert_has(&s, "❯");
+    }
+}
+
+/// 三档全绿：40/80/120 逐档无溢出，且同态两帧逐格一致。
+#[test]
+fn baseline_three_tiers_green() {
+    let mut fx = Fixture::new("x2-26b-matrix");
+    add(&mut fx.app, MessageRole::User, "基线矩阵内容");
+    for w in [40u16, 80, 120] {
+        let a = Baseline::capture(&mut fx.app, w, H);
+        let b = Baseline::capture(&mut fx.app, w, H);
+        assert_fits(&a);
+        assert!(a.same_frame(&b), "{w} 列档同态两帧应逐格一致");
+    }
 }
