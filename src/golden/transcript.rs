@@ -237,3 +237,30 @@ async fn search_focus_dims_body_but_not_bar() {
 fn dim_at(buf: &ratatui::buffer::Buffer, x: u16, y: u16) -> bool {
     buf[(x, y)].modifier.contains(ratatui::style::Modifier::DIM)
 }
+
+/// X7-01a：`/export` 把会话落盘为线性纯文本，读屏与管道可直接消费。
+#[test]
+fn export_writes_linear_text() {
+    let mut fx = Fixture::new("export-linear");
+    add(&mut fx.app, MessageRole::User, "导出这一句");
+    add(&mut fx.app, MessageRole::Agent, "第一行\n第二行");
+    fx.app.submit_input("/export").expect("导出命令应被受理");
+    let dir = crate::paths::log_dir();
+    let path = std::fs::read_dir(&dir)
+        .expect("导出目录应存在")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("session-") && n.ends_with(".txt"))
+        })
+        .expect("应有 session-*.txt 落盘");
+    let text = std::fs::read_to_string(&path).expect("导出文件应可读");
+    assert!(text.contains("用户> 导出这一句"), "导出缺少用户行：{text}");
+    assert!(
+        text.contains("助手> 第一行\n  第二行"),
+        "导出未按续行缩进：{text}"
+    );
+    assert!(!text.contains('\u{1b}'), "导出文本不得含 ANSI 转义");
+}
