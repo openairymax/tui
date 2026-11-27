@@ -122,14 +122,21 @@ async fn slash_search_narrows_hits() {
         &[
             key(KeyCode::Char('/'), KeyModifiers::NONE),
             key(KeyCode::Char('日'), KeyModifiers::NONE),
-            key(KeyCode::Char('志'), KeyModifiers::NONE),
         ],
     )
     .await;
     let s = fx.draw();
     assert_has(&s, "1/2 条");
 
-    type_keys(&mut fx, &[key(KeyCode::Char('构'), KeyModifiers::NONE)]).await;
+    // 退格清空后再输入单字：命中收窄与放宽都即时反映在计数上。
+    type_keys(
+        &mut fx,
+        &[
+            key(KeyCode::Backspace, KeyModifiers::NONE),
+            key(KeyCode::Char('构'), KeyModifiers::NONE),
+        ],
+    )
+    .await;
     let s = fx.draw();
     assert_has(&s, "1/1 条");
 }
