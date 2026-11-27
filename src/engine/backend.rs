@@ -48,9 +48,12 @@ const FAIL_LIMIT: u8 = 3;
 
 /// 同一行内改用前移（CUF）的最大间距：超过即绝对定位。
 ///
-/// 3 列的取舍：`ESC[nC` 与 `ESC[r;cH` 字节数在 3 附近持平，更短的间距
-/// 用前移能省下行列两个数字，更长的间距用绝对定位一次到位更稳。
-const CUF_MAX: u16 = 3;
+/// X2-28b 的实测取舍：单数字前移 `ESC[nC` 恒 4 字节，双列绝对定位
+/// `ESC[r;cH` 为 6~7 字节，三列起绝对定位还要多带一位列号。故间距在
+/// 9 列（前移仍单数字）以内一律前移，跨过 9 列改绝对定位，避免两位数
+/// 前移与列号长度相互追平后失去收益。同行目标的列号必然落在终端宽度
+/// 之内，前移不会越过行尾折行。
+const CUF_MAX: u16 = 9;
 
 /// 帧字节缓冲后端：持有 writer 本体，把一帧的 diff 编码进 `out`，
 /// `flush()` 时一次 `write_all` 写出。
@@ -169,7 +172,14 @@ impl<W: Write> BufferedBackend<W> {
     ///
     /// X2-09a 最短化：目标为全默认时用单条 `SGR 0` 合并复位——它同时清
     /// 颜色与修饰位，字节数也少于 `39;49` 加逐位关闭。
+    ///
+    /// X2-28b 快路径：三路与已生效状态完全一致时立即返回。逐格编码里这是
+    /// 绝对多数路径，放在最前可免去每次新建参数表与拼接——样式未变时
+    /// 不分配、不产生任何字节。
     fn emit_style(&mut self, cell: &Cell) {
+        if self.fg == Some(cell.fg) && self.bg == Some(cell.bg) && self.mods == cell.modifier {
+            return;
+        }
         if is_plain(cell) {
             if self.fg != Some(Color::Reset)
                 || self.bg != Some(Color::Reset)
