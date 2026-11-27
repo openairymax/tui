@@ -23,6 +23,7 @@
 // 轮询。空壳类型（无消费者的 Node/ViewTree）会同时构成桩实现与
 // dead_code 门禁风险，一律不做。
 
+pub(crate) mod backend;
 pub(crate) mod block;
 pub(crate) mod boot;
 pub(crate) mod cache;
