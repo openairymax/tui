@@ -7,8 +7,9 @@
 // + live agent roster from agent_d, refreshed on the Beat::Hall beat by
 // app.poll_hall().
 
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -16,8 +17,11 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::client::HallBoardEntry;
+use crate::client::{HallBoard, HallBoardEntry};
+use crate::engine::comp::table::{Column, Table};
+use crate::engine::comp::{Act, Component, Input, Size, Width};
 use crate::engine::grid;
+use crate::engine::hit::Area;
 use crate::style;
 
 /// 看板单屏物化行数上限：渲染只取前 MAX_BOARD_ROWS 条，选中行与 Enter
@@ -75,42 +79,70 @@ pub(crate) fn state_rank(state: &str) -> u8 {
     }
 }
 
-fn entry_line(e: &HallBoardEntry, selected: bool) -> Line<'static> {
-    // 名称 24 列、状态 12 列两处定宽槽由 L2 唯一裁决点按显示宽度兑现：
-    // 此前按字符数截断 + `{:<N}` 补齐，全角 workflow_name 实占双倍列宽，
-    // 右侧状态/进度/任务号整体错列甚至溢出面板（0.1.18 A 轨 W2，§3.3）。
-    let name = grid::pad(&grid::clip(&e.workflow_name, 24), 24);
-    let state = if e.state.is_empty() {
+fn state_of(e: &HallBoardEntry) -> &str {
+    if e.state.is_empty() {
         "unknown"
     } else {
         &e.state
-    };
-    let base = if selected {
-        Style::default().bg(style::surface_active())
-    } else {
-        Style::default()
-    };
-    let marker = if selected { "▸" } else { " " };
-    Line::from(vec![
-        Span::styled(
-            format!(" {} {}  ", marker, state_icon(state)),
-            base.fg(state_color(state)).add_modifier(Modifier::BOLD),
+    }
+}
+
+fn pct(e: &HallBoardEntry) -> u64 {
+    (e.progress * 100.0).round() as u64
+}
+
+/// 看板列声明（X3-07a）：原有 24/12 列两处写死槽宽由 table 的 Min/Max
+/// 约束取代，宽度按可用空间求解，窄屏下不再右溢（IS-34）。
+pub(crate) fn columns() -> Vec<Column<HallBoardEntry>> {
+    vec![
+        Column::new(
+            Width::Min(12),
+            Alignment::Left,
+            |e| {
+                (
+                    format!("{} {}", state_icon(state_of(e)), e.workflow_name),
+                    Style::default().fg(style::text()),
+                )
+            },
+            |e| e.workflow_name.to_lowercase(),
         ),
-        Span::styled(name, base.fg(style::text())),
-        Span::styled(
-            grid::pad(&grid::clip(state, 12), 12),
-            base.fg(state_color(state)),
+        Column::new(
+            Width::Max(12),
+            Alignment::Left,
+            |e| {
+                (
+                    state_of(e).to_string(),
+                    Style::default().fg(state_color(state_of(e))),
+                )
+            },
+            // 键只含分组 rank：等值键由稳定排序保持「组内最新在前」
+            |e| format!("{:02}", state_rank(state_of(e))),
         ),
-        Span::styled(
-            format!(" {} ", mini_bar(e.progress)),
-            base.fg(style::accent()),
+        Column::new(
+            Width::Max(14),
+            Alignment::Right,
+            |e| {
+                (
+                    format!("{} {:>3}%", mini_bar(e.progress), pct(e)),
+                    Style::default().fg(style::accent()),
+                )
+            },
+            |e| format!("{:03}", pct(e)),
         ),
-        Span::styled(
-            format!("{:>3}%", (e.progress * 100.0).round() as u64),
-            base.fg(style::dim()),
+        Column::new(
+            // 末列吸收余量（X3-07a）：右对齐，余量体现为左侧留白，
+            // 与「列宽之和恰好铺满」的旧观感一致，但不再右溢。
+            Width::Flex(1),
+            Alignment::Right,
+            |e| {
+                (
+                    format!("#{}", e.task_id),
+                    Style::default().fg(style::faint()),
+                )
+            },
+            |e| format!("{:020}", e.task_id),
         ),
-        Span::styled(format!("  #{}", e.task_id), base.fg(style::faint())),
-    ])
+    ]
 }
 
 /// 状态中文标签（头部过滤提示用）
@@ -126,25 +158,8 @@ fn state_cn(state: &str) -> &'static str {
     }
 }
 
-/// Render the task board panel.
-pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(style::border()))
-        .title(Span::styled(
-            " 任务看板 ",
-            Style::default()
-                .fg(style::primary())
-                .add_modifier(Modifier::BOLD),
-        ));
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    let (entry_count, agent_count) = match &app.hall_board {
-        Some(b) => (b.entries.len(), b.agents.len()),
-        None => (0, 0),
-    };
-    // 过滤提示：0=全部 · 1-6=状态；当前过滤状态突出显示
+/// 头部摘要行：实例/Agent 计数、过滤状态与在线状态。
+fn filter_line(app: &App, entry_count: usize, agent_count: usize) -> Line<'static> {
     let filter_tip = if app.board_filter.is_empty() {
         "全部".to_string()
     } else {
@@ -154,7 +169,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             app.board_visible_count()
         )
     };
-    lines.push(Line::from(vec![
+    Line::from(vec![
         Span::styled(
             format!("  执行实例 {} · 在线 Agent {}  ", entry_count, agent_count),
             Style::default().fg(style::dim()),
@@ -180,107 +195,154 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 })
                 .add_modifier(Modifier::BOLD),
         ),
-    ]));
-    // 2.3.12 状态概览：一眼看清项目运行状态（执行中/待处理/完成/失败计数）
-    if let Some(board) = &app.hall_board {
-        let mut n_run = 0usize;
-        let mut n_wait = 0usize;
-        let mut n_done = 0usize;
-        let mut n_bad = 0usize;
-        for e in &board.entries {
-            let st = if e.state.is_empty() {
-                "unknown"
-            } else {
-                e.state.as_str()
-            };
-            match st {
-                "running" => n_run += 1,
-                "pending" | "scheduled" => n_wait += 1,
-                "completed" => n_done += 1,
-                "failed" | "canceled" => n_bad += 1,
-                _ => {}
-            }
-        }
-        lines.push(Line::from(vec![
-            Span::styled("  概览 ", Style::default().fg(style::faint())),
-            Span::styled(
-                format!("▶ 执行中 {}", n_run),
-                Style::default().fg(style::warning()),
-            ),
-            Span::styled("   ", Style::default().fg(style::faint())),
-            Span::styled(
-                format!("○ 待处理 {}", n_wait),
-                Style::default().fg(style::cyan()),
-            ),
-            Span::styled("   ", Style::default().fg(style::faint())),
-            Span::styled(
-                format!("✓ 完成 {}", n_done),
-                Style::default().fg(style::success()),
-            ),
-            Span::styled("   ", Style::default().fg(style::faint())),
-            Span::styled(
-                format!("✗ 失败/取消 {}", n_bad),
-                Style::default().fg(style::danger()),
-            ),
-        ]));
-    }
-    lines.push(Line::raw(""));
+    ])
+}
 
-    if let Some(board) = &app.hall_board {
-        // 状态分组排序（2.3.10）：进行中 → 等待/调度 → 完成 → 失败/取消，
-        // 组内最新在前（先倒序输入序，再按 rank 升序稳定排序）
-        let mut entries: Vec<&HallBoardEntry> = board.entries.iter().collect();
-        entries.reverse();
-        entries.sort_by_key(|e| {
-            state_rank(if e.state.is_empty() {
-                "unknown"
-            } else {
-                &e.state
-            })
-        });
-        if !app.board_filter.is_empty() {
-            entries.retain(|e| e.state == app.board_filter);
+/// 2.3.12 状态概览：一眼看清项目运行状态（执行中/待处理/完成/失败计数）。
+fn overview_line(board: &HallBoard) -> Line<'static> {
+    let mut n_run = 0usize;
+    let mut n_wait = 0usize;
+    let mut n_done = 0usize;
+    let mut n_bad = 0usize;
+    for e in &board.entries {
+        match e.state.as_str() {
+            "running" => n_run += 1,
+            "pending" | "scheduled" => n_wait += 1,
+            "completed" => n_done += 1,
+            "failed" | "canceled" => n_bad += 1,
+            _ => {}
         }
-        if entries.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  暂无执行实例：运行任务后 work_hall 状态在此展示（$AIRY_HOME/state/work_hall_state.json）。",
-                Style::default().fg(style::faint()),
-            )));
-        } else {
-            // 只物化前 MAX_BOARD_ROWS 条；sel 在该窗口内取模，光标由
-            // app/panel.rs 以同一上限循环，任何时刻高亮与 Enter 详情同条目
-            let rows: Vec<&HallBoardEntry> = entries.iter().copied().take(MAX_BOARD_ROWS).collect();
-            let sel = app.board_cursor % rows.len();
-            for (i, e) in rows.iter().enumerate() {
-                lines.push(entry_line(e, i == sel));
-            }
-            if entries.len() > MAX_BOARD_ROWS {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  … 共 {} 条，仅展示前 {} 条",
-                        entries.len(),
-                        MAX_BOARD_ROWS
-                    ),
-                    Style::default().fg(style::faint()),
-                )));
-            }
+    }
+    Line::from(vec![
+        Span::styled("  概览 ", Style::default().fg(style::faint())),
+        Span::styled(
+            format!("▶ 执行中 {}", n_run),
+            Style::default().fg(style::warning()),
+        ),
+        Span::styled("   ", Style::default().fg(style::faint())),
+        Span::styled(
+            format!("○ 待处理 {}", n_wait),
+            Style::default().fg(style::cyan()),
+        ),
+        Span::styled("   ", Style::default().fg(style::faint())),
+        Span::styled(
+            format!("✓ 完成 {}", n_done),
+            Style::default().fg(style::success()),
+        ),
+        Span::styled("   ", Style::default().fg(style::faint())),
+        Span::styled(
+            format!("✗ 失败/取消 {}", n_bad),
+            Style::default().fg(style::danger()),
+        ),
+    ])
+}
+
+/// 操作提示条（简约：↑↓ 选择 · 数字过滤 · Enter 查看 · Esc 返回）
+fn hint_line() -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  ↑↓ 选择", Style::default().fg(style::faint())),
+        Span::styled("  0-6 过滤", Style::default().fg(style::faint())),
+        Span::styled("  Enter 决策链", Style::default().fg(style::faint())),
+        Span::styled("  Esc 返回", Style::default().fg(style::faint())),
+    ])
+}
+
+/// Render the task board panel.
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(style::border()))
+        .title(Span::styled(
+            " 任务看板 ",
+            Style::default()
+                .fg(style::primary())
+                .add_modifier(Modifier::BOLD),
+        ));
+    let rect = if app.hall_board.is_some() {
+        render_loaded(f, area, block, app)
+    } else {
+        render_placeholder(f, area, block, app);
+        None
+    };
+    // 落格快照随帧更新：鼠标点击按上一帧表格几何折算行号（X3-04c）。
+    app.board_rows = rect;
+}
+
+/// 可见行快照：先倒序（最新在前）→ 按状态过滤 → 截取单屏窗口。
+/// 排序不在此时做，统一交给 table 的稳定排序（X3-10b），保证渲染、
+/// 键盘导航与鼠标命中三处行序完全一致。
+fn visible(app: &App, board: &HallBoard) -> Vec<HallBoardEntry> {
+    let mut rows: Vec<&HallBoardEntry> = board.entries.iter().collect();
+    rows.reverse();
+    if !app.board_filter.is_empty() {
+        rows.retain(|e| e.state == app.board_filter);
+    }
+    rows.into_iter()
+        .take(MAX_BOARD_ROWS)
+        .cloned()
+        .collect()
+}
+
+/// 按组件事件折算光标（X3-04c/X3-12a）：键盘与鼠标走同一 `Table::event`，
+/// 上层只负责把结果写回 `App::board_cursor`，不再各自实现越界规则。
+fn apply(app: &mut App, table: &Table<HallBoardEntry>, act: Act) -> bool {
+    match act {
+        Act::Up | Act::Down | Act::Top | Act::Bottom | Act::Select(_) => {
+            app.board_cursor = table.selected();
+            true
         }
-        if !board.agents.is_empty() {
-            lines.push(Line::raw(""));
-            lines.push(Line::from(Span::styled(
-                "  在线 Agent：",
-                Style::default().fg(style::dim()),
-            )));
-            for a in board.agents.iter().take(8) {
-                lines.push(Line::from(vec![
-                    Span::styled("   ● ", Style::default().fg(style::success())),
-                    Span::styled(a.clone(), Style::default().fg(style::text())),
-                ]));
-            }
-        }
-    } else if let Some(err) = &app.hall_error {
-        // 拉取失败/离线：与"正在加载"区分——hall_board 缓存为空且最近一次
-        // 拉取失败时给出明确失败态，避免无限"加载中"误导（每 1s 自动重试）
+        Act::None => false,
+    }
+}
+
+/// 键盘导航入口：↑↓/Home/End 由键位表转交，组件侧口径即渲染口径。
+pub(crate) fn nav(app: &mut App, key: KeyEvent) -> bool {
+    let Some(board) = app.hall_board.as_ref() else {
+        return false;
+    };
+    let rows = visible(app, board);
+    if rows.is_empty() {
+        return false;
+    }
+    let n = rows.len();
+    let mut table = Table::new(columns());
+    table.set_rows(rows);
+    table.sort_by(1, true);
+    table.select(app.board_cursor % n);
+    let act = table.event(Input::Key(key));
+    apply(app, &table, act)
+}
+
+/// 鼠标点击入口：命中表格落格后按相对行选中；未命中/空表不改变光标。
+pub(crate) fn click(app: &mut App, m: MouseEvent) -> bool {
+    let Some(rect) = app.board_rows else {
+        return false;
+    };
+    if !rect.contains(m.column, m.row) {
+        return false;
+    }
+    let Some(board) = app.hall_board.as_ref() else {
+        return false;
+    };
+    let rows = visible(app, board);
+    if rows.is_empty() {
+        return false;
+    }
+    let n = rows.len();
+    let mut table = Table::new(columns());
+    table.set_rows(rows);
+    table.sort_by(1, true);
+    table.select(app.board_cursor % n);
+    table.layout(Rect::new(rect.x, rect.y, rect.w, rect.h));
+    let act = table.event(Input::Mouse { event: m, row: m.row });
+    apply(app, &table, act)
+}
+
+/// 无看板数据：区分「拉取失败」与「加载中」，避免无限加载态误导
+/// （每 1s 自动重试）。
+fn render_placeholder(f: &mut Frame, area: Rect, block: Block<'static>, app: &App) {
+    let mut lines = vec![filter_line(app, 0, 0), Line::raw("")];
+    if let Some(err) = &app.hall_error {
         // 失败原因一行摘要，边界按列裁决（全角错误文本按字符取必右溢）
         let msg = grid::clip(err, 72);
         lines.push(Line::from(vec![
@@ -302,15 +364,126 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(style::faint()),
         )));
     }
-
-    // 操作提示条（简约：↑↓ 选择 · 数字过滤 · Enter 查看 · Esc 返回）
     lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled("  ↑↓ 选择", Style::default().fg(style::faint())),
-        Span::styled("  0-6 过滤", Style::default().fg(style::faint())),
-        Span::styled("  Enter 决策链", Style::default().fg(style::faint())),
-        Span::styled("  Esc 返回", Style::default().fg(style::faint())),
-    ]));
-
+    lines.push(hint_line());
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// 有看板数据：摘要行 + table 组件 + agents/提示尾部分段渲染。
+///
+/// 分段而非整段 Paragraph：表格行必须由 table 组件按列宽求解后直接写入
+/// Buffer，否则宽屏/窄屏两种口径会再次分叉（X3-02b、IS-34）。
+fn render_loaded(
+    f: &mut Frame,
+    area: Rect,
+    block: Block<'static>,
+    app: &App,
+) -> Option<Area> {
+    let board = app.hall_board.as_ref()?;
+    // Block 先落位，内容只写 inner：table 组件不承担边框职责。
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut prefix = vec![
+        filter_line(app, board.entries.len(), board.agents.len()),
+        overview_line(board),
+        Line::raw(""),
+    ];
+
+    let total = app.board_visible_count();
+    if total == 0 {
+        prefix.push(Line::from(Span::styled(
+            "  暂无执行实例：运行任务后 work_hall 状态在此展示（$AIRY_HOME/state/work_hall_state.json）。",
+            Style::default().fg(style::faint()),
+        )));
+    }
+
+    // 只物化前 MAX_BOARD_ROWS 条；排序/选中/裁剪全部由 table 承担，
+    // sel 在该窗口内取模，任何时刻高亮与 Enter 详情同一条目。
+    let shown = visible(app, board);
+    let n_rows = shown.len();
+    let sel = if n_rows == 0 {
+        0
+    } else {
+        app.board_cursor % n_rows
+    };
+
+    let mut table = Table::new(columns());
+    table.set_rows(shown);
+    table.sort_by(1, true);
+    if n_rows > 0 {
+        table.select(sel);
+    }
+    table.set_marker(true);
+    table.set_selected_style(Style::default().bg(style::surface_active()));
+
+    let mut tail: Vec<Line> = Vec::new();
+    if total > MAX_BOARD_ROWS {
+        tail.push(Line::from(Span::styled(
+            format!("  … 共 {} 条，仅展示前 {} 条", total, MAX_BOARD_ROWS),
+            Style::default().fg(style::faint()),
+        )));
+    }
+    if !board.agents.is_empty() {
+        tail.push(Line::raw(""));
+        tail.push(Line::from(Span::styled(
+            "  在线 Agent：",
+            Style::default().fg(style::dim()),
+        )));
+        for a in board.agents.iter().take(8) {
+            tail.push(Line::from(vec![
+                Span::styled("   ● ", Style::default().fg(style::success())),
+                Span::styled(a.clone(), Style::default().fg(style::text())),
+            ]));
+        }
+    }
+    tail.push(Line::raw(""));
+    tail.push(hint_line());
+
+    let prefix_h = (prefix.len() as u16).min(inner.height);
+    let avail_h = inner.height.saturating_sub(prefix_h);
+    let tail_h = (tail.len() as u16).min(avail_h);
+    let comp: &mut dyn Component = &mut table;
+    let table_h = comp
+        .measure(Size {
+            w: inner.width,
+            h: avail_h.saturating_sub(tail_h),
+        })
+        .h;
+
+    if prefix_h > 0 {
+        let rect = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: prefix_h,
+        };
+        f.render_widget(Paragraph::new(prefix), rect);
+    }
+    let landed = if table_h > 0 {
+        let rect = Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(prefix_h),
+            width: inner.width,
+            height: table_h,
+        };
+        comp.layout(rect);
+        comp.render(f.buffer_mut());
+        Some(Area::new(rect.x, rect.y, rect.width, rect.height))
+    } else {
+        None
+    };
+    if tail_h > 0 {
+        let rect = Rect {
+            x: inner.x,
+            y: inner
+                .y
+                .saturating_add(prefix_h)
+                .saturating_add(table_h),
+            width: inner.width,
+            height: tail_h,
+        };
+        f.render_widget(Paragraph::new(tail), rect);
+    }
+    landed
 }

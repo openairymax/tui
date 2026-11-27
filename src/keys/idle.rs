@@ -272,15 +272,24 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             }
         }
         KeyCode::Home => {
-            // Alt+Home：视口滚动到顶（Home 光标语义不变，§15.5.1）
-            if key.modifiers.contains(event::KeyModifiers::ALT) {
+            // 看板：Home 跳到首行（X3-12b 越界夹取，不回绕）
+            if app.active_panel == ActivePanel::Board
+                && !key.modifiers.contains(event::KeyModifiers::ALT)
+            {
+                crate::panels::board::nav(app, key);
+            } else if key.modifiers.contains(event::KeyModifiers::ALT) {
+                // Alt+Home：视口滚动到顶（Home 光标语义不变，§15.5.1）
                 app.scroll_top();
             } else {
                 app.cursor_home();
             }
         }
         KeyCode::End => {
-            if key.modifiers.contains(event::KeyModifiers::ALT) {
+            if app.active_panel == ActivePanel::Board
+                && !key.modifiers.contains(event::KeyModifiers::ALT)
+            {
+                crate::panels::board::nav(app, key);
+            } else if key.modifiers.contains(event::KeyModifiers::ALT) {
                 // Alt+End：视口滚动到底（最新消息）
                 app.scroll_bottom();
             } else if app.input.is_empty() {
@@ -395,7 +404,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             // F6/F7 面板：↑ 移动选中光标（循环）；F3 日志面板滚动；
             // 思考链/焦点视图滚动；其余场景滚对话/浏览历史
             if app.active_panel == ActivePanel::Board {
-                app.board_cursor_up();
+                // 看板：按键经 table 组件折算（X3-04c），选中序与渲染同源
+                crate::panels::board::nav(app, key);
             } else if app.active_panel == ActivePanel::Events {
                 app.events_cursor_up();
             } else if app.active_panel == ActivePanel::Logs {
@@ -424,7 +434,8 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         }
         KeyCode::Down => {
             if app.active_panel == ActivePanel::Board {
-                app.board_cursor_down();
+                // 看板：按键经 table 组件折算（X3-04c），选中序与渲染同源
+                crate::panels::board::nav(app, key);
             } else if app.active_panel == ActivePanel::Events {
                 app.events_cursor_down();
             } else if app.active_panel == ActivePanel::Logs {

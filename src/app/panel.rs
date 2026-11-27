@@ -10,30 +10,6 @@ use crate::engine::memory::{MemoryEntry, MemorySnapshot};
 use super::*;
 
 impl App {
-    /// F6 看板光标下移（循环）。上限与渲染窗口一致（只物化前 64 条，
-    /// 光标/选中/渲染三方必须共用同一基数，否则条目超窗后高亮与
-    /// Enter 详情错位——与 events 侧 cap 写法对齐）。
-    pub fn board_cursor_down(&mut self) {
-        let n = self.board_visible_count();
-        if n == 0 {
-            self.board_cursor = 0;
-            return;
-        }
-        let cap = n.min(crate::panels::board::MAX_BOARD_ROWS);
-        self.board_cursor = (self.board_cursor + 1) % cap;
-    }
-
-    /// F6 看板光标上移（循环）。上限与渲染窗口一致。
-    pub fn board_cursor_up(&mut self) {
-        let n = self.board_visible_count();
-        if n == 0 {
-            self.board_cursor = 0;
-            return;
-        }
-        let cap = n.min(crate::panels::board::MAX_BOARD_ROWS);
-        self.board_cursor = (self.board_cursor + cap - 1) % cap;
-    }
-
     /// F6 看板状态过滤：空 = 全部；点按过滤后光标回零。
     pub fn board_set_filter(&mut self, filter: &str) {
         self.board_filter = filter.to_string();

@@ -60,6 +60,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // 后不得残留（否则点击会命中已经不存在的卡/链）。
     app.card_rows.clear();
     app.link_rows.clear();
+    app.board_rows = None;
 
     // 0.1.8：整屏先铺主题背景。此前各面板仅给自身控件设 bg，chat 正文区
     // 等未显式着色的区域透出**终端默认背景**——终端配色与主题不符时

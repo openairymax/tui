@@ -30,6 +30,7 @@ pub(crate) mod block;
 pub(crate) mod boot;
 pub(crate) mod cache;
 pub(crate) mod clip;
+pub(crate) mod comp;
 pub(crate) mod compose;
 pub(crate) mod evolution;
 pub(crate) mod event;

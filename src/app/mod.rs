@@ -133,6 +133,9 @@ pub struct App {
     pub(crate) card_rows: Vec<(u16, u16, u64)>,
     /// 正文每帧的链接落格（X5-11b）：行号 + 显示列区间，点击开链接。
     pub(crate) link_rows: Vec<(u16, crate::engine::url::Span)>,
+    /// 看板表格落格（X3-04c）：鼠标点击按上一帧几何折算行号，与键盘导航
+    /// 共用组件动作，避免渲染与命中共用两套行序。
+    pub(crate) board_rows: Option<crate::engine::hit::Area>,
     /// 焦点视图消息快照（0.1.18 B11/W14）：Alt+F 打开时取最近一条回复
     /// 克隆，渲染与滚动均基于快照，不受后续消息影响；Esc 退出即弃。
     pub focus_msg: Option<ChatMessage>,
@@ -486,6 +489,7 @@ impl App {
             expanded_cards: std::collections::HashSet::new(),
             card_rows: Vec::new(),
             link_rows: Vec::new(),
+            board_rows: None,
             focus_msg: None,
             focus_scroll: 0,
             focus_scroll_max: 0,

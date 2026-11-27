@@ -185,6 +185,16 @@ pub async fn run() {
         std::process::exit(code.code());
     }
 
+    // 组件注册表启动自检（X3-06b）：重名或名称不合规会让按名取件落到错误
+    // 组件，与键位表同属配置缺陷，故同样在终端副作用之前 fail-closed。
+    if let Err(e) = engine::comp::reg::validate_builtin() {
+        let code = engine::exit::Code::Internal;
+        engine::exit::record("components", code);
+        eprintln!("❌ 组件注册表异常：{e}");
+        eprintln!("❌ {}（退出码 {}）", code.human(), code.code());
+        std::process::exit(code.code());
+    }
+
     // 参数解析先于一切门禁：探针必须在 TTY 检查之前裁决——它存在的理由
     // 正是「非 TTY 环境（CI／容器／串口）也要能判定二进制存活」，排在门禁
     // 之后则永远走不到（0.1.20 P2-8）。
@@ -752,7 +762,7 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
                     // 左键点击（X5-07/11）：命中事实来自上一帧的落格快照，
                     // 决议点击与键盘 y/a/n 共用动作表落地。
                     MouseEventKind::Down(event::MouseButton::Left) => {
-                        click(app, m.column, m.row);
+                        click(app, m);
                         sel_begin(app, m.column, m.row);
                     }
                     // 拖选（X5-10a）：坐标按正文区钳位，拖出视口不丢选区。
@@ -775,7 +785,9 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
 ///
 /// 审批条：点中决议段即决议，与键盘 y/a/n 共用动作表；点标题行只聚焦，
 /// 防止误触决定放行。主区只聚焦（对话正文/面板列表），输入栏取回光标。
-fn click(app: &mut App, col: u16, row: u16) {
+fn click(app: &mut App, m: event::MouseEvent) {
+    let col = m.column;
+    let row = m.row;
     app.sync_focus();
     match app.shell.hit(col, row) {
         Some(engine::hit::Target::Approval) => {
@@ -788,7 +800,15 @@ fn click(app: &mut App, col: u16, row: u16) {
             }
         }
         Some(engine::hit::Target::Input) => app.focus_input(),
-        Some(engine::hit::Target::Main) => main_click(app, col, row),
+        Some(engine::hit::Target::Main) => {
+            // 看板表格点击（X3-04c）：命中行即选中，与键盘导航同一动作；
+            // 未命中表格仍回落到「聚焦主区」的既有行为。
+            if app.active_panel == ActivePanel::Board && crate::panels::board::click(app, m) {
+                app.focus_main();
+            } else {
+                main_click(app, col, row);
+            }
+        }
         _ => {}
     }
 }
