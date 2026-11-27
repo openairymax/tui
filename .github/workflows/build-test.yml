@@ -130,6 +130,14 @@ jobs:
         working-directory: sdk/tui
         run: cargo test --lib -p agentrt-tui golden::bench::profile_frame_phases -- --ignored --nocapture
 
+      # 长会话内存上界（X8-10b）：100k 消息相对 5k 基线的峰值 RSS 增幅
+      # ≤20%，数值入方案 §16 留痕。单线程独占进程，避免并行用例的临时
+      # 分配污染采样；与帧剖析同为取样步骤，不阻断常规合并。
+      - name: Memory bound
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        working-directory: sdk/tui
+        run: cargo test --lib -p agentrt-tui golden::mem::rss_growth -- --ignored --nocapture --test-threads=1
+
       - name: Clippy
         working-directory: sdk/tui
         run: cargo clippy --workspace --all-targets -- -D warnings

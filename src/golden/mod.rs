@@ -16,6 +16,7 @@ mod degrade;
 mod error;
 mod evolution;
 mod input;
+mod mem;
 mod observe;
 mod panels;
 mod perf;
