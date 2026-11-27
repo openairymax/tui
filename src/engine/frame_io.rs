@@ -171,7 +171,7 @@ mod tests {
     fn oversized_sequence_owns_a_part() {
         let mut buf = b"x".to_vec();
         buf.extend_from_slice(b"\x1b]0;");
-        buf.extend_from_slice(&vec![b'q'; 40]);
+        buf.extend_from_slice(&[b'q'; 40]);
         buf.push(0x07);
         let parts = split(&buf, 8);
         let osc = &buf[1..];

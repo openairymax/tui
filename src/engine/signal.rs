@@ -27,7 +27,7 @@ pub(crate) fn install() {
     }
     for sig in [libc::SIGTERM, libc::SIGHUP] {
         unsafe {
-            libc::signal(sig, on_term as libc::sighandler_t);
+            libc::signal(sig, on_term as *const () as libc::sighandler_t);
         }
     }
 }

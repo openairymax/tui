@@ -278,10 +278,9 @@ impl<W: Write> Backend for BufferedBackend<W> {
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
         match clear_type {
             ClearType::All => self.clear(),
-            other => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("clear_type [{other:?}] not supported with this backend"),
-            )),
+            other => Err(io::Error::other(format!(
+                "clear_type [{other:?}] not supported with this backend"
+            ))),
         }
     }
 
