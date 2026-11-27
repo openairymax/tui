@@ -155,6 +155,7 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
     let mut brk: Option<usize> = None;
     let mut prev_ws = false;
     let mut has_text = false;
+    let mut any_text = false;
 
     for &(ch, st) in units {
         let w = char_w(ch);
@@ -177,12 +178,19 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
                 prev_ws = false;
             }
         }
+        // 行首空白：上一行已在断点处折叠（或本身以空白开头），丢弃即可；
+        // 否则空格会粘到新行行首，使后续词被无谓挤断（"hello world" → " worl"）。
+        if cur.is_empty() && ch.is_whitespace() {
+            prev_ws = true;
+            continue;
+        }
         if ch.is_whitespace() {
             if !prev_ws && has_text {
                 brk = Some(cur.len());
             }
         } else {
             has_text = true;
+            any_text = true;
         }
         prev_ws = ch.is_whitespace();
         cur.push((ch, st));
@@ -190,6 +198,9 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
     }
     if !cur.is_empty() {
         out.push(cur);
+    } else if out.is_empty() && !any_text {
+        // 纯空白输入：保留一行，避免调用方拿不到任何行
+        out.push(units.to_vec());
     }
     out
 }
