@@ -152,7 +152,9 @@ fn build_body(
     width: usize,
     base: Style,
 ) -> Vec<Line<'static>> {
-    let budget = width.saturating_sub(indent + 1);
+    // wrap_spans 在预算小于 2 时整行不折（无法安放双宽簇）；这里兜底到 2，
+    // 否则窄屏 + 深缩进时正文会整行右溢，违反「渲染永不越过右边界」。
+    let budget = width.saturating_sub(indent + 1).max(2);
     let mut out: Vec<Line<'static>> = Vec::new();
     for line in highlight(token, body, base) {
         for piece in grid::wrap_spans(&line, budget) {
