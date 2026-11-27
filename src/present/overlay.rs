@@ -276,3 +276,79 @@ pub(super) fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
         area,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::compose_bottom_right;
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        text::{Line, Text},
+        widgets::{Paragraph, Widget},
+    };
+
+    fn dotted(w: u16, h: u16) -> Buffer {
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        for y in 0..h {
+            for x in 0..w {
+                buf[(x, y)].set_symbol("·");
+            }
+        }
+        buf
+    }
+
+    /// X2-18b：一次合成内整块浮层落格，行行完整，不留半截。
+    #[test]
+    fn overlay_is_written_whole_in_one_pass() {
+        let view = Rect::new(0, 0, 20, 5);
+        let mut buf = dotted(20, 5);
+        let drawn = compose_bottom_right(&mut buf, view, 6, 3, |b, r| {
+            assert_eq!(r, Rect::new(14, 2, 6, 3), "贴右下角且尺寸不缩水");
+            let text = Text::from(vec![
+                Line::from("AAAAAA"),
+                Line::from("BBBBBB"),
+                Line::from("CCCCCC"),
+            ]);
+            Paragraph::new(text).render(r, b);
+        });
+        assert!(drawn);
+        for y in 2..5 {
+            for x in 14..20 {
+                assert_ne!(buf[(x, y)].symbol(), "·", "浮层格 ({x},{y}) 未写入");
+            }
+        }
+        assert_eq!(buf[(0, 0)].symbol(), "·", "浮层外不得被改写");
+        assert_eq!(buf[(13, 4)].symbol(), "·", "浮层左邻格不得被改写");
+    }
+
+    /// X2-18b：请求大于视口时先裁到视口，写入不越界也不 panic。
+    #[test]
+    fn oversized_request_is_clipped_before_write() {
+        let view = Rect::new(0, 0, 10, 4);
+        let mut buf = dotted(10, 4);
+        let drawn = compose_bottom_right(&mut buf, view, 40, 9, |b, r| {
+            assert_eq!(r, view, "越界请求收敛为整视口");
+            Paragraph::new(Line::from("X")).render(r, b);
+        });
+        assert!(drawn);
+        assert_eq!(buf[(0, 0)].symbol(), "X");
+        for y in 0..4 {
+            for x in 0..10 {
+                assert_ne!(buf[(x, y)].symbol(), "·", "裁剪矩形应覆盖整视口");
+            }
+        }
+    }
+
+    /// X2-18b：空视口不成画，渲染器不被调用，缓冲不留残迹。
+    #[test]
+    fn empty_view_skips_draw() {
+        let mut buf = dotted(4, 2);
+        let mut called = false;
+        let drawn = compose_bottom_right(&mut buf, Rect::new(0, 0, 0, 0), 3, 1, |_, _| {
+            called = true;
+        });
+        assert!(!drawn);
+        assert!(!called);
+        assert_eq!(buf[(0, 0)].symbol(), "·");
+    }
+}
