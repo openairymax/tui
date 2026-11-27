@@ -70,11 +70,17 @@ fn highlight(lang: &str, body: &str, base: Style) -> Vec<Vec<Span<'static>>> {
     };
     lex::lines(token, body)
         .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|t| Span::styled(t.text, scope_style(&t.scopes, base)))
-                .collect()
-        })
+        .map(|row| token_spans(row, base))
+        .collect()
+}
+
+/// token 行 → 带样式片段：token → SGR 的唯一映射点（X4-05b）。
+///
+/// 词法层只给作用域栈，颜色在此裁决；后续折行（X4-07）拿到的是已定型
+/// 的片段序列，折行只需保持样式，不再回到作用域判定。
+fn token_spans(row: Vec<lex::Token>, base: Style) -> Vec<Span<'static>> {
+    row.into_iter()
+        .map(|t| Span::styled(t.text, scope_style(&t.scopes, base)))
         .collect()
 }
 
@@ -288,5 +294,74 @@ mod tests {
     fn last_fenced_skips_inline_and_empty() {
         assert_eq!(last_fenced("no code `inline` here"), None);
         assert_eq!(last_fenced("```\n```\n"), None, "空块不参与选取");
+    }
+
+    /// X4-05b：token 作用域到设计令牌的映射表逐项钉死。
+    #[test]
+    fn scope_categories_map_to_design_tokens() {
+        use ratatui::style::Color;
+        let fg = |name: &str| classify(name, Style::default()).and_then(|s| s.fg);
+        let table: &[(&str, Color)] = &[
+            ("comment.line.double-slash", style::faint()),
+            ("string.quoted.double", style::success()),
+            ("constant.numeric.integer", style::magenta()),
+            ("constant.language.boolean", style::warning()),
+            ("keyword.control.flow", style::primary()),
+            ("storage.type.function", style::primary()),
+            ("entity.name.function", style::cyan()),
+            ("entity.name.type", style::accent()),
+            ("support.function.builtin", style::cyan()),
+            ("support.type.primitive", style::accent()),
+            ("variable.other.readwrite", style::text()),
+            ("punctuation.terminator", style::dim()),
+            ("invalid.illegal", style::danger()),
+        ];
+        for (name, want) in table {
+            assert_eq!(fg(name), Some(*want), "作用域映射漂移: {name}");
+        }
+        // 结构性包裹作用域不表态，否则整块正文会被染成同一色
+        for name in ["source.rust", "meta.block", "markup.heading"] {
+            assert_eq!(classify(name, Style::default()), None, "{name}");
+        }
+        // 关键字加粗、注释斜体：颜色之外还有字形冗余，8 色档下仍可区分
+        let kw = classify("keyword.control", Style::default()).unwrap();
+        assert!(kw.add_modifier.contains(Modifier::BOLD));
+        let cm = classify("comment.line", Style::default()).unwrap();
+        assert!(cm.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    /// X4-05b：八种语言都产出非默认取色的片段，且文本一字不丢。
+    #[test]
+    fn eight_languages_are_colored() {
+        const SAMPLES: &[(&str, &str)] = &[
+            ("rust", "fn main() { let s = \"hi\"; }"),
+            ("python", "def f():\n    return \"hi\""),
+            ("javascript", "const s = \"hi\";"),
+            ("typescript", "const s: string = \"hi\";"),
+            ("go", "var s = \"hi\""),
+            ("c", "char *s = \"hi\";"),
+            ("sh", "echo \"hi\""),
+            ("json", "{\"s\": \"hi\"}"),
+        ];
+        for (tag, body) in SAMPLES {
+            let token = lang::detect(tag).expect("白名单内语言应当可探测").token;
+            let styled: Vec<Vec<Span<'static>>> = lex::lines(token, body)
+                .into_iter()
+                .map(|row| token_spans(row, Style::default()))
+                .collect();
+            assert!(
+                styled
+                    .iter()
+                    .flatten()
+                    .any(|s| { s.style.fg.is_some() && !s.content.trim().is_empty() }),
+                "{tag} 未产出着色片段: {styled:?}"
+            );
+            let joined: String = styled
+                .iter()
+                .map(|row| row.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(joined, *body, "{tag} 着色改了文本");
+        }
     }
 }
