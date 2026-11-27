@@ -336,6 +336,7 @@ impl App {
     /// 滚动为 no-op——消除"按键无反馈"的脏偏移积累（V11.3）。
     pub fn scroll_up(&mut self) {
         self.scroll_offset = (self.scroll_offset + 1).min(self.chat_scroll_max);
+        self.maybe_request_older();
     }
 
     /// 对话下滚：同上钳位，0 封底（最新消息）。
@@ -347,6 +348,7 @@ impl App {
     /// resize 自动跟随——固定常量翻页已废除，V11.2）。
     pub fn scroll_page_up(&mut self) {
         self.scroll_offset = (self.scroll_offset + self.page_step).min(self.chat_scroll_max);
+        self.maybe_request_older();
     }
 
     /// 下翻一页：步长同上。
@@ -359,6 +361,7 @@ impl App {
     pub fn scroll_half_up(&mut self) {
         let step = (self.page_step / 2).max(1);
         self.scroll_offset = (self.scroll_offset + step).min(self.chat_scroll_max);
+        self.maybe_request_older();
     }
 
     /// 下半页：步长同上。
@@ -440,6 +443,16 @@ impl App {
     /// Home 无修饰键语义为输入光标行首（readline 惯例，不在此改写）。
     pub fn scroll_top(&mut self) {
         self.scroll_offset = self.chat_scroll_max;
+        self.maybe_request_older();
+    }
+
+    /// 视口真正到达顶部时按需续取更早一页（X8-03a）。未渲染出可滚内容
+    /// （chat_scroll_max = 0）或仍在底部时不打扰后端；在途与游标尽头由
+    /// `request_older_history` 自行挡回。
+    fn maybe_request_older(&mut self) {
+        if self.chat_scroll_max > 0 && self.scroll_offset >= self.chat_scroll_max {
+            self.request_older_history();
+        }
     }
 
     /// 视口滚动到底（Alt+End）：偏移归零（最新消息）。
@@ -454,7 +467,10 @@ impl App {
     pub fn follow_observe(&mut self, total: usize, width: u16) {
         let reflow = width != self.last_width;
         self.last_width = width;
-        if self.scroll_offset > 0 && !reflow {
+        // 顶部前插更早记录后冻结一次（X8-03a）：这类增长来自旧内容而不是
+        // 底部新消息，累加到距底偏移会把读者甩回更旧的一段。
+        let freeze = std::mem::take(&mut self.follow_freeze_once);
+        if self.scroll_offset > 0 && !reflow && !freeze {
             let grow = total.saturating_sub(self.last_total);
             self.follow_new = self.follow_new.saturating_add(grow);
             // 锚点联动（X5-09b）：上滚阅读时新增行只落在底部，距底偏移
@@ -511,6 +527,7 @@ impl App {
     /// 鼠标滚轮上滚：普通滚动与翻页共用钳位契约。
     pub fn wheel_up(&mut self, lines: u16) {
         self.scroll_offset = (self.scroll_offset + lines).min(self.chat_scroll_max);
+        self.maybe_request_older();
     }
 
     /// 鼠标滚轮下滚。

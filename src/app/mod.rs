@@ -41,6 +41,7 @@ mod input;
 mod lane;
 mod mode;
 mod model;
+mod page;
 mod panel;
 mod pipeline;
 mod plugins;
@@ -102,6 +103,10 @@ pub struct App {
     follow_new: usize,
     /// 浮标显示的节流快照值：避免每帧抖动，同时保证浮标文案稳定可读。
     follow_shown: usize,
+    /// 下次观测冻结一次（X8-03a）：顶部前插更早记录会让总行数增长，若仍按
+    /// 「底部新增」累加距底偏移，视口会跳回旧内容。前插后置位，下一次
+    /// 观测只更新基线、不动偏移（一次即够，后续新增仍按原语义跟随）。
+    follow_freeze_once: bool,
     /// 上次观测时刻（毫秒），与 follow_shown 同源节流。
     follow_at_ms: u64,
     /// 上次观测的对话总行数。
@@ -232,12 +237,15 @@ pub struct App {
     mem_q: Option<command::MemStage>,
     /// 记忆/技能镜像水合在途（一条 mem.recent 同时喂两个镜像）。
     mem_hydrate_q: bool,
-    /// P1-3：本轮水合待发的会话标识队列（空串 = 全局窗口，排在末位）。
-    /// mem.recent 单次上限 1000 条，按 tab 的 conv 分段拉取，早期会话不会
-    /// 被后续会话挤出窗口而静默缺段。
-    mem_hydrate_queue: Vec<String>,
+    /// P1-3：本轮水合待发的 (会话标识, before) 队列（空串 = 全局窗口，
+    /// 排在末位）。X8-01~03：每项只取一页，before = -1 表示首页。
+    mem_hydrate_queue: Vec<(String, i64)>,
     /// P1-3：在途水合请求对应的会话（空串 = 全局窗口）。
     mem_hydrate_cur: String,
+    /// X8-01~03：在途请求的游标（-1 = 首页，≥0 = 更早一页）。
+    mem_hydrate_before: i64,
+    /// X8-01~03：分会话分页台账（游标/区间/缺口/页数上限）。
+    mem_pages: page::PageBook,
     /// §33.2 #4：本轮水合查询的下发时刻（成功下发才记，落地时算耗时）。
     mem_hydrate_at: Option<std::time::Instant>,
     /// 工具目录查询在途（query 帧 id=toolcat.list，管道就绪后一次）。
@@ -474,6 +482,7 @@ impl App {
             chat_scroll_max: 0,
             follow_new: 0,
             follow_shown: 0,
+            follow_freeze_once: false,
             follow_at_ms: 0,
             last_total: 0,
             last_width: 0,
@@ -534,6 +543,8 @@ impl App {
             mem_hydrate_q: false,
             mem_hydrate_queue: Vec::new(),
             mem_hydrate_cur: String::new(),
+            mem_hydrate_before: -1,
+            mem_pages: page::PageBook::default(),
             mem_hydrate_at: None,
             toolcat_q: false,
             clock_ms: 0,

@@ -31,13 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// 镜像保留上限（渲染/召回窗口；网关侧容量由 mem_d 自行管理）。
 ///
 /// 0.1.21 P1-3：水合改为按会话分段后，窗口不再是「全局 1000 条」，最坏
-/// 情形是 TABS_MAX(9) × HYDRATE_LIMIT(1000) + 全局窗口。上限按此留余量，
+/// 情形是 TABS_MAX(9) × 每会话 1000 条 + 全局窗口。上限按此留余量，
 /// 否则旧会话刚水合就被新会话挤出，等于没修。
 const MAX_RECORDS: usize = 10_000;
-
-/// 启动/面板打开时的水合条数（mem.recent 上限：mem_handlers clamp 0..1000）。
-/// 会话历史还原（D-14）按同一窗口读取。
-pub(crate) const HYDRATE_LIMIT: usize = 1000;
 
 /// 单条记忆记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +102,17 @@ pub trait ConversationMemory: Send + Sync {
     /// None 表示全局窗口（补齐无会话归属的记录）。默认实现退化为整表水合。
     fn ingest_recent_scope(&self, result: &serde_json::Value, at: &HydrateLog) {
         self.ingest_recent(result, at);
+    }
+    /// 分页水合（X8-01~03）：`replace` 为真表示该会话的首页（最新窗口，
+    /// 整段替换该 conv 的镜像段）；为假表示更早的一页，按记录身份去重
+    /// 追加。默认实现退化为按会话范围水合（忽略分页语义）。
+    fn ingest_recent_page(&self, result: &serde_json::Value, at: &HydrateLog, replace: bool) {
+        let _ = replace;
+        self.ingest_recent_scope(result, at);
+    }
+    /// 单会话历史（旧→新）：滚到顶时按锚点前插更早记录。
+    fn records_of(&self, _conv: &str) -> Vec<MemoryRecord> {
+        Vec::new()
     }
     /// 水合就绪闸门（D-14）：镜像已从权威后端加载完成。纯内存后端恒就绪。
     fn is_ready(&self) -> bool {
@@ -314,7 +321,25 @@ impl ConversationMemory for MirrorMemory {
         if self.backend == "volatile" {
             return;
         }
-        apply_recent_scope(&self.mirror, result, at);
+        apply_recent_page(&self.mirror, result, at, true);
+    }
+
+    /// X8-01~03：首页替换该会话段，后续页按记录身份去重追加。分页必须
+    /// 走追加路径——整段替换会让刚取到的更早页把较新页挤掉。
+    fn ingest_recent_page(&self, result: &serde_json::Value, at: &HydrateLog, replace: bool) {
+        if self.backend == "volatile" {
+            return;
+        }
+        apply_recent_page(&self.mirror, result, at, replace);
+    }
+
+    fn records_of(&self, conv: &str) -> Vec<MemoryRecord> {
+        let guard = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .iter()
+            .filter(|r| r.conv.as_deref() == Some(conv))
+            .cloned()
+            .collect()
     }
 
     fn is_ready(&self) -> bool {
@@ -384,17 +409,23 @@ fn apply_recent(
 /// P1-3：分会话水合——`conv` 为 Some 时只替换该会话的记忆段，其余会话
 /// 保持原样；`conv` 为 None 是全局窗口，只按记录身份去重追加（补齐无会话
 /// 归属的记录），不冲掉已按会话水合的段。
-fn apply_recent_scope(
+///
+/// X8-01~03：`replace` 区分首页与更早页。首页（最新窗口）替换该段；
+/// 更早页只追加——分页拿到的记录彼此不重叠，替换会把新页挤掉。无论哪种
+/// 情况都按记录身份（时间戳+角色+正文+会话）去重，删除导致的下标前移
+/// 最多重复一段，重复在此吸收。
+fn apply_recent_page(
     mirror: &Mutex<Vec<MemoryRecord>>,
     result: &serde_json::Value,
     at: &HydrateLog,
+    replace: bool,
 ) {
     let Some(list) = parse_recent(result) else {
         return;
     };
     let n = list.len();
     let mut guard = mirror.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(c) = at.conv {
+    if let (true, Some(c)) = (replace, at.conv) {
         guard.retain(|r| r.conv.as_deref() != Some(c));
     }
     for r in list {

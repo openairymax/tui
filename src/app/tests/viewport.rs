@@ -116,6 +116,63 @@ fn b11_toggle_mouse_capture_flips_state() {
     assert!(app.toggle_mouse_capture());
 }
 
+/// X8-03a/b：顶部前插更早记录时冻结一次跟随增长，视口锚点不向旧内容
+/// 漂移；冻结只消耗一次，后续底部新增恢复原语义。
+#[test]
+fn x8_prepend_freeze_holds_anchor_once() {
+    let _h = crate::test_env::Home::new("x8-prepend-freeze");
+    let mut app = App::new("agents/main.agent.yaml");
+    app.follow_observe(10, 80);
+    app.scroll_offset = 4;
+
+    app.follow_freeze_once = true;
+    app.follow_observe(14, 80);
+    assert_eq!(app.scroll_offset, 4, "前插 4 行不得推动距底偏移");
+    assert_eq!(app.follow_new, 0, "旧内容不算新增行");
+
+    app.follow_observe(15, 80);
+    assert_eq!(app.scroll_offset, 5, "冻结只一次，后续按新增行增长");
+}
+
+/// X8-03a：滚到顶前插更早记录——以当前最早消息为锚，不重复、不越界，
+/// 并置位冻结标记。
+#[test]
+fn x8_prepend_older_page_anchors() {
+    let _h = crate::test_env::Home::new("x8-prepend-page");
+    let mut app = App::new("agents/main.agent.yaml");
+    // 水合路径只在网关后端生效（volatile 无落盘镜像）。
+    app.memory = Box::new(crate::memory::MirrorMemory::new());
+    let conv = app.current_conv();
+    let at = crate::memory::HydrateLog {
+        channel: "test",
+        id: "mem.hydrate",
+        conv: Some(conv.as_str()),
+        elapsed_ms: 0,
+    };
+    let rec = |created: i64, role: &str, text: &str| {
+        serde_json::json!({
+            "data": text,
+            "created_at": created,
+            "metadata": serde_json::json!({ "role": role, "conv": conv }),
+        })
+    };
+    let v = serde_json::json!({
+        "records": [
+            rec(1, "user", "旧一"),
+            rec(2, "assistant", "旧二"),
+            rec(3, "user", "新一"),
+        ],
+    });
+    app.memory.ingest_recent_page(&v, &at, true);
+    app.add_message(MessageRole::User, "新一".to_string());
+
+    assert_eq!(app.prepend_older_page(&conv), 2, "仅前插锚点之前的记录");
+    let texts: Vec<&str> = app.messages.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(texts, vec!["旧一", "旧二", "新一"]);
+    assert!(app.follow_freeze_once, "前插后须冻结一次跟随增长");
+    assert_eq!(app.prepend_older_page(&conv), 0, "锚点已在队首，不得重复");
+}
+
 /// B11（0.1.18）Alt+F 焦点视图：快照最近一条回复进入全屏只读视图；
 /// 无回复时提示且不切面板；快照独立于对话区（打开后新消息不影响）。
 #[test]

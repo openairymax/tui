@@ -266,3 +266,118 @@ fn sanitize_reply_tolerates_leading_text() {
     assert_eq!(r.mode, crate::app::ModeMarker::Chat);
     assert!(!r.body.contains("[MODE:"));
 }
+
+/// 构造一页 mem.recent 应答（records 内 data/created_at/metadata）。
+fn page(conv: &str, items: &[(i64, &str, &str)]) -> serde_json::Value {
+    let records: Vec<serde_json::Value> = items
+        .iter()
+        .map(|(created, role, content)| {
+            serde_json::json!({
+                "data": content,
+                "created_at": created,
+                "metadata": serde_json::json!({ "role": role, "conv": conv }),
+            })
+        })
+        .collect();
+    serde_json::json!({ "records": records, "next": 0, "has_more": false })
+}
+
+fn conv_log(conv: &str) -> HydrateLog<'_> {
+    HydrateLog {
+        channel: "test",
+        id: "mem.hydrate",
+        conv: Some(conv),
+        elapsed_ms: 0,
+    }
+}
+
+/// X8-01a：首页之后的更早页必须追加而不是替换——替换会把刚取到的新页
+/// 挤掉（旧实现整段 retain）。
+#[test]
+fn page_ingest_appends_older_page() {
+    let m = MirrorMemory::new();
+    let at = conv_log("sess_a");
+    m.ingest_recent_page(
+        &page(
+            "sess_a",
+            &[(300, "user", "新一"), (301, "assistant", "新二")],
+        ),
+        &at,
+        true,
+    );
+    m.ingest_recent_page(&page("sess_a", &[(100, "user", "旧一")]), &at, false);
+    assert_eq!(m.len(), 3, "更早页应追加: {:?}", m.recent(10));
+    let recs = m.records_of("sess_a");
+    assert_eq!(recs.len(), 3);
+    assert_eq!(recs[0].content, "旧一", "records_of 必须旧→新");
+    assert_eq!(recs[2].content, "新二");
+}
+
+/// X8-02b：删除导致游标前移时会重复返回一段，按记录身份去重后无重复。
+#[test]
+fn page_ingest_dedupes_overlap() {
+    let m = MirrorMemory::new();
+    let at = conv_log("sess_b");
+    m.ingest_recent_page(
+        &page("sess_b", &[(200, "user", "甲"), (201, "assistant", "乙")]),
+        &at,
+        true,
+    );
+    // 第二页与第一页重叠一条（甲），另含一条更早的丙
+    m.ingest_recent_page(
+        &page("sess_b", &[(100, "user", "丙"), (200, "user", "甲")]),
+        &at,
+        false,
+    );
+    let recs = m.records_of("sess_b");
+    assert_eq!(recs.len(), 3, "重叠记录只保留一份: {recs:?}");
+    let contents: Vec<&str> = recs.iter().map(|r| r.content.as_str()).collect();
+    assert_eq!(contents, vec!["丙", "甲", "乙"]);
+}
+
+/// 首页（新一轮水合）替换该会话段，且不影响其他会话。
+#[test]
+fn page_ingest_first_page_replaces_only_its_conv() {
+    let m = MirrorMemory::new();
+    m.ingest_recent_page(
+        &page("sess_a", &[(100, "user", "a-旧"), (200, "user", "a-新")]),
+        &conv_log("sess_a"),
+        true,
+    );
+    m.ingest_recent_page(
+        &page("sess_c", &[(150, "user", "c-独有")]),
+        &conv_log("sess_c"),
+        true,
+    );
+    // 会话 A 重新水合，只有一条新窗口记录
+    m.ingest_recent_page(
+        &page("sess_a", &[(200, "user", "a-新")]),
+        &conv_log("sess_a"),
+        true,
+    );
+    let a = m.records_of("sess_a");
+    assert_eq!(a.len(), 1, "首页替换该会话段: {a:?}");
+    assert_eq!(a[0].content, "a-新");
+    assert_eq!(m.records_of("sess_c").len(), 1, "其他会话不受影响");
+}
+
+/// 全局窗口（conv=None）只追加不替换：不得冲掉已按会话水合的段。
+#[test]
+fn page_ingest_global_window_keeps_scoped_segments() {
+    let m = MirrorMemory::new();
+    m.ingest_recent_page(
+        &page("sess_d", &[(100, "user", "会话内")]),
+        &conv_log("sess_d"),
+        true,
+    );
+    let global = HydrateLog {
+        channel: "test",
+        id: "mem.hydrate",
+        conv: None,
+        elapsed_ms: 0,
+    };
+    let mut v = page("", &[(90, "user", "无归属")]);
+    v["records"][0]["metadata"] = serde_json::json!({ "role": "user" });
+    m.ingest_recent_page(&v, &global, true);
+    assert_eq!(m.len(), 2, "全局窗口不得清空会话段: {:?}", m.recent(10));
+}

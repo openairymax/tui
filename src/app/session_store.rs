@@ -99,6 +99,15 @@ fn rebuild(recs: &[MemoryRecord], seq: &mut u64) -> VecDeque<ChatMessage> {
     out
 }
 
+/// 记忆角色 → 消息角色（未知角色（system/工具）不上屏，与 [`rebuild`] 同口径）。
+fn role_of(role: &str) -> Option<MessageRole> {
+    match role {
+        "user" => Some(MessageRole::User),
+        "assistant" => Some(MessageRole::Agent),
+        _ => None,
+    }
+}
+
 /// 把记忆记录按 conv 分组（组内旧→新，组间最近活跃在前）。
 fn group_by_conv(recent: Vec<MemoryRecord>) -> Vec<(String, Vec<MemoryRecord>)> {
     let mut out: Vec<(String, Vec<MemoryRecord>)> = Vec::new();
@@ -314,6 +323,74 @@ impl App {
         }
         log::info!("restore_history: 经 mem_d 还原 {} 个会话", filled);
         true
+    }
+
+    /// 顶部前插更早一页（X8-03a）：以当前最早一条消息为锚点，把镜像里
+    /// 严格更早的记录补到队首。
+    ///
+    /// 找不到锚点（如本会话消息尚未落库）就保持原样——宁可少显示旧段，
+    /// 也不重复显示同一轮；记录身份（正文 + 时间戳）去重吸收分页游标在
+    /// 删除后的重复段。返回前插条数，>0 时冻结一次底部跟随增长，使视口
+    /// 停在读者正在看的位置（X8-03b）。
+    pub(super) fn prepend_older_page(&mut self, conv: &str) -> usize {
+        let recs = self.memory.records_of(conv);
+        if recs.is_empty() {
+            return 0;
+        }
+        let i = self.current_tab_index();
+        let live = self.session_tabs.get(i).is_some_and(|t| t.conv == conv);
+        let queue: &mut VecDeque<ChatMessage> = if live {
+            &mut self.messages
+        } else {
+            match self.session_tabs.get_mut(i) {
+                Some(t) if t.conv == conv => &mut t.messages,
+                _ => return 0,
+            }
+        };
+        let Some(head) = queue.front() else {
+            return 0;
+        };
+        let (head_role, head_text) = (head.role, head.content.as_str());
+        let Some(anchor) = recs.iter().position(|r| {
+            role_of(&r.role).is_some_and(|role| role == head_role) && r.content == head_text
+        }) else {
+            return 0;
+        };
+        if anchor == 0 {
+            return 0;
+        }
+        let seen: std::collections::HashSet<(&str, &str)> = queue
+            .iter()
+            .map(|m| (m.content.as_str(), m.timestamp.as_str()))
+            .collect();
+        let mut seq = self.msg_seq;
+        let mut older: Vec<ChatMessage> = Vec::new();
+        for r in &recs[..anchor] {
+            let Some(role) = role_of(&r.role) else {
+                continue;
+            };
+            if seen.contains(&(r.content.as_str(), r.timestamp.as_str())) {
+                continue;
+            }
+            seq += 1;
+            older.push(ChatMessage {
+                role,
+                content: r.content.clone(),
+                timestamp: r.timestamp.clone(),
+                id: seq,
+                original_bytes: r.content.len(),
+            });
+        }
+        let n = older.len();
+        for m in older.into_iter().rev() {
+            queue.push_front(m);
+        }
+        if n > 0 {
+            self.msg_seq = seq;
+            self.follow_freeze_once = true;
+        }
+        log::debug!("memory: prepend {n} older records conv={conv:?}");
+        n
     }
 }
 
