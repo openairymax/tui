@@ -22,6 +22,8 @@ use std::sync::OnceLock;
 use syntect::easy::ScopeRegionIterator;
 use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 
+use super::lang;
+
 /// 语法定义集：进程内一次加载。
 ///
 /// packdump 反序列化在百毫秒量级，逐代码块重载不可接受；L1 解析缓存（key +
@@ -43,12 +45,17 @@ pub(super) fn render_code(
     // 正文每行另占 indent + 1 列前缀，预算须先扣除，否则窄屏下必然右溢
     let budget = width.saturating_sub(indent + 1);
     let bg = base.bg(style::surface());
+    // 徽章展示探测后的规范名：```main.py 与 ```py 应显示同一个语言
+    let shown = match lang::detect(lang) {
+        Some(found) => found.id,
+        None => lang,
+    };
 
-    if !lang.is_empty() {
+    if !shown.is_empty() {
         out.push(Line::from(vec![
             Span::styled(" ".repeat(indent), Style::default()),
             Span::styled(
-                format!("  {}  ", grid::clip(lang, budget)),
+                format!("  {}  ", grid::clip(shown, budget)),
                 base.fg(style::accent())
                     .bg(style::surface_active())
                     .add_modifier(Modifier::BOLD),
@@ -67,10 +74,15 @@ pub(super) fn render_code(
 /// 逐行分词着色。语言无法识别时退化为纯文本着色，绝不放弃整块内容。
 fn highlight(lang: &str, body: &str, base: Style) -> Vec<Vec<Span<'static>>> {
     let set = syntaxes();
-    let syntax = if lang.is_empty() {
+    // 走探测表：syntect 的 token 查找认不出 `main.py`、`BASH` 这类写法
+    let token = match lang::detect(lang) {
+        Some(found) => found.token,
+        None => lang,
+    };
+    let syntax = if token.is_empty() {
         set.find_syntax_plain_text()
     } else {
-        set.find_syntax_by_token(lang)
+        set.find_syntax_by_token(token)
             .unwrap_or_else(|| set.find_syntax_plain_text())
     };
 
@@ -242,6 +254,13 @@ mod tests {
     fn unknown_language_degrades_to_plain() {
         let lines = render_code("no-such-lang-xyz", "some text", 0, 60, Style::default());
         assert!(joined(&lines).contains("some text"));
+    }
+
+    #[test]
+    fn path_tag_renders_canonical_badge() {
+        let lines = render_code("src/main.py", "x = 1", 0, 60, Style::default());
+        assert!(joined(&lines).contains("python"), "应显示探测后的规范名");
+        assert!(!joined(&lines).contains("main.py"), "徽章不显示原始路径");
     }
 
     #[test]

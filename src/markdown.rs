@@ -10,6 +10,7 @@
 //   block.rs     —— 块级事件流编排（段落/标题/列表/引用/代码/表格/脚注/分隔线）。
 //   inline.rs    —— 行内样式（嵌套强调/链接/删除线/行内代码/图片/裸 URL）。
 //   code.rs      —— 代码块语言徽章与 syntect 分词着色。
+//   lang.rs      —— 语言标记探测（围栏标注/扩展名 → 规范 id，X4-04a）。
 //   table.rs     —— 表格列宽对齐与超宽截断。
 //   math.rs      —— 数学定界符归一与 LaTeX 终端降级。
 //   plot.rs      —— ```plot 画板（0.1.17，本版未改动）。
@@ -23,6 +24,7 @@
 mod block;
 mod code;
 mod inline;
+mod lang;
 mod math;
 mod plot;
 mod table;
