@@ -25,7 +25,9 @@ use super::event::model::{Body, Control, Domain, Event, Outcome};
 pub(crate) mod approvals;
 pub(crate) mod dirty;
 pub(crate) mod msgs;
+pub(crate) mod steps;
 pub(crate) mod tasks;
+pub(crate) mod timeline;
 pub(crate) mod tools;
 
 #[cfg(test)]
@@ -34,7 +36,9 @@ mod support;
 use self::approvals::Approvals;
 use self::dirty::{Dirty, Span};
 use self::msgs::Msgs;
+use self::steps::Steps;
 use self::tasks::Tasks;
+use self::timeline::Entry;
 use self::tools::Tools;
 
 /// 运行态：由事件驱动，不由渲染层自己判断。
@@ -63,7 +67,7 @@ pub(crate) struct Fault {
     pub(crate) next: String,
 }
 
-/// 折叠结果：水位 + 计数 + 相位 + 消息/任务/工具/审批表 + 待刷新行。
+/// 折叠结果：水位 + 计数 + 相位 + 消息/任务/步骤/工具/审批表 + 待刷新行。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Projection {
     applied: u64,
@@ -72,6 +76,7 @@ pub(crate) struct Projection {
     counts: [u64; 4],
     msgs: Msgs,
     tasks: Tasks,
+    steps: Steps,
     tools: Tools,
     approvals: Approvals,
     dirty: Dirty,
@@ -91,6 +96,7 @@ impl Projection {
             counts: [0; 4],
             msgs: Msgs::new(),
             tasks: Tasks::new(),
+            steps: Steps::new(),
             tools: Tools::new(),
             approvals: Approvals::new(),
             dirty: Dirty::new(),
@@ -144,6 +150,7 @@ impl Projection {
             _ => {}
         }
         self.tasks.apply(ev);
+        self.steps.apply(ev);
         self.tools.apply(ev);
         self.approvals.apply(ev);
         if let Some(row) = self.msgs.push(ev) {
@@ -204,6 +211,16 @@ impl Projection {
     /// 任务表只读视图。
     pub(crate) fn tasks(&self) -> &Tasks {
         &self.tasks
+    }
+
+    /// 步骤表只读视图（X6-01a）。
+    pub(crate) fn steps(&self) -> &Steps {
+        &self.steps
+    }
+
+    /// 任务/步骤/工具三表按依赖序归并成时间线（X6-01a）。
+    pub(crate) fn timeline(&self) -> Vec<Entry> {
+        timeline::merge(&self.tasks, &self.steps, &self.tools)
     }
 
     /// 工具表只读视图。
