@@ -93,7 +93,7 @@ fn assert_fits(base: &Baseline) {
 /// 40 列档即低于最小可用宽度：守卫接管整屏，宽度合规且退出路径可达。
 #[test]
 fn baseline_40col_fits_guard() {
-    assert!(40 < MIN_TERM_COLS, "40 列档须落在最小可用宽度之下");
+    const { assert!(40 < MIN_TERM_COLS, "40 列档须落在最小可用宽度之下") };
     let mut fx = Fixture::new("x2-26a-40");
     let base = Baseline::capture(&mut fx.app, 40, H);
     assert_fits(&base);
