@@ -60,13 +60,20 @@ fn code_token_color_continues_across_wrap() {
         &format!("```rust\nlet s = \"{payload}\";\n```"),
     );
     let buf = frame_buffer(&mut fx.app, W, H);
+    // 顶栏品牌名 AirymaxRT 里也有一个 x：从代码块首行起扫，避免把顶栏
+    // 计入「token 字符」而误报续色断裂。
+    let screen_rows = rows_of(&buf, W, H);
+    let start = screen_rows
+        .iter()
+        .position(|r| r.contains("let s ="))
+        .expect("代码块首行未上屏");
     let success = style::success();
 
     let (mut total, mut rows) = (0usize, 0usize);
-    for y in 0..H {
+    for y in start..H as usize {
         let mut has_x = false;
         for x in 0..W {
-            let cell = &buf[(x, y)];
+            let cell = &buf[(x, y as u16)];
             if cell.symbol() == "x" {
                 total += 1;
                 has_x = true;
@@ -74,7 +81,7 @@ fn code_token_color_continues_across_wrap() {
                     cell.fg,
                     success,
                     "token 跨折行续色断裂 @({x},{y})，屏幕:\n{}",
-                    rows_of(&buf, W, H).join("\n")
+                    screen_rows.join("\n")
                 );
             }
         }
