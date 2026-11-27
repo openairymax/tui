@@ -176,7 +176,9 @@ mod tests {
     #[test]
     fn covers_three_domains() {
         let failure = json!({"reason": "provider_unreachable", "next_action": "retry"});
-        let cases: [(&str, Value, Domain); 8] = [
+        // 用 Vec 而非定长数组：用例表随发帧增量增长，长度注解会在新增用例时
+        // 与元素数脱节（bc7c82f 即因补两张子卡未同步长度而编译失败）。
+        let cases: Vec<(&str, Value, Domain)> = vec![
             (
                 "token_delta",
                 json!({"data": {"delta": "片"}}),
