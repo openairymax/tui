@@ -3,11 +3,12 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// markdown 代码块层（0.1.18 W6）：语言徽章 + syntect 分词着色 + 超长行横向省略。
+// markdown 代码块层（0.1.18 W6）：语言徽章 + 作用域着色 + 超长行横向省略。
 //
-// 主题纪律：本层只消费 syntect 的 scope 分类（keyword/string/comment/number/
-// function/type...），不消费其调色板——Cargo.toml 关掉 default-themes，着色一律
-// 由本仓 style::* 设计令牌裁决，随深浅主题与色深切换，无第二套颜色来源。
+// 词法与样式分两层：词法（lex.rs，X4-05a）只产出文本与作用域栈，本层只消费
+// syntect 的 scope 分类（keyword/string/comment/number/function/type...）并映射
+// 到本仓 style::* 设计令牌，不消费其调色板——Cargo.toml 关掉 default-themes，
+// 着色随深浅主题与色深切换，无第二套颜色来源；同一段词法结果可按主题复染。
 //
 // 宽度纪律：超长行经 L2 唯一裁决点 `crate::engine::grid::clip_spans` 横向省略，
 // 本模块不自行测量后截断。
@@ -18,20 +19,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use std::sync::OnceLock;
-use syntect::easy::ScopeRegionIterator;
-use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 
-use super::lang;
-
-/// 语法定义集：进程内一次加载。
-///
-/// packdump 反序列化在百毫秒量级，逐代码块重载不可接受；L1 解析缓存（key +
-/// 内容指纹 + 宽度）保证同一段内容只走到这里一次。
-fn syntaxes() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_nonewlines)
-}
+use super::{lang, lex};
 
 /// 渲染代码块：语言徽章 + 高亮正文（超长行横向省略）。
 pub(super) fn render_code(
@@ -71,54 +60,28 @@ pub(super) fn render_code(
     out
 }
 
-/// 逐行分词着色。语言无法识别时退化为纯文本着色，绝不放弃整块内容。
+/// 逐行分词着色：词法由 lex 层产出（X4-05a），本函数只做作用域 → 设计令牌
+/// 的样式映射（X4-05b）。语言无法识别时 lex 退化为纯文本，绝不放弃整块内容。
 fn highlight(lang: &str, body: &str, base: Style) -> Vec<Vec<Span<'static>>> {
-    let set = syntaxes();
     // 走探测表：syntect 的 token 查找认不出 `main.py`、`BASH` 这类写法
     let token = match lang::detect(lang) {
         Some(found) => found.token,
         None => lang,
     };
-    let syntax = if token.is_empty() {
-        set.find_syntax_plain_text()
-    } else {
-        set.find_syntax_by_token(token)
-            .unwrap_or_else(|| set.find_syntax_plain_text())
-    };
-
-    let mut state = ParseState::new(syntax);
-    let mut stack = ScopeStack::new();
-    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
-
-    for line in body.split('\n') {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        match state.parse_line(line, set) {
-            Ok(ops) => {
-                for (text, op) in ScopeRegionIterator::new(&ops, line) {
-                    if stack.apply(op).is_err() {
-                        stack = ScopeStack::new();
-                    }
-                    if !text.is_empty() {
-                        spans.push(Span::styled(text.to_string(), scope_style(&stack, base)));
-                    }
-                }
-            }
-            Err(_) => {
-                if !line.is_empty() {
-                    spans.push(Span::styled(line.to_string(), base));
-                }
-            }
-        }
-        out.push(spans);
-    }
-    out
+    lex::lines(token, body)
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|t| Span::styled(t.text, scope_style(&t.scopes, base)))
+                .collect()
+        })
+        .collect()
 }
 
 /// scope 栈 → 设计令牌样式。由最具体的作用域向外匹配，未分类作用域向上回退。
-fn scope_style(stack: &ScopeStack, base: Style) -> Style {
-    for scope in stack.as_slice().iter().rev() {
-        let name = scope.build_string();
-        if let Some(style) = classify(&name, base) {
+fn scope_style(scopes: &[String], base: Style) -> Style {
+    for name in scopes.iter().rev() {
+        if let Some(style) = classify(name, base) {
             return style;
         }
     }
