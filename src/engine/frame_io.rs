@@ -196,6 +196,17 @@ mod tests {
         assert_eq!(wrap(buf, &parts, false), buf);
     }
 
+    /// 超 1MiB 的整帧必须被切成多片，且每片不超上限（X2-11b）。
+    #[test]
+    fn megabyte_frame_splits_under_limit() {
+        const LIMIT: usize = 1024 * 1024;
+        let buf = vec![b'.'; LIMIT + 512];
+        let parts = split(&buf, LIMIT);
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|&(s, e)| e - s <= LIMIT));
+        assert_eq!(parts.last().copied(), Some((LIMIT, buf.len())));
+    }
+
     fn on_count(buf: &[u8]) -> usize {
         buf.windows(SYNC_ON.len()).filter(|w| *w == SYNC_ON).count()
     }

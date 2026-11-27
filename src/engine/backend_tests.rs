@@ -377,6 +377,20 @@ fn drop_closes_pending_sync_block() {
     assert!(bytes.ends_with(SYNC_OFF), "bytes = {bytes:?}");
 }
 
+/// 断管（EPIPE）异常：失败路径同样补发关闭序列，终端不残留同步态（X2-14b）。
+#[test]
+fn broken_pipe_closes_sync_block() {
+    let sink = FailSink::new(1);
+    let mut b = BufferedBackend::new(sink.clone());
+    b.set_sync(true);
+    let a = cell("A");
+    b.draw(vec![(0u16, 0u16, &a)].into_iter()).unwrap();
+    assert!(b.flush().is_err());
+    assert_eq!(sink.bytes(), SYNC_OFF.to_vec(), "只应留下关闭序列");
+    assert_eq!(b.fail_count(), 1);
+    assert!(!b.degraded());
+}
+
 /// 连续失败达阈值即切逐格回退，内容仍然送达（X2-15a/b）。
 #[test]
 fn repeated_failures_degrade_to_cell_writes() {
