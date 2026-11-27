@@ -21,9 +21,10 @@
 //     无池索引字段；该设计随 §5A.0 一并收敛，本版不引入第二份字符串池。
 //
 // 不变量（属性测试实证）：对任意 max ≥ 2，折行结果每段显示宽度 ≤ max 且
-// 拼接无损；对任意 max，截断结果显示宽度 ≤ max；列宽分配结果的实渲染总宽
-// （Σ(列宽+unit)+fixed）≤ 可用宽度。
+// 非空白字符拼接无损（断点处的空白折叠为换行）；对任意 max，截断结果显示
+// 宽度 ≤ max；列宽分配结果的实渲染总宽（Σ(列宽+unit)+fixed）≤ 可用宽度。
 
+use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -81,7 +82,11 @@ pub(crate) fn pad(s: &str, cols: usize) -> String {
     }
 }
 
-/// 按显示宽度折行（无断词语义，逐字符硬折）。
+/// 按显示宽度折行（词边界优先，词超宽时退化为逐字符硬折）。
+///
+/// 断点选择（X4-01b）：优先在空白串之前断行，断行处的空白折叠为换行，故
+/// 非空白字符拼接无损；一段内没有空白（中文、长标识符）时才按字符硬折，
+/// 保证每段显示宽度恒 ≤ `max`。
 ///
 /// `max` < 2 时单列无法容纳任何双列字符，原样返回单段（调用方已用
 /// `.max(8)` 兜底，此处仅保证确定性且不丢字符）。
@@ -92,16 +97,95 @@ pub(crate) fn wrap(s: &str, max: usize) -> Vec<String> {
     if max < 2 {
         return vec![s.to_string()];
     }
-    let mut out: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut cur_w = 0usize;
-    for ch in s.chars() {
-        let w = char_w(ch);
-        if cur_w + w > max && !cur.is_empty() {
-            out.push(std::mem::take(&mut cur));
-            cur_w = 0;
+    let units: Vec<(char, Style)> = s.chars().map(|c| (c, Style::default())).collect();
+    fold(&units, max)
+        .into_iter()
+        .map(|line| line.into_iter().map(|(c, _)| c).collect())
+        .collect()
+}
+
+/// 按显示宽度折行一组带样式片段：结果每段显示宽度 ≤ `max`，非空白字符无损。
+///
+/// markdown 的行内样式在解析期已定型为片段序列，折行不能再退化为纯字符串
+/// 处理（否则样式丢失或需二次解析）；此处把片段摊平为带样式的字符序列，
+/// 与 [`wrap`] 共用同一断点算法与宽度口径，再按样式合并回片段。
+pub(crate) fn wrap_spans(spans: &[Span<'_>], max: usize) -> Vec<Vec<Span<'static>>> {
+    if max < 2 {
+        return vec![spans
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), s.style))
+            .collect()];
+    }
+    let units: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+        .collect();
+    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
+    for line in fold(&units, max) {
+        let mut spans_out: Vec<Span<'static>> = Vec::new();
+        let mut buf = String::new();
+        let mut cur_style = Style::default();
+        for (i, (c, st)) in line.into_iter().enumerate() {
+            if i > 0 && st != cur_style {
+                spans_out.push(Span::styled(std::mem::take(&mut buf), cur_style));
+            }
+            cur_style = st;
+            buf.push(c);
         }
-        cur.push(ch);
+        if !buf.is_empty() {
+            spans_out.push(Span::styled(buf, cur_style));
+        }
+        out.push(spans_out);
+    }
+    if out.is_empty() {
+        out.push(Vec::new());
+    }
+    out
+}
+
+/// 折行核心：带样式的字符序列 → 行序列。
+///
+/// 断点机会记录在 `brk`：最近一次「空白串起点」的下标（不含该空白），
+/// 只有在它之前已有非空白内容时才可用来断行。行满时优先回退到该点，
+/// 走不通则硬折；两条路径都保证结果宽度 ≤ `max`。
+fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
+    let mut out: Vec<Vec<(char, Style)>> = Vec::new();
+    let mut cur: Vec<(char, Style)> = Vec::new();
+    let mut cur_w = 0usize;
+    let mut brk: Option<usize> = None;
+    let mut prev_ws = false;
+    let mut has_text = false;
+
+    for &(ch, st) in units {
+        let w = char_w(ch);
+        while !cur.is_empty() && cur_w + w > max {
+            if let Some(b) = brk {
+                out.push(cur.drain(..b).collect());
+                // 断点处的空白折叠为换行：剩下的只可能是空白串 + 后续内容
+                cur = std::mem::take(&mut cur)
+                    .into_iter()
+                    .skip_while(|(c, _)| c.is_whitespace())
+                    .collect();
+                cur_w = cur.iter().map(|(c, _)| char_w(*c)).sum();
+                has_text = cur.iter().any(|(c, _)| !c.is_whitespace());
+                prev_ws = false;
+                brk = last_break(&cur);
+            } else {
+                out.push(std::mem::take(&mut cur));
+                cur_w = 0;
+                has_text = false;
+                prev_ws = false;
+            }
+        }
+        if ch.is_whitespace() {
+            if !prev_ws && has_text {
+                brk = Some(cur.len());
+            }
+        } else {
+            has_text = true;
+        }
+        prev_ws = ch.is_whitespace();
+        cur.push((ch, st));
         cur_w += w;
     }
     if !cur.is_empty() {
@@ -110,47 +194,23 @@ pub(crate) fn wrap(s: &str, max: usize) -> Vec<String> {
     out
 }
 
-/// 按显示宽度折行一组带样式片段：结果每段显示宽度 ≤ `max`，拼接无损。
-///
-/// markdown 的行内样式在解析期已定型为片段序列，折行不能再退化为纯字符串
-/// 处理（否则样式丢失或需二次解析）；此处按 `char_w` 逐字符切分并保留原样式，
-/// 使其与 [`wrap`] 共享同一宽度口径。
-pub(crate) fn wrap_spans(spans: &[Span<'_>], max: usize) -> Vec<Vec<Span<'static>>> {
-    if max < 2 {
-        return vec![spans
-            .iter()
-            .map(|s| Span::styled(s.content.to_string(), s.style))
-            .collect()];
-    }
-    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
-    let mut cur: Vec<Span<'static>> = Vec::new();
-    let mut cur_w = 0usize;
-    for sp in spans {
-        let style = sp.style;
-        let mut buf = String::new();
-        for ch in sp.content.chars() {
-            let w = char_w(ch);
-            if cur_w + w > max && cur_w > 0 {
-                if !buf.is_empty() {
-                    cur.push(Span::styled(std::mem::take(&mut buf), style));
-                }
-                out.push(std::mem::take(&mut cur));
-                cur_w = 0;
+/// 最近一次可断行位置：空白串的起点，且其前缀含非空白内容；否则 `None`。
+fn last_break(line: &[(char, Style)]) -> Option<usize> {
+    let mut pos = None;
+    let mut in_ws = false;
+    let mut seen_text = false;
+    for (i, (c, _)) in line.iter().enumerate() {
+        if c.is_whitespace() {
+            if seen_text && !in_ws {
+                pos = Some(i);
             }
-            buf.push(ch);
-            cur_w += w;
+            in_ws = true;
+        } else {
+            seen_text = true;
+            in_ws = false;
         }
-        if !buf.is_empty() {
-            cur.push(Span::styled(buf, style));
-        }
     }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    if out.is_empty() {
-        out.push(Vec::new());
-    }
-    out
+    pos
 }
 
 /// 按显示宽度截断一组带样式片段（超宽以省略号收尾）；结果宽度恒 ≤ `max`。
@@ -231,6 +291,11 @@ pub(crate) fn alloc_cols(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
+
+    fn line_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
 
     /// 混排语料：ASCII / CJK / 全角标点 / 全角字母数字 / 组合字符（e+U+0301）
     const SAMPLES: &[&str] = &[
@@ -264,7 +329,49 @@ mod tests {
     fn wrap_short_text_stays_single_line() {
         assert_eq!(wrap("你好", 10), vec!["你好"]);
         assert_eq!(wrap("abc", 10), vec!["abc"]);
-        assert_eq!(wrap("hello world", 5), vec!["hello", " worl", "d"]);
+    }
+
+    #[test]
+    fn wrap_prefers_word_boundary() {
+        assert_eq!(wrap("hello world", 5), vec!["hello", "world"]);
+        assert_eq!(
+            wrap("the quick brown fox", 10),
+            vec!["the quick", "brown fox"]
+        );
+        // 词边界优先后各段仍不越界
+        for piece in wrap("the quick brown fox jumps", 10) {
+            assert!(width(&piece) <= 10, "{piece:?}");
+        }
+    }
+
+    #[test]
+    fn wrap_hard_breaks_overlong_word() {
+        assert_eq!(wrap("abcdefghij", 3), vec!["abc", "def", "ghi", "j"]);
+        assert_eq!(wrap("a  b c", 4), vec!["a", "b c"]);
+    }
+
+    #[test]
+    fn wrap_spans_keeps_style_across_break() {
+        let spans = vec![
+            Span::styled("the quick ", Style::default().fg(Color::Red)),
+            Span::styled("brown fox", Style::default().fg(Color::Blue)),
+        ];
+        let lines = wrap_spans(&spans, 10);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0][0].content.as_ref(), "the quick");
+        assert_eq!(lines[1][0].content.as_ref(), "brown fox");
+        assert_eq!(lines[1][0].style.fg, Some(Color::Blue));
+        for line in &lines {
+            assert!(line_w(line) <= 10);
+        }
+    }
+
+    #[test]
+    fn wrap_spans_splits_inside_single_style() {
+        let spans = vec![Span::styled("abcdefghij", Style::default())];
+        let lines = wrap_spans(&spans, 3);
+        let texts: Vec<String> = lines.iter().map(|l| line_text(l)).collect();
+        assert_eq!(texts, vec!["abc", "def", "ghi", "j"]);
     }
 
     #[test]
@@ -338,12 +445,14 @@ mod tests {
         }
     }
 
+    /// X4-01b：词边界断行只折叠断点空白，非空白字符拼接仍无损。
     #[test]
     fn wrap_is_lossless() {
         for max in 2..=200usize {
             for s in SAMPLES {
                 let joined: String = wrap(s, max).concat();
-                assert_eq!(joined, *s, "折行丢字符: s={s:?} max={max}");
+                let kept = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
+                assert_eq!(kept(&joined), kept(s), "折行丢非空白字符: s={s:?} max={max}");
             }
         }
     }
