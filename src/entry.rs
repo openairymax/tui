@@ -727,6 +727,7 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
                 let ctrl = m.modifiers.contains(event::KeyModifiers::CONTROL);
                 match m.kind {
                     MouseEventKind::ScrollUp => {
+                        app.select.clear();
                         if app.transcript_open {
                             app.transcript_wheel(true, app.wheel_lines(shift, ctrl));
                         } else if app.active_panel == ActivePanel::Focus {
@@ -736,6 +737,7 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
                         }
                     }
                     MouseEventKind::ScrollDown => {
+                        app.select.clear();
                         if app.transcript_open {
                             app.transcript_wheel(false, app.wheel_lines(shift, ctrl));
                         } else if app.active_panel == ActivePanel::Focus {
@@ -748,6 +750,15 @@ async fn run_app<B: Backend + SyncCaps + WriteLevel>(
                     // 决议点击与键盘 y/a/n 共用动作表落地。
                     MouseEventKind::Down(event::MouseButton::Left) => {
                         click(app, m.column, m.row);
+                        sel_begin(app, m.column, m.row);
+                    }
+                    // 拖选（X5-10a）：坐标按正文区钳位，拖出视口不丢选区。
+                    MouseEventKind::Drag(event::MouseButton::Left) => {
+                        sel_drag(app, m.column, m.row);
+                    }
+                    // 抬起（X5-10b）：有实际位移才复制，单击不触发。
+                    MouseEventKind::Up(event::MouseButton::Left) => {
+                        sel_finish(app);
                     }
                     _ => {}
                 }
@@ -776,5 +787,70 @@ fn click(app: &mut App, col: u16, row: u16) {
         Some(engine::hit::Target::Input) => app.focus_input(),
         Some(engine::hit::Target::Main) => app.focus_main(),
         _ => {}
+    }
+}
+
+/// 鼠标坐标 → 正文区相对点（X5-10a）：越界按边界钳位，拖出视口不丢选区。
+fn sel_point(app: &App, col: u16, row: u16) -> Option<engine::select::Point> {
+    let sel = app.sel_area?;
+    if sel.w == 0 || sel.h == 0 {
+        return None;
+    }
+    let r = row.saturating_sub(sel.y).min(sel.h - 1);
+    let c = col.saturating_sub(sel.x).min(sel.w - 1);
+    Some(engine::select::Point::new(r, c))
+}
+
+/// 按下即建锚点，仅限对话正文（会话视图/看板/向导不参与文本拖选）。
+fn sel_begin(app: &mut App, col: u16, row: u16) {
+    if app.transcript_open || app.active_panel != ActivePanel::Chat || app.wizard.active {
+        return;
+    }
+    if app.shell.hit(col, row) != Some(engine::hit::Target::Main) {
+        return;
+    }
+    if let Some(p) = sel_point(app, col, row) {
+        app.select.begin(p);
+    }
+}
+
+fn sel_drag(app: &mut App, col: u16, row: u16) {
+    if !app.select.active() {
+        return;
+    }
+    if let Some(p) = sel_point(app, col, row) {
+        app.select.drag(p);
+    }
+}
+
+/// 抬起收尾（X5-10b）：有实际位移才复制。文本取自本帧可见行快照，
+/// OSC 52 由终端转交系统剪贴板；失败只提示，不打断会话。
+fn sel_finish(app: &mut App) {
+    if !app.select.active() {
+        return;
+    }
+    let points = app.select.points();
+    let moved = app.select.moved();
+    app.select.clear();
+    if !moved {
+        return;
+    }
+    let Some((a, b)) = points else {
+        return;
+    };
+    let text = engine::select::text_between(&app.sel_lines, a, b);
+    if text.trim().is_empty() || !engine::clip::copy_on_select() {
+        return;
+    }
+    match engine::clip::copy(&text) {
+        Ok(()) => {
+            let n = text.chars().count();
+            info!("拖选复制 {} 字符（OSC 52）", n);
+            app.toast(format!("已复制 {n} 字符到系统剪贴板"));
+        }
+        Err(e) => {
+            warn!("OSC 52 复制失败：{e}");
+            app.toast(format!("复制失败：{e}"));
+        }
     }
 }

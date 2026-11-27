@@ -116,6 +116,13 @@ pub struct App {
     pub(crate) focus_ring: crate::engine::focus::Focus,
     /// 外壳几何快照（0.1.21 X5-07）：渲染每帧回写，命中测试只读同一份事实。
     pub(crate) shell: crate::engine::hit::Shell,
+    /// 拖选状态（0.1.21 X5-10a）：端点坐标相对正文区，不随终端绝对位置漂移。
+    pub(crate) select: crate::engine::select::Select,
+    /// 可见正文纯文本快照（X5-10b）：渲染每帧回写，与落格几何同源，
+    /// 选区切片只认这一份事实（含折行后的真实行）。
+    pub(crate) sel_lines: Vec<String>,
+    /// 正文区几何（X5-10b）：鼠标坐标换算与选区高亮的基准。
+    pub(crate) sel_area: Option<crate::engine::hit::Area>,
     /// 焦点视图消息快照（0.1.18 B11/W14）：Alt+F 打开时取最近一条回复
     /// 克隆，渲染与滚动均基于快照，不受后续消息影响；Esc 退出即弃。
     pub focus_msg: Option<ChatMessage>,
@@ -460,6 +467,9 @@ impl App {
             mouse_capture: false,
             focus_ring: crate::engine::focus::Focus::new(),
             shell: crate::engine::hit::Shell::default(),
+            select: crate::engine::select::Select::default(),
+            sel_lines: Vec::new(),
+            sel_area: None,
             focus_msg: None,
             focus_scroll: 0,
             focus_scroll_max: 0,

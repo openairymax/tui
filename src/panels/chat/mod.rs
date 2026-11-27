@@ -18,7 +18,7 @@ pub use view::ChatView;
 
 use ratatui::{
     layout::{Alignment, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
@@ -58,7 +58,24 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     app.chat_scroll_max = frame.total.saturating_sub(viewport) as u16;
     app.follow_observe(frame.total, body_w);
 
+    // 0.1.21 X5-10b：拖选需要「屏幕上这段字是什么」的同一份事实。在把
+    // 行交给 Paragraph 前做纯文本快照，与落格几何同帧回写；只在鼠标
+    // 捕获开启（拖选前提）时物化，关闭捕获的用户零额外分配。
+    if app.mouse_capture {
+        app.sel_lines = frame.lines.iter().map(line_text).collect();
+        app.sel_area = Some(crate::engine::hit::Area::new(
+            area.x,
+            area.y,
+            body_w,
+            area.height,
+        ));
+    } else {
+        app.sel_lines.clear();
+        app.sel_area = None;
+    }
+
     f.render_widget(Paragraph::new(Text::from(frame.lines)), area);
+    paint_selection(f, area, body_w, app);
 
     // 滚动条：内容超出视口且有对话时显示；画在预留的最右 1 列上
     // （正文布局已按 width-1 排布，不再压住正文最后一列）；窄屏隐藏
@@ -184,9 +201,66 @@ pub(super) fn focus_hint(from_top: usize, scroll_max: usize, viewport: usize) ->
     }
 }
 
+/// 一行可见文本的纯字符串（span 按序拼接，样式无关）。拖选切片只取
+/// 内容，不携带颜色/修饰。
+fn line_text(line: &Line<'_>) -> String {
+    let mut out = String::new();
+    for span in &line.spans {
+        out.push_str(&span.content);
+    }
+    out
+}
+
+/// 选区高亮：把选区覆盖的格子加反显。几何与文本切片共用同一份
+/// sel_area/sel_lines；快照与本帧渲染同源，滚动刷新后选区不会漂行。
+fn paint_selection(f: &mut Frame, area: Rect, body_w: u16, app: &App) {
+    let Some((a, b)) = app.select.points() else {
+        return;
+    };
+    let Some(sel) = app.sel_area else {
+        return;
+    };
+    if sel.x != area.x || sel.y != area.y {
+        return;
+    }
+    let (start, end) = if (a.row, a.col) <= (b.row, b.col) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let last_col = body_w.saturating_sub(1);
+    let buf = f.buffer_mut();
+    for row in start.row..=end.row {
+        if row >= area.height {
+            break;
+        }
+        let from = if row == start.row { start.col } else { 0 };
+        let to = if row == end.row {
+            end.col.min(last_col)
+        } else {
+            last_col
+        };
+        for col in from..=to {
+            if let Some(cell) = buf.get_mut(area.x + col, area.y + row) {
+                cell.modifier |= Modifier::REVERSED;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_text_concatenates_spans() {
+        let line = Line::from(vec![
+            Span::raw("hello"),
+            Span::styled(" world", Style::default()),
+        ]);
+        assert_eq!(line_text(&line), "hello world");
+        assert_eq!(line_text(&Line::raw("")), "");
+    }
 
     /// B11（0.1.18）V11.3 位置指示契约四态：内容未超出视口无滚动量（安静）、
     /// 到顶显式提示、滚动途中显示 `末行/总行`、到底安静（默认阅读位为
