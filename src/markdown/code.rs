@@ -248,6 +248,7 @@ struct CodeStats {
     hits: u64,
     misses: u64,
     entries: usize,
+    bytes: usize,
 }
 
 #[cfg(test)]
@@ -258,6 +259,7 @@ fn stats() -> CodeStats {
             hits: cache.hits,
             misses: cache.misses,
             entries: cache.entries.len(),
+            bytes: cache.bytes,
         }
     })
 }

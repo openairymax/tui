@@ -204,3 +204,49 @@ fn code_cache_hits_on_same_triple() {
     assert_eq!((s.hits, s.misses), (1, 4), "宽度变化不应命中: {s:?}");
     assert_eq!(s.entries, 4, "四个不同键各占一条");
 }
+
+/// X4-06b（IS-08 回归）：稳定围栏块逐帧重绘的命中率必须达标。
+///
+/// 流式会话里围栏块生成完毕后，每帧仍会重绘整条消息；若此处不命中，
+/// 词法分析会随代码块长度线性拖慢每一帧。
+#[test]
+fn stable_block_hit_rate_meets_target() {
+    reset();
+    let body = "fn main() { let s = \"hi\"; }";
+    const FRAMES: u64 = 600;
+    for _ in 0..FRAMES {
+        let _ = render_code("rust", body, 2, 80, Style::default());
+    }
+    let s = stats();
+    assert_eq!(s.misses, 1, "稳定块只应首帧未命中: {s:?}");
+    assert_eq!(s.hits, FRAMES - 1, "其余帧都应命中: {s:?}");
+    let rate = s.hits as f64 / (s.hits + s.misses) as f64;
+    assert!(rate >= 0.95, "命中率未达 95% 红线: {rate:.3} {s:?}");
+}
+
+/// X4-06b：正文逐帧增长时全部失效，但条目与字节都不越双界。
+///
+/// 增长中的代码块无法复用，缓存必须靠淘汰兜底，否则长会话会被
+/// 每帧一个新键撑爆内存。
+#[test]
+fn streaming_growth_stays_bounded() {
+    reset();
+    let mut body = String::new();
+    for i in 0..300 {
+        body.push_str(&format!("let v{i} = {i};\n"));
+        let _ = render_code("rust", &body, 0, 80, Style::default());
+    }
+    let s = stats();
+    assert_eq!(s.misses, 300, "每帧正文都在变，不应有命中: {s:?}");
+    assert_eq!(s.hits, 0, "增长中的正文不得产生命中: {s:?}");
+    assert!(
+        s.entries <= CODE_CACHE_ENTRIES,
+        "条目越界: {} > {CODE_CACHE_ENTRIES}",
+        s.entries
+    );
+    assert!(
+        s.bytes <= CODE_CACHE_BYTES,
+        "字节越界: {} > {CODE_CACHE_BYTES}",
+        s.bytes
+    );
+}
