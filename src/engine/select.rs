@@ -128,14 +128,15 @@ mod tests {
     #[test]
     fn forward_selection_joins_rows() {
         let got = text_between(&lines(), Point::new(0, 6), Point::new(1, 3));
-        assert_eq!(got, "world\n中文双宽");
+        // 终点列 3 落在「文」的第二格：该宽字整字计入，后两字不在选区内。
+        assert_eq!(got, "world\n中文");
     }
 
     #[test]
     fn reverse_selection_normalizes() {
         let a = Point::new(1, 3);
         let b = Point::new(0, 6);
-        assert_eq!(text_between(&lines(), a, b), "world\n中文双宽");
+        assert_eq!(text_between(&lines(), a, b), "world\n中文");
     }
 
     #[test]
