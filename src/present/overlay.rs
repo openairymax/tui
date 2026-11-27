@@ -49,6 +49,23 @@ fn term_rect(r: overlay::Rect) -> Rect {
     Rect::new(r.x, r.y, r.w, r.h)
 }
 
+/// 遮罩（X2-19a）：把区域内已有单元格整体压暗一档，区域外一格不动。
+///
+/// 终端没有 alpha 通道，跨平台一致的降亮手段是 `Modifier::DIM`（终端按
+/// 自身调色板降亮前景）：不换符号、不换色号，宽字符与颜色语义都保持。
+/// 区域先与缓冲区求交——布局给的是屏幕矩形，缓冲区可能只覆盖局部，
+/// 直接按下标写会越界 panic。
+pub(super) fn scrim(buf: &mut Buffer, area: Rect) {
+    let Some(area) = eng_rect(area).clip(eng_rect(buf.area)) else {
+        return;
+    };
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            buf[(x, y)].modifier |= Modifier::DIM;
+        }
+    }
+}
+
 /// 依赖降级横幅（0.1.19 U12，TUI 方案 §6.12 #1/#6）：单行常显最重依赖，
 /// 附真实存在的修复命令；恢复后由状态机撤销并进入冷却期，抖动计数进 /health。
 pub(super) fn render_degraded(f: &mut Frame, area: Rect, app: &App) {
@@ -279,11 +296,11 @@ pub(super) fn render_approval_banner(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::compose_bottom_right;
+    use super::{compose_bottom_right, scrim};
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
-        style::{Color, Style},
+        style::{Color, Modifier, Style},
         text::{Line, Text},
         widgets::{Block, Paragraph, Widget},
     };
@@ -352,5 +369,33 @@ mod tests {
         assert!(!drawn);
         assert!(!called);
         assert_eq!(buf[(0, 0)].symbol(), "·");
+    }
+
+    /// X2-19a：遮罩只压暗区内单元格，区外一格不碰。
+    #[test]
+    fn scrim_dims_inside_only() {
+        let mut buf = dotted(6, 3);
+        scrim(&mut buf, Rect::new(1, 1, 3, 1));
+        for x in 1..4 {
+            assert!(
+                buf[(x, 1)].modifier.contains(Modifier::DIM),
+                "区内 ({x},1) 应被压暗"
+            );
+        }
+        for (x, y) in [(0, 1), (4, 1), (1, 0), (1, 2)] {
+            assert!(
+                !buf[(x, y)].modifier.contains(Modifier::DIM),
+                "区外 ({x},{y}) 不得被压暗"
+            );
+        }
+    }
+
+    /// X2-19a：遮罩区域先与缓冲区求交，越界部分不写、不 panic。
+    #[test]
+    fn scrim_clips_to_buffer() {
+        let mut buf = dotted(4, 2);
+        scrim(&mut buf, Rect::new(2, 1, 10, 10));
+        assert!(buf[(3, 1)].modifier.contains(Modifier::DIM));
+        assert!(!buf[(1, 1)].modifier.contains(Modifier::DIM));
     }
 }

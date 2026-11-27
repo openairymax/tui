@@ -156,6 +156,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
             ActivePanel::SelfHost => panels::selfhost::render(f, main_area, app),
         }
     }
+    // 遮罩（X2-19a）：存在未决议审批时压暗主区背景，让审批提示成为视觉
+    // 焦点；输入栏与提示条不在遮罩范围，保持可读可操作。
+    if has_approval {
+        overlay::scrim(f.buffer_mut(), main_area);
+    }
     // 回放骨架行（0.1.19 §6.1 #2）：会话恢复期间主区不空白，右下角常显
     // 进度；计数由 100ms 回放泵节流推进。
     if view.replay_left() > 0 {
