@@ -12,6 +12,8 @@
 // 也验证关闭同步后写出流与源帧逐字节相同、首末字节不丢。
 
 use super::*;
+use crate::budget::MAX_RENDER_WRITE_CHARS;
+use crate::engine::frame_io;
 use std::sync::{Arc, Mutex};
 
 /// 单个符号的字节数：取 64KiB，使 24 格即越过 1MiB 分片上限。

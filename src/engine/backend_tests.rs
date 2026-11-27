@@ -9,6 +9,7 @@
 // 实现同文件将很快越过单文件行数上限；此处按 `#[path]` 挂回同一模块，
 // 仍可直接访问 crate 内可见的编码接口。
 
+use crate::engine::frame_io;
 use crate::engine::ladder::Ladder;
 use super::*;
 use std::sync::{Arc, Mutex};
