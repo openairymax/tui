@@ -112,6 +112,9 @@ pub struct App {
     /// 选择）；Ctrl+M 会话级切换。开启后滚轮滚动对话（Shift 加速 /
     /// Ctrl 细粒度），关闭即还原捕获（V11.1）。
     pub mouse_capture: bool,
+    /// 键位模式（0.1.21 X5-03）：vi/emacs 只映射视口导航，编辑键不随模式
+    /// 变化；启动期由 AIRY_TUI_KEYMAP 裁定，运行期 Alt+K 切换。
+    pub(crate) keymap: crate::engine::keymap::Mode,
     /// 焦点环（0.1.21 X5-01/02）：Tab/Shift-Tab 遍历，逐面板记忆回位。
     pub(crate) focus_ring: crate::engine::focus::Focus,
     /// 外壳几何快照（0.1.21 X5-07）：渲染每帧回写，命中测试只读同一份事实。
@@ -465,6 +468,7 @@ impl App {
             last_total: 0,
             last_width: 0,
             mouse_capture: false,
+            keymap: crate::engine::keymap::Mode::from_env(),
             focus_ring: crate::engine::focus::Focus::new(),
             shell: crate::engine::hit::Shell::default(),
             select: crate::engine::select::Select::default(),

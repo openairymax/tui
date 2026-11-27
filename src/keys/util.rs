@@ -5,13 +5,14 @@
 //
 // 键位分派共用判定：只读面板集合与日志用的安全截断。
 
-use crate::app::ActivePanel;
+use crate::app::{ActivePanel, App};
 use crate::engine::action::{self, Action, Ctx};
+use crate::engine::keymap::{self, Nav};
 use crossterm::event::KeyEvent;
 
 /// 动作表入口（X5-08）：键盘侧唯一的语义解析点。生效条件从应用状态
 /// 折算，解析与落地分属两个单元，两侧共享同一张表。
-pub(super) fn action_of(app: &crate::app::App, key: &KeyEvent) -> Option<Action> {
+pub(super) fn action_of(app: &App, key: &KeyEvent) -> Option<Action> {
     action::key_action(
         key,
         Ctx {
@@ -19,6 +20,15 @@ pub(super) fn action_of(app: &crate::app::App, key: &KeyEvent) -> Option<Action>
             ime: app.ime_visible(),
         },
     )
+}
+
+/// 导航表入口（X5-03）：vi/emacs 双模只在对话正文生效——其它面板各有
+/// 列表滚动键，向导独占键盘，均不经过此表。
+pub(super) fn nav_of(app: &App, key: &KeyEvent) -> Option<Nav> {
+    if app.wizard.active || app.active_panel != ActivePanel::Chat {
+        return None;
+    }
+    keymap::nav(key, app.keymap, app.focus_is_input())
 }
 
 pub(super) fn truncate_str(s: &str, max: usize) -> &str {

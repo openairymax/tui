@@ -27,6 +27,11 @@ pub(super) async fn busy_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
         app.apply_action(action);
         return Ok(Flow::Continue);
     }
+    // 键位模式导航（X5-03a）：等待期间同样能按模式滚动阅读。
+    if let Some(nav) = super::util::nav_of(app, &key) {
+        app.apply_nav(nav);
+        return Ok(Flow::Continue);
+    }
     match key.code {
         // 与空闲态一致：busy（等待回复/任务执行）期间按
         // Ctrl+C 同样退出 TUI，不再被 busy 内层循环吞键；

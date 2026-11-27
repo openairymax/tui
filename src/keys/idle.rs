@@ -25,6 +25,11 @@ pub(super) async fn idle_key(app: &mut App, key: KeyEvent) -> Result<Flow> {
             return Ok(Flow::Continue);
         }
     }
+    // 键位模式导航（X5-03a）：vi/emacs 双模只映射导航，落地与滚动键同源。
+    if let Some(nav) = super::util::nav_of(app, &key) {
+        app.apply_nav(nav);
+        return Ok(Flow::Continue);
+    }
     match key.code {
         KeyCode::Char('c') | KeyCode::Char('C')
             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>

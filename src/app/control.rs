@@ -381,6 +381,30 @@ impl App {
                 let on = self.toggle_mouse_capture();
                 log::info!("Mouse capture: {}", if on { "ON" } else { "OFF" });
             }
+            Action::KeymapToggle => self.toggle_keymap(),
+        }
+    }
+
+    /// 键位模式互切（X5-03b）：只改导航绑定偏好，输入与审批语义不变。
+    pub(crate) fn toggle_keymap(&mut self) {
+        self.keymap = self.keymap.toggle();
+        let name = self.keymap.name();
+        log::info!("Keymap mode: {name}");
+        self.toast(format!("键位模式：{name}"));
+    }
+
+    /// 导航意图落地（X5-03a）：模式表只描述意图，副作用只在此处发生。
+    pub(crate) fn apply_nav(&mut self, nav: crate::engine::keymap::Nav) {
+        use crate::engine::keymap::Nav;
+        match nav {
+            Nav::LineUp => self.scroll_up(),
+            Nav::LineDown => self.scroll_down(),
+            Nav::HalfUp => self.scroll_half_up(),
+            Nav::HalfDown => self.scroll_half_down(),
+            Nav::PageUp => self.scroll_page_up(),
+            Nav::PageDown => self.scroll_page_down(),
+            Nav::Top => self.scroll_top(),
+            Nav::Bottom => self.scroll_bottom(),
         }
     }
 

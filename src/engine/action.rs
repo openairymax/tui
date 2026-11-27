@@ -26,6 +26,8 @@ pub(crate) enum Action {
     HalfDown,
     /// 鼠标滚轮捕获开关。
     MouseToggle,
+    /// vi/emacs 键位模式互切（X5-03b）。
+    KeymapToggle,
 }
 
 /// 动作生效条件。
@@ -55,6 +57,7 @@ pub(crate) const CHORDS: &[(KeyCode, KeyModifiers, Need, Action)] = &[
     (KeyCode::Char('u'), KeyModifiers::ALT, Need::Any, Action::HalfUp),
     (KeyCode::Char('d'), KeyModifiers::ALT, Need::Any, Action::HalfDown),
     (KeyCode::Char('m'), KeyModifiers::CONTROL, Need::Any, Action::MouseToggle),
+    (KeyCode::Char('k'), KeyModifiers::ALT, Need::Any, Action::KeymapToggle),
 ];
 
 fn norm(key: &KeyEvent) -> (KeyCode, KeyModifiers) {
@@ -180,6 +183,10 @@ mod tests {
         assert_eq!(
             key_action(&ev(KeyCode::Char('m'), KeyModifiers::CONTROL), ctx(false)),
             Some(Action::MouseToggle)
+        );
+        assert_eq!(
+            key_action(&ev(KeyCode::Char('k'), KeyModifiers::ALT), ctx(false)),
+            Some(Action::KeymapToggle)
         );
     }
 

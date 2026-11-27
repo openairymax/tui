@@ -60,6 +60,8 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  Alt+O       - 展开/折叠长系统消息".to_string(),
         "  Ctrl+M      - 鼠标滚轮捕获开关（默认关保终端文本选择；开：滚轮滚动对话，".to_string(),
         "                Shift 翻页 / Ctrl 单行）".to_string(),
+        "  Alt+K       - 键位模式切换（vi/emacs；vi 下 Tab 聚焦正文后 j/k/g/G 导航，".to_string(),
+        "                Ctrl+D/U 半页；AIRY_TUI_KEYMAP 可设启动默认）".to_string(),
         "  Enter       - 发送消息".to_string(),
         "  Alt+Enter   - 换行（多行输入）".to_string(),
         "  Ctrl+C      - 退出 TUI".to_string(),

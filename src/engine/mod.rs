@@ -44,6 +44,7 @@ pub(crate) mod grid;
 pub(crate) mod guard;
 pub(crate) mod health;
 pub(crate) mod hit;
+pub(crate) mod keymap;
 pub(crate) mod ladder;
 pub(crate) mod layout;
 pub(crate) mod leader;
