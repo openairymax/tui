@@ -45,6 +45,7 @@ mod pipeline;
 mod plugins;
 mod poll;
 mod query;
+mod search;
 mod selfhost;
 mod session;
 mod session_store;
@@ -60,6 +61,7 @@ pub(crate) use health::dep_cn;
 pub use mode::{sanitize_reply, ModeMarker, StreamSanitizer};
 pub use model::*;
 use pipeline::*;
+pub use search::Search;
 use text::*;
 
 /// Maximum number of chat messages to keep in memory.
@@ -123,6 +125,9 @@ pub struct App {
     pub transcript_scroll: u16,
     /// 全量会话视图可滚总量（渲染每帧回写，钳位用）。
     pub transcript_scroll_max: u16,
+    /// 全文会话检索（X8-04b，`/` 打开）：查询、命中行表与当前命中游标；
+    /// 索引随「会话版本 + 渲染宽度」失效，跳转按行号换算距底偏移。
+    pub search: Search,
     /// 渲染降级标志（0.1.18 §5A.3 W10）：合成层连续故障（渲染回调 panic /
     /// 后端写失败）时为真，状态条显示降级横幅；成功一帧即自愈转假。由主循环
     /// 每轮从合成层回写——本字段只作呈现，不参与任何判定。
@@ -454,6 +459,7 @@ impl App {
             transcript_open: false,
             transcript_scroll: 0,
             transcript_scroll_max: 0,
+            search: Search::default(),
             render_degraded: false,
             browse_expanded: false,
             connected: false,

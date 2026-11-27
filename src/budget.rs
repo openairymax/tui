@@ -95,6 +95,8 @@ pub(crate) const WIDTH_CACHE_SIZE: usize = 512;
 pub(crate) const MAX_OSC52_ENCODED_LENGTH: usize = 100_000;
 /// 事件去重键上限（§6.10 #5）：防长会话内存爬坡。
 pub(crate) const MAX_DEDUPE_KEYS: usize = 256;
+/// 全文会话检索的命中行上限（X8-04b）：跳转表须有界，超出即截断。
+pub(crate) const MAX_SEARCH_HITS: usize = 4_096;
 
 // ── 队列 / 历史 ──────────────────────────────────────────────────────────
 
@@ -192,6 +194,7 @@ const _: () = {
     assert!(WIDTH_CACHE_SIZE > 0);
     assert!(MAX_OSC52_ENCODED_LENGTH > 0);
     assert!(MAX_DEDUPE_KEYS > 0);
+    assert!(MAX_SEARCH_HITS > 0);
     assert!(RETAINED_TURNS_LIMIT > 0);
     assert!(MAX_ACTIVE_TOASTS > 0);
     assert!(TOAST_TTL_MS > 0);

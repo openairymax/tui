@@ -478,9 +478,10 @@ impl App {
         }
     }
 
-    /// 关闭全量会话视图（Esc / Ctrl+O 再按）。
+    /// 关闭全量会话视图（Esc / Ctrl+O 再按）；检索随之收束。
     pub fn close_transcript(&mut self) {
         self.transcript_open = false;
+        self.search.close();
     }
 
     /// 全量会话视图上滚一行（钳位到 `transcript_scroll_max`，渲染每帧回写）。
@@ -524,6 +525,51 @@ impl App {
         } else {
             self.transcript_scroll.saturating_sub(lines)
         };
+    }
+
+    /// 打开全文检索（X8-04b）：只在全文会话视图内可用，打开即清空上次查询。
+    pub fn open_search(&mut self) {
+        if self.transcript_open {
+            self.search.open();
+        }
+    }
+
+    /// 关闭检索框（全文会话视图保持不动）。
+    pub fn close_search(&mut self) {
+        self.search.close();
+    }
+
+    /// 查询串追加一个字符并立即跳向首个命中。
+    pub fn search_push(&mut self, c: char) {
+        self.search.push(c);
+        self.search_jump();
+    }
+
+    /// 查询串退格并跟随新的首个命中。
+    pub fn search_pop(&mut self) {
+        self.search.pop();
+        self.search_jump();
+    }
+
+    /// 跳到下一条命中并滚到该行（循环）。
+    pub fn search_next(&mut self) {
+        self.search.next();
+        self.search_jump();
+    }
+
+    /// 跳到上一条命中并滚到该行（循环）。
+    pub fn search_prev(&mut self) {
+        self.search.prev();
+        self.search_jump();
+    }
+
+    /// 把当前命中行滚到视口顶端：命中行号自顶计数，距底偏移与之互补。
+    /// `transcript_scroll_max` 由渲染每帧回写，超出即钳位到底。
+    pub fn search_jump(&mut self) {
+        if let Some(line) = self.search.anchor() {
+            let line = line.min(self.transcript_scroll_max as u32) as u16;
+            self.transcript_scroll = self.transcript_scroll_max.saturating_sub(line);
+        }
     }
 
     /// F3 日志面板：向更早方向滚一条（距最新的条目偏移 +1）。

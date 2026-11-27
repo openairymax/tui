@@ -75,9 +75,24 @@ pub(crate) fn at_bottom_right(view: Rect, w: u16, h: u16) -> Option<Rect> {
     Rect::new(view.right() - w, view.bottom() - h, w, h).clip(view)
 }
 
+/// 贴视口底部居中放置 `w × h` 浮层：宽度先收敛到视口，余数左偏。
+///
+/// 居中只解横向：底部锚点取 `bottom - h` 与右下角同源，纵向语义一致。
+/// 余数为奇数时左偏一列——左右偏差恒定且可预测，比按奇偶切换偏向更好
+/// 断言（golden 固定坐标不用随终端宽度奇偶变化）。
+pub(crate) fn at_bottom_center(view: Rect, w: u16, h: u16) -> Option<Rect> {
+    if view.is_empty() || w == 0 || h == 0 {
+        return None;
+    }
+    let w = w.min(view.w);
+    let h = h.min(view.h);
+    let x = view.x + (view.w - w) / 2;
+    Rect::new(x, view.bottom() - h, w, h).clip(view)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{at_bottom_right, Rect};
+    use super::{at_bottom_center, at_bottom_right, Rect};
 
     /// 完全落在视口内的矩形原样返回。
     #[test]
@@ -156,5 +171,28 @@ mod tests {
         assert_eq!(far.bottom(), u16::MAX);
         let view = Rect::new(0, 0, 100, 100);
         assert_eq!(far.clip(view), None, "饱和边界不得伪装成相交");
+    }
+
+    /// 底部居中：奇数余数左偏，纵向贴住视口底边。
+    #[test]
+    fn bottom_center_biases_left_on_odd_remainder() {
+        let view = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            at_bottom_center(view, 60, 1),
+            Some(Rect::new(10, 23, 60, 1))
+        );
+        assert_eq!(
+            at_bottom_center(Rect::new(4, 2, 21, 10), 6, 1),
+            Some(Rect::new(11, 11, 6, 1))
+        );
+    }
+
+    /// 底部居中同样先收敛后裁剪：超宽浮层退化为整视口。
+    #[test]
+    fn bottom_center_shrinks_and_rejects_empty() {
+        let view = Rect::new(0, 0, 10, 4);
+        assert_eq!(at_bottom_center(view, 40, 9), Some(view));
+        assert_eq!(at_bottom_center(view, 0, 1), None);
+        assert_eq!(at_bottom_center(Rect::new(0, 0, 10, 0), 1, 1), None);
     }
 }
