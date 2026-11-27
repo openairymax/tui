@@ -269,7 +269,7 @@ mod tests {
         leveled.set_ladder(2);
         ring.push(leveled);
         ring.push(cost(2));
-        let samples: Vec<u64> = ring.snapshot().map(|costs| costs.ladder()).collect();
+        let samples: Vec<u8> = ring.snapshot().map(|costs| costs.ladder()).collect();
         assert_eq!(samples, [2, 0], "默认帧档位为 0，降级帧按实际档位留存");
     }
 }
