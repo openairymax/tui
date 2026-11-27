@@ -10,6 +10,7 @@
 
 mod approval;
 mod baseline;
+mod bench;
 mod boot;
 mod degrade;
 mod error;
