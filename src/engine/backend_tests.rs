@@ -263,6 +263,30 @@ fn plain_style_uses_single_reset() {
     assert!(!s.contains("39;49"), "frame = {s:?}");
 }
 
+/// 黄金字节流：2×2 帧的完整编码序列逐字节比对（X2-10b）。
+#[test]
+fn golden_two_by_two_frame() {
+    let (mut b, _) = backend();
+    let mut a = cell("A");
+    a.fg = Color::Red;
+    let mut bcell = cell("B");
+    bcell.fg = Color::Red;
+    let c = cell("C");
+    let d = cell("D");
+    b.draw(
+        vec![
+            (0u16, 0u16, &a),
+            (1u16, 0u16, &bcell),
+            (0u16, 1u16, &c),
+            (1u16, 1u16, &d),
+        ]
+        .into_iter(),
+    )
+    .unwrap();
+    let got = String::from_utf8_lossy(b.frame_bytes()).to_string();
+    assert_eq!(got, "\x1b[1;1H\x1b[31;49mAB\x1b[2;1H\x1b[0mCD");
+}
+
 /// 字节预算：整行默认样式的定位与复位各只一次（X2-09b）。
 #[test]
 fn plain_row_stays_within_byte_budget() {

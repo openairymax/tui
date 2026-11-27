@@ -171,6 +171,8 @@ fn is_plain(cell: &Cell) -> bool {
 }
 
 impl<W: Write> Backend for BufferedBackend<W> {
+    /// 帧编码器主干（X2-10a）：移动、样式、内容三流按单元格顺序合入
+    /// 同一缓冲，写出顺序即终端解析顺序；本函数不做任何 IO。
     fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
