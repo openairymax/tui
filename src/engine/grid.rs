@@ -22,12 +22,15 @@
 //
 // 不变量（属性测试实证）：对任意 max ≥ 2，折行结果每段显示宽度 ≤ max 且
 // 非空白字符拼接无损（断点处的空白折叠为换行）；组合字符恒随基字符同段，
-// 不会成为某段首字符；对任意 max，截断结果显示宽度 ≤ max；列宽分配结果的
-// 实渲染总宽（Σ(列宽+unit)+fixed）≤ 可用宽度。
+// ZWJ 序列与 emoji 修饰符不拆散；对任意 max，截断结果显示宽度 ≤ max；
+// 列宽分配结果的实渲染总宽（Σ(列宽+unit)+fixed）≤ 可用宽度。
 
 use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// 零宽连接符：其两侧字形在终端合成为一个字形，折行不得从中间切开。
+const ZWJ: char = '\u{200D}';
 
 /// 字符串显示宽度（CJK/全角按 2 列，组合字符按 0 列）。
 pub(crate) fn width(s: &str) -> usize {
@@ -150,9 +153,9 @@ pub(crate) fn wrap_spans(spans: &[Span<'_>], max: usize) -> Vec<Vec<Span<'static
 /// 只有在它之前已有非空白内容时才可用来断行。行满时优先回退到该点，
 /// 走不通则硬折；两条路径都保证结果宽度 ≤ `max`。
 ///
-/// 输入先按「基字符 + 后续零宽字符」切簇（X4-03a）：组合符、变体选择符
-/// 显示宽度为 0，若逐字符断行，宽字符行的硬折点会把附加符甩到下一行行首；
-/// 成簇后整簇参与宽度判定与搬移，附加符恒与基字符同段（组合不拆列）。
+/// 输入先按「基字符 + 附加序列」切簇（X4-03a/03b）：组合符、变体选择符
+/// 显示宽度为 0，逐字符断行会把附加符甩到下一行行首；ZWJ 与 emoji 修饰符
+/// 则会把一个字形拆成多段。成簇后整簇参与宽度判定与搬移，字形不可拆。
 fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
     let mut out: Vec<Vec<(char, Style)>> = Vec::new();
     let mut cur: Vec<(char, Style)> = Vec::new();
@@ -165,12 +168,9 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
     let mut idx = 0usize;
     while idx < units.len() {
         let from = idx;
-        idx += 1;
-        while idx < units.len() && char_w(units[idx].0) == 0 {
-            idx += 1;
-        }
+        idx = cluster_end(units, from);
         let cluster = &units[from..idx];
-        let w: usize = cluster.iter().map(|&(c, _)| char_w(c)).sum();
+        let w = cluster_w(cluster);
         let ch = cluster[0].0;
         let cl_ws = ch.is_whitespace();
         while !cur.is_empty() && cur_w + w > max {
@@ -181,7 +181,7 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
                     .into_iter()
                     .skip_while(|(c, _)| c.is_whitespace())
                     .collect();
-                cur_w = cur.iter().map(|(c, _)| char_w(*c)).sum();
+                cur_w = units_w(&cur);
                 has_text = cur.iter().any(|(c, _)| !c.is_whitespace());
                 prev_ws = false;
                 brk = last_break(&cur);
@@ -217,6 +217,69 @@ fn fold(units: &[(char, Style)], max: usize) -> Vec<Vec<(char, Style)>> {
         out.push(units.to_vec());
     }
     out
+}
+
+/// 组合簇终点：基字符 + 附加符（零宽）+ ZWJ 连接的字形 + emoji 修饰符。
+///
+/// ZWJ 之后的字符与前一字形合成一体（家庭/职业 emoji），肤色修饰符同理；
+/// 二者若各自成簇，折行点会插进字形内部，渲染出半个 emoji 或改色字形。
+fn cluster_end(units: &[(char, Style)], start: usize) -> usize {
+    let mut i = start + 1;
+    loop {
+        while i < units.len() && char_w(units[i].0) == 0 {
+            i += 1;
+        }
+        if i >= units.len() {
+            return i;
+        }
+        if units[i - 1].0 == ZWJ || is_emoji_mod(units[i].0) {
+            i += 1;
+        } else {
+            return i;
+        }
+    }
+}
+
+/// 簇显示宽度：ZWJ 序列由终端合成单字形，按首字符宽度计；带 emoji 呈现
+/// 选择符或键帽组合的簇至少占 2 列；肤色修饰符不另占列；其余按字符宽度和。
+fn cluster_w(cluster: &[(char, Style)]) -> usize {
+    if cluster.iter().any(|&(c, _)| c == ZWJ) {
+        return char_w(cluster[0].0).max(1);
+    }
+    if is_emoji_mod(cluster[0].0) {
+        // 孤立修饰符（前面没有基字形）：按自身宽度保守计入
+        return char_w(cluster[0].0);
+    }
+    let sum: usize = cluster
+        .iter()
+        .filter(|&&(c, _)| !is_emoji_mod(c))
+        .map(|&(c, _)| char_w(c))
+        .sum();
+    let wide = cluster
+        .iter()
+        .any(|&(c, _)| c == '\u{FE0F}' || c == '\u{20E3}');
+    if wide {
+        sum.max(2)
+    } else {
+        sum
+    }
+}
+
+/// 一段字符序列的总显示宽度（按簇计算，ZWJ 序列只计一次）。
+fn units_w(units: &[(char, Style)]) -> usize {
+    let mut w = 0usize;
+    let mut i = 0usize;
+    while i < units.len() {
+        let end = cluster_end(units, i);
+        w += cluster_w(&units[i..end]);
+        i = end;
+    }
+    w
+}
+
+/// emoji 肤色修饰符 U+1F3FB..=U+1F3FF：并入前一字形，不另占列。
+fn is_emoji_mod(c: char) -> bool {
+    ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
 }
 
 /// 最近一次可断行位置：空白串的起点，且其前缀含非空白内容；否则 `None`。

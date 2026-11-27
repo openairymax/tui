@@ -3,7 +3,7 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// grid 排版层的属性测试：宽度口径、折行断点、组合字符附着、列宽分配。
+// grid 排版层的属性测试：宽度口径、折行断点、组合簇原子性、列宽分配。
 // 用例单独成文件，避免生产代码文件在追加用例后越过单文件 SLOC 上限。
 
 use super::*;
@@ -241,6 +241,30 @@ fn no_orphan_combining_marks() {
                 assert!(width(p) <= max, "组合折行越界: max={max} p={p:?}");
             }
             assert_eq!(kept(&pieces.concat()), kept(s), "组合符随基字符丢失");
+        }
+    }
+}
+
+/// X4-03b：ZWJ 序列、肤色修饰符、键帽序列整簇断行，任意预算都不拆开。
+#[test]
+fn zwj_sequences_are_atomic() {
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    let wave = "\u{1F44B}\u{1F3FD}";
+    let key = "\u{0031}\u{FE0F}\u{20E3}";
+    // 合成字形只占一个字形宽，后续字符不被无谓挤到下一行
+    assert_eq!(wrap(format!("{family}x"), 4), vec![format!("{family}x")]);
+    assert_eq!(wrap(format!("{wave}x"), 4), vec![format!("{wave}x")]);
+    // 键帽簇至少 2 列：预算 2 时后面的 x 必须换行，说明未被拆成裸字符
+    assert_eq!(wrap(format!("{key}x"), 2), vec![key, "x"]);
+    assert_eq!(wrap(family, 2), vec![family]);
+    for max in 2..=20usize {
+        for p in wrap(format!("a {family} {wave} b"), max) {
+            assert!(!p.ends_with('\u{200D}'), "段尾悬空 ZWJ: {p:?}");
+            assert!(
+                p.chars().next().is_none_or(|c| !is_emoji_mod(c)),
+                "段首孤立修饰符: {p:?}"
+            );
+            assert!(p.contains(family) || !p.contains('\u{200D}'));
         }
     }
 }
