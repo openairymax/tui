@@ -22,8 +22,10 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 BASE="$ROOT/scripts/gate/skill-write-sites.baseline"
 SEARCH="$ROOT/src"
 
-# 技能写入口模式：存储写方法、网关写 RPC、蒸馏链路、蒸馏待决类型。
-PATTERNS='mem\.write|fn save\(|skills\.save|build_distill_prompt|parse_distilled_skill|PendingKind::Distill'
+# 技能写入口模式：存储写方法（带 self 的方法签名）、网关写 RPC、蒸馏链路、
+# 蒸馏待决类型。自由函数 `fn save(state)` 属 UI 状态落盘，不在技能写面，
+# 不计入——门禁口径按「技能存储」收敛，不按函数名扫地毯。
+PATTERNS='mem\.write|fn save\((&mut )?self|skills\.save|build_distill_prompt|parse_distilled_skill|PendingKind::Distill'
 
 # 测试面：单测文件、app/tests 与 golden（仅测试构建编入）。
 SKIP='/(memory/tests\.rs|app/tests/|golden/)'
