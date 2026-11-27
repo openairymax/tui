@@ -61,7 +61,7 @@ pub(crate) fn scan(line: &str) -> Vec<Span> {
 
 /// 反查点击落点：同一行内命中区间左闭右开。未命中返回 None（点击可能是
 /// 普通文字/空白，调用方回落到焦点切换）。
-pub(crate) fn find<'a>(rows: &'a [(u16, Span)], row: u16, col: u16) -> Option<&'a str> {
+pub(crate) fn find(rows: &[(u16, Span)], row: u16, col: u16) -> Option<&str> {
     rows.iter()
         .find(|(r, s)| *r == row && col >= s.start && col < s.end)
         .map(|(_, s)| s.url.as_str())
