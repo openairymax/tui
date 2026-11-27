@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn stale_triggers_on_stream_growth_and_width_change() {
-        let mut s = ready(&["a"]);
+        let s = ready(&["a"]);
         assert!(!s.stale(1, 80, 0));
         assert!(s.stale(2, 80, 0));
         assert!(s.stale(1, 60, 0));
