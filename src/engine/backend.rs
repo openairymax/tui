@@ -31,6 +31,13 @@ use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::Color;
+use unicode_width::UnicodeWidthStr;
+
+/// 同一行内改用前移（CUF）的最大间距：超过即绝对定位。
+///
+/// 3 列的取舍：`ESC[nC` 与 `ESC[r;cH` 字节数在 3 附近持平，更短的间距
+/// 用前移能省下行列两个数字，更长的间距用绝对定位一次到位更稳。
+const CUF_MAX: u16 = 3;
 
 /// 帧字节缓冲后端：包裹 `CrosstermBackend<W>`，把一帧的 diff 编码进
 /// `out`，`flush()` 时一次 `write_all` 写出。
@@ -45,6 +52,8 @@ pub(crate) struct BufferedBackend<W: Write> {
     bg: Option<Color>,
     /// `flush()` 实际发生的 `write_all` 次数（判据：一帧恰好 1 次）。
     writes: usize,
+    /// 累计定位次数（X2-07b 判据：游程合并后应显著低于单元格数）。
+    moves: usize,
 }
 
 impl<W: Write> BufferedBackend<W> {
@@ -56,6 +65,7 @@ impl<W: Write> BufferedBackend<W> {
             fg: None,
             bg: None,
             writes: 0,
+            moves: 0,
         }
     }
 
@@ -74,15 +84,38 @@ impl<W: Write> BufferedBackend<W> {
         self.writes
     }
 
+    /// 累计定位次数（X2-07b 判据用）。
+    pub(crate) fn move_count(&self) -> usize {
+        self.moves
+    }
+
     /// 归还内层后端（测试与 X2-09 接线用）。
     pub(crate) fn into_inner(self) -> CrosstermBackend<W> {
         self.inner
     }
 
-    /// 把光标移动到 `pos` 并记录（只在位置跳变时调用）。
+    /// 绝对定位（CUP）：跨行或远距跳转的唯一落点。
     fn emit_move(&mut self, pos: Position) {
         let _ = write!(self.out, "\x1b[{};{}H", pos.y + 1, pos.x + 1);
         self.cursor = Some(pos);
+        self.moves += 1;
+    }
+
+    /// 把光标送到 `pos`（X2-07a）。
+    ///
+    /// 同游程内的相邻格由 `draw` 的 `next` 预测直接跳过，根本不进此函数；
+    /// 这里只处理真正的空隙：同一行且间距不超过 `CUF_MAX` 列用前移，其余
+    /// 用绝对定位。光标已在目标位置时不产生任何字节。
+    fn seek(&mut self, pos: Position) {
+        match self.cursor {
+            Some(cur) if cur == pos => {}
+            Some(cur) if cur.y == pos.y && cur.x < pos.x && pos.x - cur.x <= CUF_MAX => {
+                let _ = write!(self.out, "\x1b[{}C", pos.x - cur.x);
+                self.cursor = Some(pos);
+                self.moves += 1;
+            }
+            _ => self.emit_move(pos),
+        }
     }
 
     /// 前景/背景色最小 SGR：只对发生变化的通道发参数。
@@ -114,21 +147,29 @@ impl<W: Write> Backend for BufferedBackend<W> {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
+        // 帧内预测位置：与已写出的符号跨度一致，命中即免去定位。
         let mut next: Option<Position> = None;
         for (x, y, cell) in content {
+            let pos = Position { x, y };
             if cell.skip {
+                // 宽字符占用的第二格：预测命中时只推进预测，不产生字节。
+                if next == Some(pos) {
+                    next = Some(Position {
+                        x: x.saturating_add(1),
+                        y,
+                    });
+                }
                 continue;
             }
-            let pos = Position { x, y };
             if next != Some(pos) {
-                self.emit_move(pos);
+                self.seek(pos);
             }
             self.emit_style(cell);
             self.out.extend_from_slice(cell.symbol().as_bytes());
-            // 窄字符推进 1 列；宽字符的第二格由 ratatui 以 skip 标记，
-            // 真正的显示宽度推进归属 X2-07（游程合并）。
+            // 按符号真实显示宽度推进（宽字符 2 列，零宽按 1 列兜底）。
+            let width = UnicodeWidthStr::width(cell.symbol().as_str()).max(1) as u16;
             next = Some(Position {
-                x: x.saturating_add(1),
+                x: x.saturating_add(width),
                 y,
             });
         }
@@ -150,7 +191,7 @@ impl<W: Write> Backend for BufferedBackend<W> {
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-        self.emit_move(position.into());
+        self.seek(position.into());
         Ok(())
     }
 
@@ -345,5 +386,79 @@ mod tests {
         let bytes = String::from_utf8_lossy(b.frame_bytes()).to_string();
         assert!(bytes.contains("\x1b[?25l"));
         assert!(bytes.contains("\x1b[?25h"));
+    }
+
+    /// 横向无空隙的一行：整条游程只定位一次（X2-07a）。
+    #[test]
+    fn contiguous_run_merges_into_one_move() {
+        let (mut b, _) = backend();
+        let cells: Vec<Cell> = (0..5).map(|_| cell("x")).collect();
+        let iter = cells.iter().enumerate().map(|(i, c)| (i as u16, 0u16, c));
+        b.draw(iter).unwrap();
+        assert_eq!(b.move_count(), 1);
+        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
+        assert_eq!(s.matches('H').count(), 1, "frame = {s:?}");
+        assert!(s.starts_with("\x1b[1;1H"), "frame = {s:?}");
+    }
+
+    /// 短空隙走前移（CUF），省掉行列两个数字（X2-07a）。
+    #[test]
+    fn short_gap_uses_forward() {
+        let (mut b, _) = backend();
+        let a = cell("a");
+        let d = cell("d");
+        b.draw(vec![(0u16, 0u16, &a), (3u16, 0u16, &d)].into_iter())
+            .unwrap();
+        assert_eq!(b.move_count(), 2);
+        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
+        assert!(s.contains("\x1b[3C"), "frame = {s:?}");
+        assert_eq!(s.matches('H').count(), 1, "frame = {s:?}");
+    }
+
+    /// 远距跳转与跨行一律绝对定位，避免长前移在折行处越界。
+    #[test]
+    fn far_and_row_jumps_are_absolute() {
+        let (mut b, _) = backend();
+        let a = cell("a");
+        let z = cell("z");
+        b.draw(vec![(0u16, 0u16, &a), (40u16, 0u16, &z)].into_iter())
+            .unwrap();
+        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
+        assert!(s.contains("\x1b[1;41H"), "frame = {s:?}");
+        assert_eq!(s.matches('H').count(), 2, "frame = {s:?}");
+
+        let (mut b, _) = backend();
+        b.draw(vec![(5u16, 0u16, &a), (0u16, 1u16, &z)].into_iter())
+            .unwrap();
+        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
+        assert!(s.contains("\x1b[2;1H"), "frame = {s:?}");
+    }
+
+    /// 宽字符与其 skip 占位格同属一条游程（X2-07a）。
+    #[test]
+    fn wide_cell_and_skip_share_one_move() {
+        let (mut b, _) = backend();
+        let wide = cell("中");
+        let mut skip = Cell::default();
+        skip.skip = true;
+        let tail = cell("b");
+        b.draw(
+            vec![(0u16, 0u16, &wide), (1u16, 0u16, &skip), (2u16, 0u16, &tail)].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(b.move_count(), 1);
+        let s = String::from_utf8_lossy(b.frame_bytes()).to_string();
+        assert!(s.contains('中') && s.contains('b'), "frame = {s:?}");
+        assert_eq!(s.matches('H').count(), 1, "frame = {s:?}");
+    }
+
+    /// 逐格定位的旧行为对 N 格需 N 次定位；游程合并后为 1 次（X2-07b）。
+    #[test]
+    fn move_count_drops_for_dense_row() {
+        let (mut b, _) = backend();
+        let cells: Vec<Cell> = (0..80).map(|_| cell(".")).collect();
+        let iter = cells.iter().enumerate().map(|(i, c)| (i as u16, 0u16, c));
+        b.draw(iter).unwrap();
+        assert_eq!(b.move_count(), 1, "80 格应合并为 1 次定位");
     }
 }
