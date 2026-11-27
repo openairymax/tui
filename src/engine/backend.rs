@@ -195,7 +195,7 @@ impl<W: Write> Backend for BufferedBackend<W> {
             self.emit_style(cell);
             self.out.extend_from_slice(cell.symbol().as_bytes());
             // 按符号真实显示宽度推进（宽字符 2 列，零宽按 1 列兜底）。
-            let width = UnicodeWidthStr::width(cell.symbol().as_str()).max(1) as u16;
+            let width = UnicodeWidthStr::width(cell.symbol()).max(1) as u16;
             next = Some(Position {
                 x: x.saturating_add(width),
                 y,
