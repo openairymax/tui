@@ -260,4 +260,16 @@ mod tests {
         assert_eq!(ring.snapshot().count(), CAP, "快照长度恒为容量");
         assert_eq!(ring.len(), CAP);
     }
+
+    /// 档位随槽留存：读侧拿到的就是该帧写出档位（X2-30b 指标联动）。
+    #[test]
+    fn snapshot_carries_ladder() {
+        let mut ring = Ring::new();
+        let mut leveled = cost(1);
+        leveled.set_ladder(2);
+        ring.push(leveled);
+        ring.push(cost(2));
+        let samples: Vec<u64> = ring.snapshot().map(|costs| costs.ladder()).collect();
+        assert_eq!(samples, [2, 0], "默认帧档位为 0，降级帧按实际档位留存");
+    }
 }

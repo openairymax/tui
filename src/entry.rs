@@ -38,7 +38,7 @@ use crate::engine::boot::Boot;
 use crate::engine::sched::{Beat, Cfg, Lane, Sched};
 // 本模块从 main.rs 迁入库后，原先在 crate 根可直接命名的模块需显式引入；
 // 显式 use 优先于 ratatui 前奏里的同名 `style` 模块。
-use crate::engine::backend::SyncCaps;
+use crate::engine::backend::{SyncCaps, WriteLevel};
 use crate::{engine, keys, present, style};
 
 /// AgentRT Terminal User Interface
@@ -427,7 +427,7 @@ fn leave_on_dead(err: io::Error) -> Result<engine::exit::Code> {
     }
 }
 
-async fn run_app<B: Backend + SyncCaps>(
+async fn run_app<B: Backend + SyncCaps + WriteLevel>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     boot: &Boot,
@@ -605,7 +605,10 @@ async fn run_app<B: Backend + SyncCaps>(
                 }
             }
             timer.lap(engine::frame::Stage::Present);
-            let costs = timer.finish();
+            // X2-30b：写出档位随帧进入指标环，降级帧在采样里可辨，
+            // 不会与优化后的好帧混为一谈。
+            let mut costs = timer.finish();
+            costs.set_ladder(terminal.backend().write_level().code());
             if let Some(sink) = frame_log.as_mut() {
                 sink.record(&costs);
             }

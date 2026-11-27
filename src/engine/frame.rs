@@ -74,16 +74,22 @@ pub(crate) trait StageSink {
     fn stage_cost(&mut self, stage: Stage, cost: Duration);
 }
 
-/// 一帧的六段耗时（μs，`None` = 该段未采样）。
+/// 一帧的六段耗时（μs，`None` = 该段未采样）与写出档位。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Costs {
     us: [Option<u64>; Stage::N],
+    /// 本帧的写出档位编码（X2-30b）：0 为默认档，取值见 `ladder::Ladder`。
+    ///
+    /// 它不是耗时，不参与合计与完整性判据；与耗时同槽留存，是因为判读
+    /// p95 时若不看该帧由哪一档写出，会把降级帧的「快」误当成优化成果。
+    ladder: u8,
 }
 
 impl Costs {
     pub(crate) const fn new() -> Self {
         Self {
             us: [None; Stage::N],
+            ladder: 0,
         }
     }
 
@@ -93,6 +99,16 @@ impl Costs {
 
     pub(crate) fn get(&self, stage: Stage) -> Option<u64> {
         self.us[stage.index()]
+    }
+
+    /// 记录本帧写出档位（X2-30b）：编码由 `Ladder::code` 给出。
+    pub(crate) fn set_ladder(&mut self, code: u8) {
+        self.ladder = code;
+    }
+
+    /// 本帧写出档位编码，0 为默认档。
+    pub(crate) fn ladder(&self) -> u8 {
+        self.ladder
     }
 
     /// 整帧耗时：已采样段之和，饱和相加不因异常值回绕。
@@ -197,5 +213,18 @@ mod tests {
         costs.set(Stage::Compose, u64::MAX);
         costs.set(Stage::Present, u64::MAX);
         assert_eq!(costs.total(), u64::MAX);
+    }
+
+    /// 档位不是阶段：它不参与合计、不参与完整性，只随帧留存（X2-30b）。
+    #[test]
+    fn ladder_is_not_a_stage() {
+        let mut costs = Costs::new();
+        assert_eq!(costs.ladder(), 0, "默认档编码为 0");
+        costs.set(Stage::Compose, 100);
+        costs.set_ladder(3);
+        assert_eq!(costs.ladder(), 3);
+        assert_eq!(costs.total(), 100, "档位不得计入耗时");
+        assert_eq!(costs.sampled(), 1);
+        assert!(!costs.complete(), "档位不得影响完整性");
     }
 }
