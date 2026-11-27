@@ -123,4 +123,45 @@ mod tests {
         assert!(detect("main.unknown").is_none());
         assert!(detect(".").is_none());
     }
+
+    /// X4-04b：白名单 8 种语言的别名、扩展名、路径必须收敛到同一 id，
+    /// 且每个 id 都带非空 token（否则词法层拿到空串又会落到纯文本）。
+    #[test]
+    fn eight_languages_resolve_stably() {
+        let cases: &[(&[&str], &str)] = &[
+            (&["rust", "rs", "main.rs", ".RS"], "rust"),
+            (&["python", "py", "py2", "py3", "main.py"], "python"),
+            (
+                &["javascript", "js", "jsx", "mjs", "cjs", "node", "app.js"],
+                "javascript",
+            ),
+            (
+                &["typescript", "ts", "tsx", "mts", "cts", "app.ts"],
+                "typescript",
+            ),
+            (&["go", "golang", "main.go"], "go"),
+            (&["c", "h", "main.c", "lib.h"], "c"),
+            (
+                &["shell", "sh", "bash", "zsh", "ksh", "console", "run.sh"],
+                "shell",
+            ),
+            (&["json", "data.json"], "json"),
+        ];
+        assert_eq!(cases.len(), 8, "白名单恰好 8 种语言");
+        let mut ids: Vec<&str> = Vec::new();
+        for (tags, want) in cases {
+            for tag in *tags {
+                let Some(found) = detect(tag) else {
+                    panic!("未探测到语言: {tag}");
+                };
+                assert_eq!(found.id, *want, "tag={tag}");
+                assert!(!found.token.is_empty(), "token 为空: tag={tag}");
+                assert_eq!(detect(found.id).map(|l| l.id), Some(*want), "自反: {tag}");
+                ids.push(found.id);
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 8, "8 个 id 互不相同");
+    }
 }
