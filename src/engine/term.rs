@@ -78,7 +78,14 @@ pub(crate) fn init_file_logger() -> Result<(), Box<dyn std::error::Error>> {
 /// 备用屏 / 光标，**不清屏**——保住 panic 报文可见。所有步骤独立容错。
 fn restore_on_panic() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste);
+    // 鼠标捕获与备用屏同生命周期（X5-06b）：panic 退出后若仍捕获滚轮，
+    // 用户终端会丢失原生滚动与文本选择，且无进程可再释放。
+    let _ = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableBracketedPaste,
+        DisableMouseCapture
+    );
     let _ = execute!(io::stdout(), Show);
 }
 
