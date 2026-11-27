@@ -501,7 +501,7 @@ mod tests {
         let mut view = ChatView::new();
         let frame = view.layout(&app, 80, 30, true);
         let id = app.messages.back().expect("message").id;
-        let (_, h) = view.heights.get(&id).copied().expect("height cached");
+        let (_, _, h) = view.heights.get(&id).copied().expect("height cached");
         assert_eq!(
             h as usize,
             crate::budget::MAX_CELLS_PER_TURN,
@@ -515,7 +515,7 @@ mod tests {
 
         app.browse_expanded = true;
         let full = view.layout(&app, 80, 30, true);
-        let (_, h) = view.heights.get(&id).copied().expect("height cached");
+        let (_, _, h) = view.heights.get(&id).copied().expect("height cached");
         assert!(
             h as usize > crate::budget::MAX_CELLS_PER_TURN,
             "展开态应取全量: {h}"
