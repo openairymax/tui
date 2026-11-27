@@ -3,13 +3,13 @@
 
 // Copyright (c) 2026 SPHARX Ltd. All Rights Reserved.
 //
-// X2-29a（§23.5.2 序 109）：超 1MiB 大帧的写出路径。
+// X2-29a/b（§23.5.2 序 109/110）：超 1MiB 大帧的写出路径与完整性。
 //
 // 剖析与常规用例的帧都在 8KiB 量级，`frame_io` 的分片函数虽已被纯函数用例
 // 覆盖，但「真实编码器编出 >1MiB 帧 → flush 分片 → 每片自包同步块 → 写出」
 // 这条链路没有用例穿过。本文件用记录式写入口接住写出流，按同步块边界把
 // 流重新拆回分片，与编码器持有的帧字节逐段比对：既验证片数不少于两片，
-// 也验证各片拼接后与源帧完全一致。
+// 也验证关闭同步后写出流与源帧逐字节相同、首末字节不丢。
 
 use super::*;
 use std::sync::{Arc, Mutex};
@@ -86,4 +86,23 @@ fn megabyte_frame_splits_into_synced_parts() {
         "分片总长与帧长不等"
     );
     assert_eq!(parts.concat(), frame, "分片拼接后与源帧不一致");
+}
+
+/// 关闭同步时写出流与源帧逐字节相同，首末字节均不丢（X2-29b）。
+#[test]
+fn megabyte_frame_written_intact() {
+    let rec = Rec::default();
+    let mut b = BufferedBackend::new(rec.clone());
+    let mut c = Cell::default();
+    c.set_symbol(&"x".repeat(BIG));
+    let iter = (0..CELLS).map(|i| (i, 0u16, &c));
+    b.draw(iter).unwrap();
+    let frame = b.frame_bytes().to_vec();
+    b.flush().unwrap();
+
+    let out = rec.bytes();
+    assert_eq!(out.len(), frame.len(), "写出长度与帧长不等");
+    assert_eq!(out, frame, "写出流与源帧不一致");
+    assert!(out.starts_with(b"\x1b[1;1H"), "首段 = {:?}", &out[..4]);
+    assert_eq!(out.last(), Some(&b'x'), "末字节丢失");
 }
