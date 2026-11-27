@@ -18,9 +18,10 @@
 //
 //   - X2-06a：`BufferedBackend` 可实例化；
 //   - X2-06b：`draw` 期把单元格 diff 编码进 `Vec<u8>`，可产出字节用例。
-// 游程合并（X2-07）、样式游程（X2-08）、SGR 最短化与整帧编码器
-// （X2-09/X2-10）在后续卡落位；本卡按「位置游标 + 样式差量 + 符号字节」
-// 编码，够用且可被后续卡替换内部策略而不动接口。
+// 游程合并（X2-07）、样式游程与最短 SGR（X2-08/X2-09）、三流合一的
+// 帧编码器（X2-10）、分片与同步块（X2-11/X2-13/X2-14）、单批写出与
+// 失败回退（X2-12/X2-15）均在本文件与 frame_io 落位；编码策略与写出
+// 策略分离，后续卡只换内部实现，不动 Backend 接口。
 //
 // 接线（entry.rs 把 `Terminal::new(CrosstermBackend::new(stdout))` 换成
 // `Terminal::new(BufferedBackend::new(stdout))`）属 X2-09，本卡不动运行期
@@ -37,6 +38,11 @@ use ratatui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr;
 
 use super::backend_sgr::{color_param, mod_params};
+use super::frame_io::{self, SYNC_OFF};
+use crate::budget::MAX_RENDER_WRITE_CHARS;
+
+/// 连续写失败达此数即回退逐格写（X2-15a）。
+const FAIL_LIMIT: u8 = 3;
 
 /// 同一行内改用前移（CUF）的最大间距：超过即绝对定位。
 ///
@@ -60,6 +66,14 @@ pub(crate) struct BufferedBackend<W: Write> {
     writes: usize,
     /// 累计定位次数（X2-07b 判据：游程合并后应显著低于单元格数）。
     moves: usize,
+    /// 同步输出开关（X2-13a）：由能力探测结论在接线时设置。
+    sync: bool,
+    /// 连续写失败次数（X2-15a）。
+    fails: u8,
+    /// 逐格回退模式（X2-15b）：连续失败达阈值后置位。
+    degraded: bool,
+    /// 每个单元格编码起点在 `out` 中的偏移，是逐格回退的分片边界。
+    marks: Vec<usize>,
 }
 
 impl<W: Write> BufferedBackend<W> {
@@ -73,7 +87,31 @@ impl<W: Write> BufferedBackend<W> {
             mods: Modifier::empty(),
             writes: 0,
             moves: 0,
+            sync: false,
+            fails: 0,
+            degraded: false,
+            marks: Vec::new(),
         }
+    }
+
+    /// 开启/关闭同步输出包裹（X2-13a）；结论来自能力探测。
+    pub(crate) fn set_sync(&mut self, on: bool) {
+        self.sync = on;
+    }
+
+    /// 当前是否包裹同步块。
+    pub(crate) fn sync_enabled(&self) -> bool {
+        self.sync
+    }
+
+    /// 连续写失败次数（X2-15a 判据用）。
+    pub(crate) fn fail_count(&self) -> u8 {
+        self.fails
+    }
+
+    /// 是否已回退逐格写。
+    pub(crate) fn degraded(&self) -> bool {
+        self.degraded
     }
 
     /// 当前帧已编码但未写出的字节（只读）。
@@ -96,10 +134,7 @@ impl<W: Write> BufferedBackend<W> {
         self.moves
     }
 
-    /// 归还 writer（测试与 X2-09 接线用）。
-    pub(crate) fn into_inner(self) -> W {
-        self.writer
-    }
+
 
     /// 绝对定位（CUP）：跨行或远距跳转的唯一落点。
     fn emit_move(&mut self, pos: Position) {
@@ -191,6 +226,8 @@ impl<W: Write> Backend for BufferedBackend<W> {
                 }
                 continue;
             }
+            // 逐格回退的分片边界：本格的全部字节从当前偏移开始。
+            self.marks.push(self.out.len());
             if next != Some(pos) {
                 self.seek(pos);
             }
@@ -232,6 +269,7 @@ impl<W: Write> Backend for BufferedBackend<W> {
         self.fg = None;
         self.bg = None;
         self.mods = Modifier::empty();
+        self.marks.clear();
         Ok(())
     }
 
@@ -264,16 +302,103 @@ impl<W: Write> Backend for BufferedBackend<W> {
         })
     }
 
-    /// X2-13a：一帧 = 一次 `write_all`（`out` 非空时）。空帧零写。
+    /// 一帧 = 一次 `write_all`（X2-12a/b）：全部分片按序拼进同一批次，
+    /// 同步开启时每片自包一对 `h/l`（X2-14a）。空帧零写。
+    ///
+    /// 失败计数达阈值即切逐格回退（X2-15a/b），并立即用逐格路径重投本次
+    /// 内容；同步块已开而写途中失败时，先补发关闭序列，避免残留在同步态。
     fn flush(&mut self) -> io::Result<()> {
         if self.out.is_empty() {
             return Ok(());
         }
-        self.writer.write_all(&self.out)?;
+        let first = if self.degraded {
+            self.write_cells()
+        } else {
+            self.write_batch()
+        };
+        match first {
+            Ok(()) => {
+                self.out.clear();
+                self.marks.clear();
+                self.fails = 0;
+                Ok(())
+            }
+            Err(e) => {
+                self.fails = self.fails.saturating_add(1);
+                if self.sync {
+                    let _ = self.writer.write_all(SYNC_OFF);
+                    let _ = self.writer.flush();
+                }
+                if self.fails >= FAIL_LIMIT && !self.degraded {
+                    self.degraded = true;
+                    if self.write_cells().is_ok() {
+                        self.out.clear();
+                        self.marks.clear();
+                        self.fails = 0;
+                        return Ok(());
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+}
+
+impl<W: Write> BufferedBackend<W> {
+    /// 整帧批次：切分（X2-11a/b）后按片上同步块（X2-14a），一次写出。
+    fn write_batch(&mut self) -> io::Result<()> {
+        let parts = frame_io::split(&self.out, MAX_RENDER_WRITE_CHARS);
+        let batch = frame_io::wrap(&self.out, &parts, self.sync);
+        self.writer.write_all(&batch)?;
         self.writer.flush()?;
         self.writes += 1;
-        self.out.clear();
         Ok(())
+    }
+
+    /// 逐格回退（X2-15b）：按编码时的单元格边界逐段写出，段间不合并。
+    ///
+    /// 单元格标记只记录单元格起点，首个标记之前（如清屏）与末个标记之后
+    /// 的字节同样必须写出，故按「前缀 + 各格 + 尾段」遍历，空标记则整帧
+    /// 一段。任何一段失败即返回，剩余内容留给下一次重试。
+    fn write_cells(&mut self) -> io::Result<()> {
+        let len = self.out.len();
+        let mut start = 0;
+        for i in 0..self.marks.len() {
+            let end = self.marks[i];
+            if end > start && end <= len {
+                self.write_chunk(start, end)?;
+                start = end;
+            }
+        }
+        self.write_chunk(start, len)?;
+        self.writer.flush()
+    }
+
+    /// 写出 `out[start..end]` 一段，同步开启时自包一对 `h/l`。
+    fn write_chunk(&mut self, start: usize, end: usize) -> io::Result<()> {
+        if start >= end || end > self.out.len() {
+            return Ok(());
+        }
+        if self.sync {
+            self.writer.write_all(frame_io::SYNC_ON)?;
+        }
+        self.writer.write_all(&self.out[start..end])?;
+        if self.sync {
+            self.writer.write_all(SYNC_OFF)?;
+        }
+        self.writes += 1;
+        Ok(())
+    }
+}
+
+impl<W: Write> Drop for BufferedBackend<W> {
+    /// 异常路径兜底（X2-13b）：带未写内容退出时补发关闭序列，终端不残留
+    /// 同步态。正常 flush 成功后 `out` 为空，此路径不产生任何字节。
+    fn drop(&mut self) {
+        if self.sync && !self.out.is_empty() {
+            let _ = self.writer.write_all(SYNC_OFF);
+            let _ = self.writer.flush();
+        }
     }
 }
 

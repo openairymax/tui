@@ -299,3 +299,119 @@ fn plain_row_stays_within_byte_budget() {
     // 绝对定位 6 字节 + 复位 4 字节 + 40 个空格。
     assert_eq!(b.frame_bytes().len(), 6 + 4 + 40, "frame = {s:?}");
 }
+
+/// 前 N 次写注入失败，之后正常接收字节（X2-15a 判据）。
+#[derive(Clone, Default)]
+struct FailSink {
+    fails: Arc<Mutex<usize>>,
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl FailSink {
+    fn new(fails: usize) -> Self {
+        let sink = Self::default();
+        *sink.fails.lock().unwrap() = fails;
+        sink
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        self.bytes.lock().unwrap().clone()
+    }
+}
+
+impl Write for FailSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut left = self.fails.lock().unwrap();
+        if *left > 0 {
+            *left -= 1;
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "injected"));
+        }
+        drop(left);
+        self.bytes.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn on_count(buf: &[u8]) -> usize {
+    buf.windows(frame_io::SYNC_ON.len())
+        .filter(|w| *w == frame_io::SYNC_ON)
+        .count()
+}
+
+fn off_count(buf: &[u8]) -> usize {
+    buf.windows(SYNC_OFF.len()).filter(|w| *w == SYNC_OFF).count()
+}
+
+/// 同步开启时每次 flush 自包一对 `h/l`（X2-13a、X2-14a 判据：配对率 100%）。
+#[test]
+fn sync_block_pairs_each_flush() {
+    let (mut b, sink) = backend();
+    b.set_sync(true);
+    let a = cell("A");
+    b.draw(vec![(0u16, 0u16, &a)].into_iter()).unwrap();
+    b.flush().unwrap();
+    b.draw(vec![(1u16, 0u16, &a)].into_iter()).unwrap();
+    b.flush().unwrap();
+    let bytes = sink.bytes.lock().unwrap().clone();
+    assert_eq!(b.write_count(), 2, "每帧恰一次写出");
+    assert_eq!(on_count(&bytes), 2, "bytes = {bytes:?}");
+    assert_eq!(off_count(&bytes), 2, "bytes = {bytes:?}");
+    assert!(bytes.ends_with(SYNC_OFF), "bytes = {bytes:?}");
+}
+
+/// 携带未写内容退出时补发关闭序列，终端不残留同步态（X2-13b）。
+#[test]
+fn drop_closes_pending_sync_block() {
+    let sink = Sink::default();
+    {
+        let mut b = BufferedBackend::new(sink.clone());
+        b.set_sync(true);
+        let a = cell("A");
+        b.draw(vec![(0u16, 0u16, &a)].into_iter()).unwrap();
+    }
+    let bytes = sink.bytes.lock().unwrap().clone();
+    assert!(bytes.ends_with(SYNC_OFF), "bytes = {bytes:?}");
+}
+
+/// 连续失败达阈值即切逐格回退，内容仍然送达（X2-15a/b）。
+#[test]
+fn repeated_failures_degrade_to_cell_writes() {
+    let sink = FailSink::new(3);
+    let mut b = BufferedBackend::new(sink.clone());
+    let a = cell("A");
+    let c = cell("B");
+    b.draw(vec![(0u16, 0u16, &a), (1u16, 0u16, &c)].into_iter())
+        .unwrap();
+    assert!(b.flush().is_err());
+    assert_eq!(b.fail_count(), 1);
+    assert!(!b.degraded(), "单次失败不降级");
+    assert!(b.flush().is_err());
+    assert_eq!(b.fail_count(), 2);
+    // 第三次失败达阈值：立即以逐格路径重投，本次 flush 即成功。
+    assert!(b.flush().is_ok());
+    assert!(b.degraded());
+    let bytes = sink.bytes();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    assert!(text.contains('A') && text.contains('B'), "bytes = {text:?}");
+}
+
+/// 降级路径同样写出首个单元格标记之前的字节（如清屏），不丢内容。
+#[test]
+fn degraded_write_keeps_prefix_bytes() {
+    let sink = FailSink::new(3);
+    let mut b = BufferedBackend::new(sink.clone());
+    let a = cell("A");
+    b.clear().unwrap();
+    b.draw(vec![(0u16, 0u16, &a)].into_iter()).unwrap();
+    for _ in 0..2 {
+        assert!(b.flush().is_err());
+    }
+    assert!(b.flush().is_ok());
+    let text = String::from_utf8_lossy(&sink.bytes()).to_string();
+    assert!(text.contains("\x1b[2J"), "bytes = {text:?}");
+    assert!(text.contains('A'), "bytes = {text:?}");
+}
