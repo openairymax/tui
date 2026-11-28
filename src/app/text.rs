@@ -106,6 +106,9 @@ pub(super) fn build_help_text() -> Vec<String> {
         "  /tools      - 可用工具（tool.list_tools）".to_string(),
         "  /models     - LLM 模型（llm.list_models）".to_string(),
         "  /mem        - 记忆统计；/mem <query> 语义检索".to_string(),
+        "  /export     - 导出当前会话为线性纯文本（日志目录 session-<时间>.txt，"
+            .to_string(),
+        "                便于读屏与管道消费；区别于 /diag export 的诊断快照）".to_string(),
         "  /rpc        - 通用调用：/rpc <ns>.<method> [json]（如 /rpc tool.list_tools）"
             .to_string(),
         String::new(),
